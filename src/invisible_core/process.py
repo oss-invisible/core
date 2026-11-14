@@ -62,6 +62,16 @@ either has this session's token or it does not. Verified on Windows, where the
 launcher stub made this necessary: ``psutil.Process.environ()`` reads a
 same-user process's block and children show the inherited value.
 
+A LAUNCH OF THIS CORE IS NOT SEARCHED FOR AT ALL, neither at launch nor when it
+closes. The spawn makes the launch's tree a thing the launch holds (``EngineTree``:
+its job on Windows, its engine's descendants on POSIX) and registers the token
+as meaning that tree, so ``find_processes`` and ``reap`` of that token list and
+end it from itself. The search by environment stays for a token no launch of ours
+registered. Closing a browser used to scan every process of the machine, read
+each one's environment, and wait for the exit on the thread that serves the other
+browsers of the process (``Browser.aclose`` and ``Connection.aclose`` now wait in
+a thread of their own).
+
 The rule throughout: act on POSITIVE identification only. A process whose
 environment cannot be read is left alone. Leaking a browser is a bug; killing
 someone else's is an incident, and only one of the two is recoverable.
@@ -70,10 +80,12 @@ from __future__ import annotations
 
 import os
 import secrets
+import struct
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Iterable, List, Mapping, Optional
+from collections import OrderedDict
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from . import environment
 
@@ -155,6 +167,12 @@ def find_processes(token: SessionToken) -> List[Any]:
     """
     if psutil is None or not token:
         return []
+    # ⛔ A LAUNCH OF THIS CORE IS LISTED FROM ITSELF, never searched for: its job
+    # on Windows, the descendants of its engine on POSIX (`EngineTree`). The
+    # search below is for a token no launch of ours registered.
+    members = registered_members(token)
+    if members is not None:
+        return members
     # NO `ppid` in the attrs, and this is not a micro-optimisation. On Windows
     # psutil answers ppid out of `ppid_map()`, which enumerates EVERY process on
     # the machine, and `process_iter(["pid", "ppid"])` asks once per process:
@@ -248,6 +266,23 @@ def wait_until_gone(token: SessionToken, timeout: float = 10.0) -> bool:
     return not find_processes(token)
 
 
+def reap_session(token: SessionToken, *, grace: float = 0.0,
+                 timeout: float = 5.0) -> int:
+    """End what is left of a session's tree: wait ``grace`` for it to leave by
+    itself, then end it. Returns how many were sent something.
+
+    A launch of this core ends from its own tree (`EngineTree.end`: its job on
+    Windows, its engine's descendants on POSIX). Only a token no launch of ours
+    registered is searched for, by `find_processes`, as before.
+    """
+    if psutil is None or not token:
+        return 0
+    ends = registered_trees(token)
+    if ends is None:
+        return terminate(find_processes(token), grace=grace, timeout=timeout)
+    return sum(tree.end(grace=grace, timeout=timeout) for tree in ends)
+
+
 # ── the strategy ──────────────────────────────────────────────────────────
 
 class LifetimeGuard(ABC):
@@ -266,7 +301,7 @@ class LifetimeGuard(ABC):
         Kept even where ``bind`` guarantees the kill, because a browser that
         refuses ``close()`` should not wait for this process to exit.
         """
-        return terminate(find_processes(token), timeout=timeout)
+        return reap_session(token, timeout=timeout)
 
 
 class NullGuard(LifetimeGuard):
@@ -532,6 +567,7 @@ class EngineJob:
     _KILL_ON_JOB_CLOSE = JobObjectGuard._KILL_ON_JOB_CLOSE
     _EXTENDED_LIMIT_INFORMATION = JobObjectGuard._EXTENDED_LIMIT_INFORMATION
     _BASIC_ACCOUNTING_INFORMATION = 1
+    _BASIC_PROCESS_ID_LIST = 3
 
     def __init__(self, handle: Any, kernel32: Any, last_error: Any = None) -> None:
         self.handle = handle
@@ -654,6 +690,47 @@ class EngineJob:
             time.sleep(0.05)
         return True
 
+    def pids(self) -> List[int]:
+        """The pids of the tree, from the job itself: nothing of the machine is read.
+
+        `JobObjectBasicProcessIdList`: a count, then that many pointer-sized ids.
+        A tree larger than the buffer is asked again with the size the job
+        reported.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        k = self._kernel32
+        k.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+            ctypes.c_void_p]
+        slots = 64
+        with self._lock:
+            if not self.handle:
+                return []
+            while True:
+                size = 8 + slots * ctypes.sizeof(ctypes.c_size_t)
+                buffer = ctypes.create_string_buffer(size)
+                ok = k.QueryInformationJobObject(
+                    self.handle, self._BASIC_PROCESS_ID_LIST, buffer, size, None)
+                assigned, listed = struct.unpack_from("II", buffer, 0)
+                if ok:
+                    return list(struct.unpack_from("@%dN" % listed, buffer, 8))
+                if assigned > slots:
+                    slots = assigned + 16
+                    continue
+                return []
+
+    def terminate(self) -> None:
+        """Ends every process of the tree at once; the job stays open until `close`."""
+        import ctypes
+
+        k = self._kernel32
+        k.TerminateJobObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        with self._lock:
+            if self.handle:
+                k.TerminateJobObject(self.handle, 1)
+
     def close(self) -> None:
         """Close the handle, once: the kernel ends whatever is left of the tree."""
         with self._lock:
@@ -661,6 +738,221 @@ class EngineJob:
             if handle:
                 from ctypes import c_void_p
                 self._kernel32.CloseHandle(c_void_p(handle))
+
+
+# ── the tree of one launch, listed from the launch ─────────────────────────
+
+#: Seconds `EngineTree.release` lets the kernel finish ending a terminated job.
+JOB_END_WAIT = 2.0
+
+#: Seconds between two listings of the tree while an engine on POSIX is
+#: closing (`Connection.close`): a child it makes while it shuts down is in
+#: the next one, and each is one pass over the parents of the processes.
+TREE_REFRESH = 0.1
+
+#: Closed launches whose tree stays answerable by token, so that a late
+#: `reap(token)` (every client's last step) finds nothing without a search.
+CLOSED_KEPT = 64
+
+
+def _running(proc: Any) -> bool:
+    """`alive`, without the status call where there is no zombie to tell apart:
+    on Windows psutil answers a status by listing every process of the machine."""
+    if os.name == "nt":
+        try:
+            return proc.is_running()
+        except Exception:
+            return False
+    return alive(proc)
+
+
+class EngineTree:
+    """The processes of ONE launch, known from the launch and never searched for.
+
+    ⛔ NOTHING OF THE MACHINE IS SCANNED, and no process's environment is read.
+    The search this replaces (`find_processes`: every process, its environment
+    read for the token) is what ended a browser, on the closing thread: with
+    four browsers in one Python process py-spy put the wait for the exit and
+    the removal of the profile at about a fifth of the main thread, all of it
+    on the event loop that serves the other three.
+
+    * Windows: the tree is the launch's job (`EngineJob`). It is listed by the
+      job (`pids`), waited for by the job's own count and ended by the job
+      (`terminate`): the launcher stub that exits while its browser runs, and
+      the pingsender that outlives the browser, are in it by construction.
+    * POSIX: the tree is the engine's descendants, in ONE pass
+      (`psutil.Process.children(recursive=True)`, which reads the parent of each
+      process and nothing else). It is listed while the engine is alive, because
+      what a dead engine left is reparented and nobody can say whose it is: so
+      `remember()` runs when a close begins and while it waits.
+
+    What is remembered is `psutil.Process` objects, which carry the creation
+    time: a pid that was reused is not the process that was listed.
+    """
+
+    def __init__(self, pid: int, job: Optional["EngineJob"] = None) -> None:
+        self.pid = pid
+        self.job = job
+        #: Set by `release`: the launch is over, what is left is only waited for and ended.
+        self.closed = False
+        self._lock = threading.Lock()
+        self._seen: Dict[int, Any] = {}
+        self._root: Any = None
+        if psutil is not None:
+            try:
+                self._root = psutil.Process(pid)
+                self._seen[pid] = self._root
+            except Exception:
+                pass
+
+    # ── listing ─────────────────────────────────────────────────────────────
+    def _list(self) -> None:
+        """Adds what the launch has right now to what is remembered. Under `_lock`."""
+        if psutil is None:
+            return
+        job = self.job
+        found: List[Any] = []
+        if job is not None and job.handle:
+            for pid in job.pids():
+                try:
+                    found.append(psutil.Process(pid))
+                except Exception:        # gone between the job's answer and here
+                    pass
+        elif job is None and self._root is not None:
+            try:
+                if self._root.is_running():
+                    found = self._root.children(recursive=True)
+            except Exception:
+                found = []
+        for proc in found:
+            if self._seen.get(proc.pid) != proc:
+                self._seen[proc.pid] = proc
+
+    def members(self) -> List[Any]:
+        """The live processes of the launch, the later ones first (a child is
+        learnt after its parent, so ending in this order reaches the content
+        processes before the process that would restart them)."""
+        with self._lock:
+            self._list()
+            live = {pid: proc for pid, proc in self._seen.items() if _running(proc)}
+            self._seen = live
+            procs = list(live.values())
+        procs.reverse()
+        return procs
+
+    def remember(self) -> None:
+        """List the tree now, so that it is known when the engine is gone.
+
+        Only a tree without a job needs it: a job is asked at the end
+        (`release`), and what is in it then is everything there is."""
+        if self.job is None:
+            self.members()
+
+    # ── waiting and ending ──────────────────────────────────────────────────
+    def wait_job_empty(self, deadline: float) -> None:
+        """Windows: waits until the job holds no process, or `deadline` (a
+        monotonic time). The stub the spawn returned may have exited while the
+        browser is still shutting down; the job's count is what says so."""
+        job = self.job
+        if job is not None and job.handle:
+            job.wait_empty(deadline)
+
+    def _wait(self, procs: List[Any], timeout: float) -> List[Any]:
+        """The ones of `procs` still alive after up to `timeout` seconds."""
+        job = self.job
+        if job is not None and job.handle:
+            job.wait_empty(time.monotonic() + timeout)
+            return self.members()
+        try:
+            _, left = psutil.wait_procs(procs, timeout=timeout)
+        except Exception:
+            return procs
+        return left
+
+    def end(self, *, grace: float = 0.0, timeout: float = 5.0) -> int:
+        """Waits ``grace`` for the tree to leave by itself, then ends it.
+        Returns how many were sent something (what left by itself is not counted).
+
+        Windows ends the whole job in one call; POSIX asks each process to
+        terminate, waits ``timeout`` and kills the ones that stayed."""
+        procs = self.members()
+        if procs and grace > 0:
+            procs = self._wait(procs, grace)
+        if not procs:
+            return 0
+        sent = len(procs)
+        job = self.job
+        if job is not None and job.handle:
+            job.terminate()
+        else:
+            for proc in procs:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+        procs = self._wait(procs, timeout)
+        for proc in procs:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        if procs:
+            self._wait(procs, 1.0)
+        return sent
+
+    def release(self) -> None:
+        """The launch is over. What is left of the tree is ended (the job, on
+        Windows, in one call, and its count is waited for) and the job's handle
+        is closed: the kernel has nothing left to end, and no other launch's
+        process was ever in it."""
+        job = self.job
+        if job is not None and job.handle:
+            with self._lock:
+                self._list()                # what survives is known by its pid afterwards
+            if job.active():
+                job.terminate()
+                job.wait_empty(time.monotonic() + JOB_END_WAIT)
+            job.close()
+        self.closed = True
+
+
+_registry_lock = threading.Lock()
+_registry: "OrderedDict[str, List[EngineTree]]" = OrderedDict()
+
+
+def register_tree(token: SessionToken, tree: EngineTree) -> None:
+    """Make ``token`` mean ``tree``: `find_processes` and `reap_session` list
+    and end a registered token from the tree, with no search. Called by the
+    launch, which stamped the token into the engine's environment. A token may
+    hold more than one tree (two launches of one session)."""
+    if not token:
+        return
+    with _registry_lock:
+        _registry.setdefault(token.value, []).append(tree)
+        _registry.move_to_end(token.value)
+        done = [k for k, trees in _registry.items() if all(t.closed for t in trees)]
+        for key in done[:max(0, len(done) - CLOSED_KEPT)]:
+            del _registry[key]
+
+
+def registered_trees(token: SessionToken) -> Optional[List[EngineTree]]:
+    """The trees registered for ``token``, or None for a token no launch of ours made."""
+    if not token:
+        return None
+    with _registry_lock:
+        trees = _registry.get(token.value)
+        return list(trees) if trees else None
+
+
+def registered_members(token: SessionToken) -> Optional[List[Any]]:
+    """The live processes of the trees registered for ``token``, or None."""
+    trees = registered_trees(token)
+    if trees is None:
+        return None
+    found: List[Any] = []
+    for tree in trees:
+        found.extend(tree.members())
+    return found
 
 
 def guard_for(platform: str | None = None) -> LifetimeGuard:
