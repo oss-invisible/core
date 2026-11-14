@@ -586,7 +586,9 @@ def _run_engine_client(tmp_path, keep):
     script.write_text(_ENGINE_CLIENT, encoding="utf-8")
     client = subprocess.Popen(
         [sys.executable, str(script), binary, str(tmp_path / "profile"), keep],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        # A session of its own on POSIX: its process group is the client's alone, which is what a terminal's Ctrl+C reaches.
+        start_new_session=not WINDOWS)
     lines = []
     marker = "CLOSED" if keep == "close" else "TOKEN"
 
@@ -605,11 +607,13 @@ def _run_engine_client(tmp_path, keep):
 
 
 @pytest.mark.e2e
-@pytest.mark.skipif(not WINDOWS, reason="the job object is Windows")
 def test_a_killed_client_leaves_no_engine_process(tmp_path):
     """Item 3 with the real engine: a Python process that launches the browser,
-    opens a page (so content processes exist) and is killed with
-    TerminateProcess; every process that carries the session's token goes."""
+    opens a page (so content processes exist) and is killed (TerminateProcess on
+    Windows, SIGKILL elsewhere: no teardown runs); every process that carries the
+    session's token goes. On Windows the job ends the tree; on POSIX the engine,
+    in a process group of its own, ends by itself when the client's end of the
+    Juggler pipe closes (`nsRemoteDebuggingPipe`: end of input is `Browser.close`)."""
     client, token = _run_engine_client(tmp_path, keep="open")
     try:
         tree = P.find_processes(token)
@@ -624,7 +628,32 @@ def test_a_killed_client_leaves_no_engine_process(tmp_path):
 
 
 @pytest.mark.e2e
-@pytest.mark.skipif(not WINDOWS, reason="the job object is Windows")
+@pytest.mark.skipif(WINDOWS, reason="a terminal's Ctrl+C reaches a process group: POSIX")
+def test_an_interrupted_client_leaves_no_engine_process(tmp_path):
+    """What the engine's own process group costs: a Ctrl+C at the terminal reaches the client's group and no longer the engine's.
+    SIGINT to the client's group, as the terminal sends it; the client ends (nothing handles it: KeyboardInterrupt out of the
+    script) and every process that carries the session's token goes, because the pipe closes with the client."""
+    import signal
+
+    client, token = _run_engine_client(tmp_path, keep="open")
+    try:
+        tree = P.find_processes(token)
+        assert len(tree) >= 2, "the engine's tree was not there to be ended"
+        assert os.getpgid(client.pid) == client.pid, "the client is not the leader of the group the test interrupts"
+        assert all(os.getpgid(p.pid) != client.pid for p in tree), (
+            "a process of the engine's tree is in the client's group: Ctrl+C would reach it")
+        os.killpg(client.pid, signal.SIGINT)
+        client.wait(timeout=60)
+        alive = _wait_all_gone(tree, timeout=60)
+        assert not alive, "survivors of the interrupted client: %s" % [
+            (p.pid, p.name()) for p in alive]
+    finally:
+        if client.poll() is None:
+            client.kill()
+        P.terminate(P.find_processes(token))
+
+
+@pytest.mark.e2e
 def test_after_close_no_process_of_the_session_is_left(tmp_path):
     """Item 2 with the real engine: `Browser.close()` ends the whole tree,
     the late children (the pingsender that outlives the browser) included."""
