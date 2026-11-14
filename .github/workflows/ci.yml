@@ -635,30 +635,37 @@ jobs:
           else
             "${RUN[@]}"
           fi
-      # THE ENGINE'S TREE ENDS WITH ITS CLIENT, WITH THE REAL ENGINE, ON LINUX. On POSIX the engine is born the leader of a process
-      # group of its own (the tree is that group), so a terminal's Ctrl+C no longer reaches it, and what ends it when its client dies
-      # is the end of the Juggler pipe (`nsRemoteDebuggingPipe`). Nothing but the real engine can say that holds, so the cases of
-      # tests/test_the_engine_is_born_in_the_job.py that start it run here, on the engine the seal names: the client killed with
-      # SIGKILL, the client interrupted with SIGINT to its group as a terminal sends it, and a close that leaves nothing. One part
-      # only: they are the same on both. Fewer than three passed is red (a skip checked nothing).
-      - name: the engine's tree ends with its client (Linux)
-        if: runner.os == 'Linux' && matrix.part == 1
+      # THE ENGINE'S TREE ENDS WITH ITS CLIENT, WITH THE REAL ENGINE, ON BOTH OSES. On POSIX the engine is born the leader of a
+      # process group of its own (the tree is that group), so a terminal's Ctrl+C no longer reaches it, and what ends it when its
+      # client dies is the end of the Juggler pipe (`nsRemoteDebuggingPipe`); on Windows the tree is the launch's job. Nothing but
+      # the real engine can say either holds, so the cases of tests/test_the_engine_is_born_in_the_job.py that start it run here, on
+      # the engine the seal names: the client killed (SIGKILL, TerminateProcess), a close that leaves nothing, and, on Linux only (a
+      # terminal's Ctrl+C is a POSIX signal to a process group), the client interrupted with SIGINT to its group. One part only:
+      # they are the same on all. Fewer passed than the OS has (Linux 3, Windows 2) is red: a skip checked nothing.
+      - name: the engine's tree ends with its client
+        if: matrix.part == 1
         timeout-minutes: 8
         env:
           INVPW_BINARY_PATH: ${{ env.FF }}
         run: |
           set -o pipefail   # or tee would swallow pytest's exit code
-          xvfb-run -a python -m pytest tests/test_the_engine_is_born_in_the_job.py -m e2e \
-            -o addopts="" -v -rs -p no:cacheprovider \
-            -k "test_a_killed_client_leaves_no_engine_process or test_an_interrupted_client_leaves_no_engine_process or test_after_close_no_process_of_the_session_is_left" \
-            | tee tree-report.txt
-          python - <<'PY'
-          import pathlib, re, sys
+          CASES="test_a_killed_client_leaves_no_engine_process or test_after_close_no_process_of_the_session_is_left"
+          WANT=2
+          RUN=(python -m pytest tests/test_the_engine_is_born_in_the_job.py -m e2e -o addopts="" -v -rs -p no:cacheprovider)
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            CASES="$CASES or test_an_interrupted_client_leaves_no_engine_process"
+            WANT=3
+            RUN=(xvfb-run -a "${RUN[@]}")
+          fi
+          "${RUN[@]}" -k "$CASES" | tee tree-report.txt
+          WANT="$WANT" python - <<'PY'
+          import os, pathlib, re, sys
           text = pathlib.Path("tree-report.txt").read_text(encoding="utf-8", errors="ignore")
           m = re.search(r"(\d+) passed", text)
           passed = int(m.group(1)) if m else 0
-          if passed < 3:
-              print(f"only {passed} of the 3 real-engine cases passed", file=sys.stderr)
+          want = int(os.environ["WANT"])
+          if passed < want:
+              print(f"only {passed} of the {want} real-engine cases passed", file=sys.stderr)
               sys.exit(1)
           print(f"{passed} cases passed")
           PY
