@@ -91,7 +91,14 @@ _CLIENT = textwrap.dedent("""
     connection._spawn_windows = connection._spawn_posix = stand_in
     # What a straggler is let to finish is 10 s in the product; here it is short, and the one that never finishes is ended after it.
     from invisible_core.juggler import _profile
-    _profile.SENDER_GRACE = 1.0
+    SUBREAPER = sys.argv[2:] == ["subreaper"]
+    if SUBREAPER:
+        # A client that is the init of its orphans and does not reap them: the PID 1 of a container without one. What the engine
+        # leaves behind becomes this process's child and, when it ends, a zombie nobody collects. The grace stays the product's.
+        import ctypes
+        assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0      # PR_SET_CHILD_SUBREAPER
+    else:
+        _profile.SENDER_GRACE = 1.0
 
     def launch():
         token = SessionToken.mint()
@@ -149,6 +156,7 @@ _CLIENT = textwrap.dedent("""
             "gap": max(gaps), "took": took, "scans": scans, "leader": leader,
             "a_pids": len(pa), "a_alive": alive(pa),
             "a_dirs": [d for d in files_a if os.path.exists(d)],
+            "zombies": [p for p in pa if psutil.pid_exists(p) and psutil.Process(p).status() == psutil.STATUS_ZOMBIE],
             "b_pids": len(pb), "b_alive": alive(pb),
             "b_dirs": [d for d in (b._files.profile, b._files.tmp) if os.path.exists(d)],
         }}
@@ -163,10 +171,10 @@ _CLIENT = textwrap.dedent("""
 """)
 
 
-def _run_client(tmp_path, engine, how):
+def _run_client(tmp_path, engine, how, *more):
     script = tmp_path / "client.py"
     script.write_text(_CLIENT.format(engine=engine), encoding="utf-8")
-    done = subprocess.run([sys.executable, str(script), how], capture_output=True, text=True, timeout=180)
+    done = subprocess.run([sys.executable, str(script), how, *more], capture_output=True, text=True, timeout=180)
     lines = [x for x in done.stdout.splitlines() if x.startswith("REPORT ")]
     assert done.returncode == 0 and lines, (
         "the client failed (%s):\n%s\n%s" % (done.returncode, done.stdout[-2000:], done.stderr[-4000:]))
@@ -177,6 +185,12 @@ def _run_client(tmp_path, engine, how):
 def report(tmp_path_factory):
     """One run of the client: its numbers are asserted one claim at a time below."""
     return _run_client(tmp_path_factory.mktemp("teardown"), _ENGINE.format(straggle=2, late=120), "aclose")
+
+
+@pytest.fixture(scope="module")
+def subreaped(tmp_path_factory):
+    """One run of the client as the parent of its orphans that never reaps them: the straggler lives 1 s."""
+    return _run_client(tmp_path_factory.mktemp("subreaper"), _ENGINE.format(straggle=1, late=0), "aclose", "subreaper")
 
 
 @pytest.fixture(scope="module")
@@ -396,3 +410,15 @@ def test_a_group_that_has_been_seen_empty_is_never_signalled_again(monkeypatch):
     monkeypatch.setattr(os, "killpg", lambda *a: sent.append(a))
     assert tree.end(timeout=1) == 0
     assert sent == [], "a group that was empty was signalled: %s" % sent
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="a client that is its orphans' init, and /proc: Linux")
+def test_a_group_of_zombies_is_empty_so_a_close_does_not_wait_for_nobody(subreaped):
+    """Red when the group is waited for with `killpg(pgid, 0)` alone, which answers for a zombie too: in a container whose PID 1 is
+    the user's script, the straggler that outlived the engine stays a zombie nobody reaps, the group looks alive, and every close
+    waited the 10 s a straggler is given and then the 5 s of the SIGTERM. The client here is the init of its orphans and reaps none."""
+    assert subreaped["zombies"], "the setup is not the one under test: nothing was left a zombie: %r" % subreaped
+    assert subreaped["took"] < 1 + 2, (
+        "the close waited %.1f s for a group of zombies (the straggler lives 1 s)" % subreaped["took"])
+    assert subreaped["gap"] < 0.05, "the loop stood still for %.0f ms" % (subreaped["gap"] * 1000)
+    assert subreaped["a_dirs"] == [], "the closed browser left its directories: %s" % subreaped["a_dirs"]

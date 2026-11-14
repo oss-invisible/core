@@ -756,6 +756,39 @@ TREE_REFRESH = 0.1
 CLOSED_KEPT = 64
 
 
+def _living_in_group(pgid: int) -> Optional[bool]:
+    """Whether a process of group `pgid` is alive and not a zombie, from one pass over `/proc/*/stat`
+    (`pid (comm) state ppid pgrp ...`: state and group only). None where it cannot be told."""
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return _living_in_group_by_psutil(pgid)
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % name, "rb") as stat:
+                tail = stat.read().rpartition(b")")[2].split()
+            if int(tail[2]) == pgid and tail[0] not in (b"Z", b"X"):
+                return True
+        except (OSError, ValueError, IndexError):     # gone since the listing
+            continue
+    return False
+
+
+def _living_in_group_by_psutil(pgid: int) -> Optional[bool]:
+    """The same without `/proc` (macOS): psutil reads the state, `getpgid` the group."""
+    if psutil is None:
+        return None
+    for proc in psutil.process_iter(["pid", "status"]):
+        try:
+            if proc.info["status"] != psutil.STATUS_ZOMBIE and os.getpgid(proc.pid) == pgid:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _running(proc: Any) -> bool:
     """`alive`, without the status call where there is no zombie to tell apart:
     on Windows psutil answers a status by listing every process of the machine."""
@@ -819,6 +852,8 @@ class EngineTree:
         self._poll = poll
         #: `killpg(pid, 0)` said nobody is left: the number is never signalled again.
         self._gone = False
+        #: When the members of the group were last looked at (`_living_member`).
+        self._looked = 0.0
         #: Set by `release`: the launch is over, what is left is only waited for and ended.
         self.closed = False
         self._lock = threading.Lock()
@@ -887,9 +922,10 @@ class EngineTree:
         """Whether the process group has a member (`killpg(pgid, 0)`: ESRCH is empty)."""
         if self._gone:
             return False
+        leader = None
         if self._poll is not None:
             try:
-                self._poll()
+                leader = self._poll()
             except Exception:
                 pass
         try:
@@ -899,6 +935,29 @@ class EngineTree:
             return False
         except OSError:                    # EPERM: it has members, and they are not ours to signal
             return True
+        if leader is None:                 # the leader runs, or there is none to ask: the group is alive
+            return True
+        return self._living_member()
+
+    #: Seconds between two looks at the members of a group whose leader is gone.
+    LOOK_EVERY = 0.25
+
+    def _living_member(self) -> bool:
+        """`killpg(pgid, 0)` answers for a ZOMBIE too, and the leader is gone: is anything in the group alive?
+
+        ⛔ A ZOMBIE IS NOT A MEMBER. A process nobody reaps stays a zombie: the pingsender that outlives the engine, in a container
+        whose PID 1 is the user's own script (no init), never leaves the group, and a close that waited for the group to be empty
+        would wait for ever. So, ONLY when the leader has been reaped and the group still answers, the group is looked at once:
+        one pass over `/proc/*/stat`, reading each process's state and group and nothing else (its environment never), and
+        again at most every `LOOK_EVERY` seconds while something lives. A group of zombies is empty."""
+        now = time.monotonic()
+        if now - self._looked < self.LOOK_EVERY and self._looked:
+            return True
+        self._looked = now
+        living = _living_in_group(self.pid)
+        if living is False:
+            self._gone = True
+            return False
         return True
 
     def _signal_group(self, number: int) -> None:
