@@ -568,7 +568,7 @@ class EngineJob:
         except Exception:
             return None
 
-    def adopt_and_resume(self, process_handle: Any, thread_handle: Any) -> bool:
+    def adopt_and_resume(self, process_handle: Any, thread_handle: Any) -> tuple:
         """Put a process created SUSPENDED into the job, then let it run.
 
         `CreateProcessW` with `CREATE_SUSPENDED` gives the two handles; the
@@ -578,11 +578,18 @@ class EngineJob:
         pingsender at shutdown) is created inside the job by the kernel, with
         nothing to find and nothing to adopt afterwards. No scan of the machine.
 
-        Returns whether the process is in the job. ⛔ THE THREAD IS RESUMED
-        EITHER WAY: a suspended engine that nobody resumes is a hung launch, a
-        worse outcome than an unguarded one. A resume that fails raises, and
-        the caller ends the process.
+        Returns `(assigned, error)`: whether the process is in the job, and the
+        Windows error of the assignment (0 when it worked), read RIGHT AFTER
+        `AssignProcessToJobObject`, before `ResumeThread` can overwrite it. A
+        refusal also raises a `RuntimeWarning` naming that error: the engine
+        runs, but it will not die with this process.
+
+        ⛔ THE THREAD IS RESUMED EITHER WAY: a suspended engine that nobody
+        resumes is a hung launch, a worse outcome than an unguarded one. A
+        resume that fails raises, and the caller ends the process.
         """
+        import ctypes
+        import warnings
         from ctypes import wintypes
 
         k = self._kernel32
@@ -591,9 +598,15 @@ class EngineJob:
         k.ResumeThread.argtypes = [wintypes.HANDLE]
         k.ResumeThread.restype = wintypes.DWORD
         assigned = bool(k.AssignProcessToJobObject(self.handle, process_handle))
+        error = 0 if assigned else ctypes.get_last_error()
         if k.ResumeThread(thread_handle) == 0xFFFFFFFF:
             raise OSError("the suspended process could not be resumed")
-        return assigned
+        if not assigned:
+            warnings.warn(
+                "the engine could not be put in the job object (error %d): it "
+                "runs, but it will not die with this process" % error,
+                RuntimeWarning, stacklevel=3)
+        return assigned, error
 
     def active(self) -> int:
         """How many processes of the tree are alive right now (the job's own count)."""

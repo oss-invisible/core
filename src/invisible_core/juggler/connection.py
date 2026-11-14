@@ -1211,7 +1211,8 @@ def _spawn_windows(executable, argv, env):
     in_job = False
     if job is not None:
         try:
-            in_job = job.adopt_and_resume(pi.hProcess, pi.hThread)
+            # A refusal warns from inside, naming the assignment's own error.
+            in_job, _ = job.adopt_and_resume(pi.hProcess, pi.hThread)
         except BaseException:
             # A suspended engine nobody can resume is ended, with its pipes.
             k32.TerminateProcess(ctypes.c_void_p(pi.hProcess), 1)
@@ -1219,12 +1220,6 @@ def _spawn_windows(executable, argv, env):
             for h in (pi.hThread, pi.hProcess, our_read, our_write, out_read):
                 _winapi.CloseHandle(h)
             raise
-        if not in_job:
-            import warnings
-            warnings.warn(
-                "the engine could not be put in the job object (error %d): it "
-                "runs, but it will not die with this process"
-                % ctypes.get_last_error(), RuntimeWarning, stacklevel=2)
     k32.CloseHandle(pi.hThread)
     stdout = os.fdopen(msvcrt.open_osfhandle(out_read, os.O_RDONLY), "rb")
     p = _WindowsProcess(int(pi.hProcess), int(pi.dwProcessId), stdout)

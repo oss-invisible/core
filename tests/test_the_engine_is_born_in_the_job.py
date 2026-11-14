@@ -42,9 +42,10 @@ WINDOWS = sys.platform == "win32"
 class _Kernel32:
     """The three calls `adopt_and_resume` makes, recording their order."""
 
-    def __init__(self, assign=True, resume=1):
+    def __init__(self, assign=True, resume=1, assign_error=0, resume_error=0):
         self.calls = []
         self._assign, self._resume = assign, resume
+        self._assign_error, self._resume_error = assign_error, resume_error
 
         class _Fn:
             def __init__(self, fn):
@@ -58,11 +59,17 @@ class _Kernel32:
         self.ResumeThread = _Fn(self._do_resume)
 
     def _do_assign(self, job, process):
+        import ctypes
+
         self.calls.append(("assign", job, process))
+        ctypes.set_last_error(self._assign_error)
         return self._assign
 
     def _do_resume(self, thread):
+        import ctypes
+
         self.calls.append(("resume", thread))
+        ctypes.set_last_error(self._resume_error)
         return self._resume
 
 
@@ -70,7 +77,7 @@ class _Kernel32:
 def test_the_process_is_assigned_to_the_job_before_it_runs():
     k = _Kernel32()
     job = P.EngineJob(handle=11, kernel32=k)
-    assert job.adopt_and_resume(22, 33) is True
+    assert job.adopt_and_resume(22, 33) == (True, 0)
     assert [c[0] for c in k.calls] == ["assign", "resume"], (
         "the thread ran before the process was in the job: whatever it created "
         "in between is outside it")
@@ -82,8 +89,24 @@ def test_a_refused_assignment_still_resumes_the_engine_and_says_so():
     """A launch that works without the guarantee beats a launch that hangs."""
     k = _Kernel32(assign=False)
     job = P.EngineJob(handle=11, kernel32=k)
-    assert job.adopt_and_resume(22, 33) is False
+    with pytest.warns(RuntimeWarning):
+        assert job.adopt_and_resume(22, 33)[0] is False
     assert [c[0] for c in k.calls] == ["assign", "resume"]
+
+
+@pytest.mark.unit
+def test_the_warning_names_the_error_of_the_assignment_not_of_the_resume():
+    """The assignment fails with 5 (ERROR_ACCESS_DENIED) and ResumeThread then
+    leaves another last error: the code reported is the assignment's."""
+    import ctypes
+
+    k = _Kernel32(assign=False, assign_error=5, resume_error=1816)
+    job = P.EngineJob(handle=11, kernel32=k)
+    with pytest.warns(RuntimeWarning, match=r"\(error 5\)") as seen:
+        assigned, error = job.adopt_and_resume(22, 33)
+    assert (assigned, error) == (False, 5)
+    assert ctypes.get_last_error() == 1816, "the fake did not overwrite it: the test proves nothing"
+    assert "1816" not in str(seen[0].message)
 
 
 @pytest.mark.unit
