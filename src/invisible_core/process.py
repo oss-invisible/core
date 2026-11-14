@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import threading
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Iterable, List, Mapping, Optional
@@ -340,6 +341,13 @@ class JobObjectGuard(LifetimeGuard):
              settle: float = 1.0) -> int:
         """Wait for the tree to appear, then adopt ALL of it.
 
+        NOT HOW THE CORE'S OWN LAUNCH GUARDS THE ENGINE ANY MORE. The spawn
+        creates the engine inside a job of its own (`EngineJob`), so a caller of
+        the core's `launch` has nothing to adopt, and this loop (every process of
+        the machine scanned, its environment read, until a second passes with
+        nothing new) is pure cost there. It remains for a caller that starts a
+        process by other means and wants it adopted by token.
+
         The wait exists because the driver spawns the browser asynchronously.
         The token makes it exact rather than a guess about how long that takes.
 
@@ -498,6 +506,139 @@ try:
     _ExtendedLimitInformation = _define_job_structures()
 except Exception:  # pragma: no cover - non-Windows, or no ctypes
     _ExtendedLimitInformation = None  # type: ignore[assignment]
+
+
+class EngineJob:
+    """The job of ONE launch: the engine is born in it, and closing it ends the tree.
+
+    Made by the spawn (`juggler.connection._spawn_windows`), one per engine, and
+    held by the process object the spawn returns. Two things follow from it
+    being one per launch and not one per Python process: closing one browser
+    can never touch another browser's processes, and the tree of one browser
+    is a thing that can be listed and ended by itself, without looking at the
+    rest of the machine.
+
+    ⛔ THE LIMIT FLAGS ARE `KILL_ON_JOB_CLOSE` AND NOTHING ELSE. `BREAKAWAY_OK`
+    would let a child ask to leave the job, and `SILENT_BREAKAWAY_OK` would let
+    every child of the engine leave it without asking: the tree would be in the
+    job only as long as nobody wanted out. Neither is set, so a process created
+    inside it stays in it, and a `CREATE_BREAKAWAY_FROM_JOB` request is refused.
+
+    The handle is closed by `close()` (the kernel then ends whatever is left of
+    the tree) and, if nothing ever closes it, by the end of this process by any
+    route, which is the crash guarantee `JobObjectGuard` gives.
+    """
+
+    _KILL_ON_JOB_CLOSE = JobObjectGuard._KILL_ON_JOB_CLOSE
+    _EXTENDED_LIMIT_INFORMATION = JobObjectGuard._EXTENDED_LIMIT_INFORMATION
+    _BASIC_ACCOUNTING_INFORMATION = 1
+
+    def __init__(self, handle: Any, kernel32: Any) -> None:
+        self.handle = handle
+        self._kernel32 = kernel32
+        self._lock = threading.Lock()
+
+    @classmethod
+    def create(cls, platform: str | None = None) -> Optional["EngineJob"]:
+        """A new job, or None where there is none (not Windows, or it could not be made).
+
+        None is an ordinary launch: a launch that works without the guarantee
+        beats a guarantee that refuses to launch.
+        """
+        name = os.name if platform is None else platform
+        if name != "nt" or _ExtendedLimitInformation is None:
+            return None
+        try:
+            import ctypes
+
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            k.CreateJobObjectW.restype = ctypes.c_void_p
+            handle = k.CreateJobObjectW(None, None)
+            if not handle:
+                return None
+            info = _ExtendedLimitInformation()
+            info.BasicLimitInformation.LimitFlags = cls._KILL_ON_JOB_CLOSE
+            ok = k.SetInformationJobObject(
+                ctypes.c_void_p(handle), cls._EXTENDED_LIMIT_INFORMATION,
+                ctypes.byref(info), ctypes.sizeof(info))
+            if not ok:
+                k.CloseHandle(ctypes.c_void_p(handle))
+                return None
+            return cls(handle, k)
+        except Exception:
+            return None
+
+    def adopt_and_resume(self, process_handle: Any, thread_handle: Any) -> bool:
+        """Put a process created SUSPENDED into the job, then let it run.
+
+        `CreateProcessW` with `CREATE_SUSPENDED` gives the two handles; the
+        process is alone and has run no instruction, and ASSIGNING IT NOW is the
+        case Windows supports (see `JobObjectGuard.spawn_into`): every process it
+        creates (the launcher's browser, content, GPU and socket processes, the
+        pingsender at shutdown) is created inside the job by the kernel, with
+        nothing to find and nothing to adopt afterwards. No scan of the machine.
+
+        Returns whether the process is in the job. ⛔ THE THREAD IS RESUMED
+        EITHER WAY: a suspended engine that nobody resumes is a hung launch, a
+        worse outcome than an unguarded one. A resume that fails raises, and
+        the caller ends the process.
+        """
+        from ctypes import wintypes
+
+        k = self._kernel32
+        k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k.AssignProcessToJobObject.restype = wintypes.BOOL
+        k.ResumeThread.argtypes = [wintypes.HANDLE]
+        k.ResumeThread.restype = wintypes.DWORD
+        assigned = bool(k.AssignProcessToJobObject(self.handle, process_handle))
+        if k.ResumeThread(thread_handle) == 0xFFFFFFFF:
+            raise OSError("the suspended process could not be resumed")
+        return assigned
+
+    def active(self) -> int:
+        """How many processes of the tree are alive right now (the job's own count)."""
+        import ctypes
+        from ctypes import wintypes
+
+        class Accounting(ctypes.Structure):
+            _fields_ = [("TotalUserTime", ctypes.c_longlong),
+                        ("TotalKernelTime", ctypes.c_longlong),
+                        ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                        ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                        ("TotalPageFaultCount", wintypes.DWORD),
+                        ("TotalProcesses", wintypes.DWORD),
+                        ("ActiveProcesses", wintypes.DWORD),
+                        ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+        k = self._kernel32
+        k.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+            ctypes.c_void_p]
+        with self._lock:
+            if not self.handle:
+                return 0
+            info = Accounting()
+            if not k.QueryInformationJobObject(
+                    self.handle, self._BASIC_ACCOUNTING_INFORMATION,
+                    ctypes.byref(info), ctypes.sizeof(info), None):
+                return 0
+            return int(info.ActiveProcesses)
+
+    def wait_empty(self, deadline: float) -> bool:
+        """True once no process of the tree is alive, False at `deadline` (a `time.monotonic()` value)."""
+        while self.active():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+        return True
+
+    def close(self) -> None:
+        """Close the handle, once: the kernel ends whatever is left of the tree."""
+        with self._lock:
+            handle, self.handle = self.handle, None
+            if handle:
+                from ctypes import c_void_p
+                self._kernel32.CloseHandle(c_void_p(handle))
 
 
 def guard_for(platform: str | None = None) -> LifetimeGuard:

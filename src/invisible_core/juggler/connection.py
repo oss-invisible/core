@@ -899,11 +899,20 @@ class Connection(EventListeners):
         deadline = time.monotonic() + timeout
         while p.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)
+        # ⛔ ON WINDOWS THE PROCESS THE SPAWN RETURNED MAY BE THE LAUNCHER STUB, which has exited while the
+        # browser is still shutting down, so its exit says nothing about the tree: the tree is waited for
+        # through the launch's own job (its count of live processes, nothing of the machine is read), up
+        # to the same deadline. Then the job is closed, and the kernel ends what is left: the leftovers of
+        # THIS launch and no other browser's.
+        wait_job = getattr(p, "wait_job_empty", None)
+        if wait_job is not None:
+            wait_job(deadline)
         if p.poll() is None:
             try:
                 p.terminate()
             except OSError:
                 pass
+        getattr(p, "close_job", lambda: None)()
 
 
 # ── launch ──────────────────────────────────────────────────────────────────
@@ -935,6 +944,10 @@ class _WindowsProcess:
         self._handle = handle
         self.pid = pid
         self.stdout = stdout
+        #: Whether the spawn put the process inside the job (`_spawn_windows`).
+        self.in_job = False
+        #: The launch's `EngineJob`, or None (`_spawn_windows`); closed by `close_job`.
+        self.job = None
         self.returncode: Optional[int] = None
         # Resolved now: `__del__` may run while the interpreter exits, when
         # an import inside it raises instead of closing anything.
@@ -957,6 +970,16 @@ class _WindowsProcess:
                     code.value != self.STILL_ACTIVE:
                 self.returncode = int(code.value)
         return self.returncode
+
+    def wait_job_empty(self, deadline: float) -> None:
+        """Waits until nothing of the tree is alive, or `deadline` (a monotonic time)."""
+        if self.job is not None:
+            self.job.wait_empty(deadline)
+
+    def close_job(self) -> None:
+        """Closes the launch's job: the kernel ends whatever is left of the tree. Idempotent."""
+        if self.job is not None:
+            self.job.close()
 
     def __del__(self) -> None:
         handle, self._handle = self._handle, 0
@@ -1149,10 +1172,27 @@ def _spawn_windows(executable, argv, env):
     cmdline = ctypes.create_unicode_buffer(
         subprocess.list2cmdline([executable] + argv))
     create_unicode_environment, extended_startupinfo_present = 0x400, 0x80000
+    create_suspended = 0x4
+    # ⛔ THE ENGINE IS BORN INSIDE A JOB OF ITS OWN, not adopted into one later.
+    # Created suspended, assigned while it is alone, then resumed: every process
+    # it creates after that (the launcher's browser, content, GPU, socket, and
+    # the pingsender that outlives the browser) is created inside the job by the
+    # kernel, so the tree dies with this process by construction and nothing
+    # searches the machine for it. The search this replaces ran on every launch
+    # (`LifetimeGuard.bind`: every process of the machine, its environment read
+    # under the GIL, a quarter of a second apart, up to ten seconds), measured
+    # at 12-29% of the launching thread. Adopting afterwards cannot work for this
+    # browser anyway (`JobObjectGuard.spawn_into`). ONE JOB PER LAUNCH: closing
+    # this browser (`Connection.close`) ends its tree and no other browser's,
+    # and its tree can be listed by the job itself. No job (not Windows, or it
+    # could not be made) is an ordinary launch.
+    from ..process import EngineJob
+    job = EngineJob.create()
     pi = PROCESS_INFORMATION()
     ok = k32.CreateProcessW(
         None, cmdline, None, None, True,
-        create_unicode_environment | extended_startupinfo_present,
+        create_unicode_environment | extended_startupinfo_present
+        | (create_suspended if job is not None else 0),
         env_block, None, ctypes.byref(si), ctypes.byref(pi))
     err = ctypes.get_last_error()
     k32.DeleteProcThreadAttributeList(attrs)
@@ -1161,14 +1201,35 @@ def _spawn_windows(executable, argv, env):
     for h in (its_read, its_write, out_write, err_write, in_read):
         _winapi.CloseHandle(h)
     if not ok:
+        if job is not None:
+            job.close()
         for h in (our_read, our_write, out_read):
             _winapi.CloseHandle(h)
         raise OSError(err, "CreateProcessW failed for %s%s: %s" % (
             executable, (" on desktop %r" % desktop) if desktop else "",
             ctypes.FormatError(err).strip()))
+    in_job = False
+    if job is not None:
+        try:
+            in_job = job.adopt_and_resume(pi.hProcess, pi.hThread)
+        except BaseException:
+            # A suspended engine nobody can resume is ended, with its pipes.
+            k32.TerminateProcess(ctypes.c_void_p(pi.hProcess), 1)
+            job.close()
+            for h in (pi.hThread, pi.hProcess, our_read, our_write, out_read):
+                _winapi.CloseHandle(h)
+            raise
+        if not in_job:
+            import warnings
+            warnings.warn(
+                "the engine could not be put in the job object (error %d): it "
+                "runs, but it will not die with this process"
+                % ctypes.get_last_error(), RuntimeWarning, stacklevel=2)
     k32.CloseHandle(pi.hThread)
     stdout = os.fdopen(msvcrt.open_osfhandle(out_read, os.O_RDONLY), "rb")
     p = _WindowsProcess(int(pi.hProcess), int(pi.dwProcessId), stdout)
+    p.in_job = in_job
+    p.job = job
     return (msvcrt.open_osfhandle(our_write, 0),
             msvcrt.open_osfhandle(our_read, os.O_RDONLY), p)
 
@@ -1373,7 +1434,9 @@ def launch(executable: str, profile_dir: str, *, headless: bool = True,
     # PREVIOUS engine - all to recover information the browser had already
     # written and nobody had kept.
     if p.poll() is not None:
-        # No Connection will own these two ends: released here, once.
+        # No Connection will own these two ends: released here, once. Nor the job: what the
+        # engine left running goes with it.
+        getattr(p, "close_job", lambda: None)()
         os.close(to_browser)
         os.close(from_browser)
         coda = "\n".join(("    " + r) for r in output.tail()) or "    (nothing)"
