@@ -533,9 +533,12 @@ class EngineJob:
     _EXTENDED_LIMIT_INFORMATION = JobObjectGuard._EXTENDED_LIMIT_INFORMATION
     _BASIC_ACCOUNTING_INFORMATION = 1
 
-    def __init__(self, handle: Any, kernel32: Any) -> None:
+    def __init__(self, handle: Any, kernel32: Any, last_error: Any = None) -> None:
         self.handle = handle
         self._kernel32 = kernel32
+        # The thread's last Win32 error, read right after the call that set it. `ctypes.get_last_error` exists on
+        # Windows only; a stand-in kernel32 (the unit tests, on every system) brings its own.
+        self._last_error = last_error
         self._lock = threading.Lock()
 
     @classmethod
@@ -598,7 +601,13 @@ class EngineJob:
         k.ResumeThread.argtypes = [wintypes.HANDLE]
         k.ResumeThread.restype = wintypes.DWORD
         assigned = bool(k.AssignProcessToJobObject(self.handle, process_handle))
-        error = 0 if assigned else ctypes.get_last_error()
+        if assigned:
+            error = 0
+        elif self._last_error is not None:
+            error = self._last_error()
+        else:
+            import ctypes
+            error = ctypes.get_last_error()
         if k.ResumeThread(thread_handle) == 0xFFFFFFFF:
             raise OSError("the suspended process could not be resumed")
         if not assigned:
