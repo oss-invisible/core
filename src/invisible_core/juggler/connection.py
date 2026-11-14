@@ -1252,8 +1252,9 @@ class _PosixProcess:
         self.stdout = stdout
         self.returncode: Optional[int] = None
         self._lock = threading.Lock()
-        #: The launch's `EngineTree`: the engine's descendants, listed while it is alive.
-        self.tree = EngineTree(pid)
+        #: The launch's `EngineTree`: the engine is the leader of a process group of its own (`_spawn_posix`), and
+        #: the tree is that group.
+        self.tree = EngineTree(pid, group=True, poll=self.poll)
 
     def poll(self) -> Optional[int]:
         with self._lock:
@@ -1352,7 +1353,7 @@ def _spawn_posix(executable, argv, env):
                     except OSError:
                         pass
             try:
-                pid = os.posix_spawn(executable, [executable] + argv, env, file_actions=actions,
+                pid = os.posix_spawn(executable, [executable] + argv, env, file_actions=actions, setpgroup=0,
                                      setsigdef=[getattr(signal, name) for name in ("SIGPIPE", "SIGXFSZ") if hasattr(signal, name)])
                 break
             except OSError as error:

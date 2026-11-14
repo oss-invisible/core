@@ -36,8 +36,9 @@ WINDOWS = sys.platform == "win32"
 
 #: What stands for the engine. It answers every command on the Juggler pipe (fds 3 and 4 on POSIX, the handles named by
 #: PW_PIPE_READ/PW_PIPE_WRITE on Windows), starts two children, and says so. When the pipe closes it ends its children, starts a
-#: straggler that runs for a while longer (the pingsender), says its pid and exits 0.4 s after, so a listing made while it closes
-#: sees the straggler.
+#: straggler that runs for a while longer (the pingsender) and says its pid, and 0.4 s after that, in the last milliseconds
+#: before it exits, starts one more child that would run for two minutes (`{late}` is its sleep, 0 for none). That one is born
+#: after any listing a close could have made while the engine was alive: only a tree that holds it by construction ends it.
 _ENGINE = textwrap.dedent("""
     import json, os, subprocess, sys, time
     if os.name == "nt":
@@ -66,6 +67,10 @@ _ENGINE = textwrap.dedent("""
     sender = subprocess.Popen(SLEEP)
     print("PIDS", sender.pid, flush=True)
     time.sleep(0.4)
+    if {late}:
+        late = subprocess.Popen([sys.executable, "-c", "import time; time.sleep({late})"])
+        print("PIDS", late.pid, flush=True)
+        os._exit(0)
 """)
 
 #: The client: two browsers made by the real `instance.launch` (only the executable is the stand-in), one closed while a sentinel
@@ -84,6 +89,9 @@ _CLIENT = textwrap.dedent("""
         return spawn(sys.executable, ["-c", ENGINE], env)
 
     connection._spawn_windows = connection._spawn_posix = stand_in
+    # What a straggler is let to finish is 10 s in the product; here it is short, and the one that never finishes is ended after it.
+    from invisible_core.juggler import _profile
+    _profile.SENDER_GRACE = 1.0
 
     def launch():
         token = SessionToken.mint()
@@ -128,15 +136,17 @@ _CLIENT = textwrap.dedent("""
         watch = asyncio.create_task(sentinel())
         await asyncio.sleep(0.1)
         files_a = (a._files.profile, a._files.tmp)
+        leader = None if os.name == "nt" else (os.getpgid(pa[0]) == pa[0] != os.getpgrp())
         started = time.monotonic()
         await close(a)
         took = time.monotonic() - started
         stop.set()
         await watch
         psutil.process_iter, psutil.Process.environ = real_iter, real_environ
+        time.sleep(0.2)
         pa = pids_of(a)                       # the straggler's pid is printed while it closes
         report = {{
-            "gap": max(gaps), "took": took, "scans": scans,
+            "gap": max(gaps), "took": took, "scans": scans, "leader": leader,
             "a_pids": len(pa), "a_alive": alive(pa),
             "a_dirs": [d for d in files_a if os.path.exists(d)],
             "b_pids": len(pb), "b_alive": alive(pb),
@@ -166,13 +176,13 @@ def _run_client(tmp_path, engine, how):
 @pytest.fixture(scope="module")
 def report(tmp_path_factory):
     """One run of the client: its numbers are asserted one claim at a time below."""
-    return _run_client(tmp_path_factory.mktemp("teardown"), _ENGINE.format(straggle=2), "aclose")
+    return _run_client(tmp_path_factory.mktemp("teardown"), _ENGINE.format(straggle=2, late=120), "aclose")
 
 
 @pytest.fixture(scope="module")
 def control(tmp_path_factory):
     """The same run with the close made inline on the loop."""
-    return _run_client(tmp_path_factory.mktemp("control"), _ENGINE.format(straggle=2), "inline")
+    return _run_client(tmp_path_factory.mktemp("control"), _ENGINE.format(straggle=2, late=0), "inline")
 
 
 pytestmark = pytest.mark.integration
@@ -205,8 +215,10 @@ def test_closing_a_browser_reads_no_process_of_the_machine_and_no_environment(re
 
 def test_after_close_no_process_of_the_tree_is_alive_and_the_profile_is_gone(report):
     """The contract of `close()` does not change: it returns when the processes have exited. The straggler (the pingsender: it
-    outlives the browser and is the process that kept a profile from being removed) is in the tree of the launch."""
-    assert report["a_pids"] == 4, "the engine, its two children and the straggler were not all counted: %r" % report
+    outlives the browser and is the process that kept a profile from being removed) and a child born in the last milliseconds of
+    the engine, which outlives it for good, are in the tree of the launch: a tree LISTED while the engine was alive (every 0.1 s, say)
+    cannot hold the second; one the launch is born as the leader of (a process group, a job) does."""
+    assert report["a_pids"] == 5, "the engine, its two children, the straggler and the last child were not all counted: %r" % report
     assert report["a_alive"] == [], "processes of the closed browser are alive: %s" % report["a_alive"]
     assert report["a_dirs"] == [], "the closed browser left its directories: %s" % report["a_dirs"]
     assert report["token_a_listed"] == 0, "the session's token still lists processes after the close"
@@ -338,3 +350,49 @@ def test_a_job_lists_and_ends_its_own_tree_and_only_it():
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+
+@pytest.mark.skipif(WINDOWS, reason="process groups are POSIX")
+def test_the_engine_is_born_the_leader_of_a_process_group_of_its_own(report):
+    """The tree is the group: the engine's pid is its group's, and not the client's (Playwright's launcher: `detached: true`)."""
+    assert report["leader"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(WINDOWS, reason="process groups are POSIX")
+def test_a_group_is_waited_for_and_ended_whole_with_nothing_listed(monkeypatch):
+    """The leader exits and leaves a child behind: the group still holds it (`killpg(pgid, 0)`), and `end` ends it, listing
+    and scanning nothing."""
+    searched = _NoSearch(monkeypatch)
+    leader = subprocess.Popen(
+        [sys.executable, "-c",
+         "import subprocess, sys; "
+         "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); print('up', flush=True)"],
+        process_group=0, stdout=subprocess.PIPE, text=True)
+    try:
+        assert leader.stdout.readline().strip() == "up"
+        leader.wait(timeout=10)
+        tree = P.EngineTree(leader.pid, group=True, poll=leader.poll)
+        assert tree._group_alive(), "the child the leader left behind is not in its group"
+        assert tree.end(timeout=5) == 1
+        assert not tree._group_alive()
+        assert searched.calls == [], "ending a group read the machine: %s" % searched.calls
+    finally:
+        try:
+            os.killpg(leader.pid, 9)
+        except OSError:
+            pass
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(WINDOWS, reason="process groups are POSIX")
+def test_a_group_that_has_been_seen_empty_is_never_signalled_again(monkeypatch):
+    """Its number may belong to an unrelated process group by then."""
+    leader = subprocess.Popen([sys.executable, "-c", "pass"], process_group=0)
+    leader.wait(timeout=10)
+    tree = P.EngineTree(leader.pid, group=True, poll=leader.poll)
+    assert tree.end(timeout=1) == 0 and tree._gone
+    sent = []
+    monkeypatch.setattr(os, "killpg", lambda *a: sent.append(a))
+    assert tree.end(timeout=1) == 0
+    assert sent == [], "a group that was empty was signalled: %s" % sent

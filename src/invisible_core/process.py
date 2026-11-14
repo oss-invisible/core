@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import signal
 import struct
 import threading
 import time
@@ -780,19 +781,44 @@ class EngineTree:
       job (`pids`), waited for by the job's own count and ended by the job
       (`terminate`): the launcher stub that exits while its browser runs, and
       the pingsender that outlives the browser, are in it by construction.
-    * POSIX: the tree is the engine's descendants, in ONE pass
-      (`psutil.Process.children(recursive=True)`, which reads the parent of each
-      process and nothing else). It is listed while the engine is alive, because
-      what a dead engine left is reparented and nobody can say whose it is: so
-      `remember()` runs when a close begins and while it waits.
+    * POSIX: the tree is the engine's PROCESS GROUP. The spawn makes the engine
+      the leader of a group of its own (`posix_spawn` with `setpgroup=0`, what
+      Playwright's launcher does with `detached: true`, and ends with
+      `kill(-pid)`), so whatever the engine creates after that, however late,
+      is in the group by construction, and whatever it leaves behind when it
+      exits stays in it: the tree is waited for with `killpg(pgid, 0)` (ESRCH
+      is empty) and ended with `killpg`, with nothing listed, nothing scanned
+      and nothing refreshed. No process of the engine's makes itself leader of
+      another group or session (`setsid` and `setpgid` are called in the
+      engine's tree by the crash helper alone, which the core's environment
+      keeps from starting).
+    * No job and no group (a tree built from a pid alone): the engine's
+      descendants, in ONE pass (`psutil.Process.children(recursive=True)`),
+      listed while the engine is alive, because what a dead engine left is
+      reparented and nobody can say whose it is: `remember()` runs when a close
+      begins and while it waits.
+
+    ⛔ A GROUP IS SIGNALLED ONLY WHILE IT IS KNOWN TO HAVE MEMBERS. Once
+    `killpg(pgid, 0)` has said that nobody is left, the number could be given to
+    an unrelated process group, and a late `reap(token)` would kill it: the tree
+    is then `_gone` for good. A group whose members are all zombies still counts
+    as alive until their parent (or init) reaps them; the leader, which is our
+    child, is reaped here (`poll`).
 
     What is remembered is `psutil.Process` objects, which carry the creation
     time: a pid that was reused is not the process that was listed.
     """
 
-    def __init__(self, pid: int, job: Optional["EngineJob"] = None) -> None:
+    def __init__(self, pid: int, job: Optional["EngineJob"] = None, *,
+                 group: bool = False, poll: Any = None) -> None:
         self.pid = pid
         self.job = job
+        #: The engine is the leader of a process group of its own (POSIX spawn): its pid is the group's.
+        self.group = group
+        #: Reaps the leader (our child) when it has exited, or None: a zombie leader keeps its group "alive".
+        self._poll = poll
+        #: `killpg(pid, 0)` said nobody is left: the number is never signalled again.
+        self._gone = False
         #: Set by `release`: the launch is over, what is left is only waited for and ended.
         self.closed = False
         self._lock = threading.Lock()
@@ -808,7 +834,7 @@ class EngineTree:
     # ── listing ─────────────────────────────────────────────────────────────
     def _list(self) -> None:
         """Adds what the launch has right now to what is remembered. Under `_lock`."""
-        if psutil is None:
+        if psutil is None or self.group:
             return
         job = self.job
         found: List[Any] = []
@@ -831,7 +857,14 @@ class EngineTree:
     def members(self) -> List[Any]:
         """The live processes of the launch, the later ones first (a child is
         learnt after its parent, so ending in this order reaches the content
-        processes before the process that would restart them)."""
+        processes before the process that would restart them).
+
+        For a group this is the one place a process of the machine is looked
+        at, one pass reading each process's group and nothing of its
+        environment, and it is for a caller that wants to SEE the tree
+        (`find_processes`, a test): ending and waiting never list."""
+        if self.group:
+            return self._group_members()
         with self._lock:
             self._list()
             live = {pid: proc for pid, proc in self._seen.items() if _running(proc)}
@@ -843,16 +876,67 @@ class EngineTree:
     def remember(self) -> None:
         """List the tree now, so that it is known when the engine is gone.
 
-        Only a tree without a job needs it: a job is asked at the end
-        (`release`), and what is in it then is everything there is."""
-        if self.job is None:
+        Only a tree with neither a job nor a group needs it: a job is asked at
+        the end (`release`), a group by its number, and what is in either then
+        is everything there is."""
+        if self.job is None and not self.group:
             self.members()
+
+    # ── the group ───────────────────────────────────────────────────────────
+    def _group_alive(self) -> bool:
+        """Whether the process group has a member (`killpg(pgid, 0)`: ESRCH is empty)."""
+        if self._gone:
+            return False
+        if self._poll is not None:
+            try:
+                self._poll()
+            except Exception:
+                pass
+        try:
+            os.killpg(self.pid, 0)
+        except ProcessLookupError:
+            self._gone = True
+            return False
+        except OSError:                    # EPERM: it has members, and they are not ours to signal
+            return True
+        return True
+
+    def _signal_group(self, number: int) -> None:
+        if not self._group_alive():
+            return
+        try:
+            os.killpg(self.pid, number)
+        except OSError:
+            pass
+
+    def _wait_group(self, timeout: float) -> bool:
+        """True once the group is empty, False after `timeout` seconds."""
+        deadline = time.monotonic() + timeout
+        while self._group_alive():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+        return True
+
+    def _group_members(self) -> List[Any]:
+        if psutil is None or not self._group_alive():
+            return []
+        found = []
+        for proc in psutil.process_iter(["pid"]):
+            try:
+                if os.getpgid(proc.pid) == self.pid and alive(proc):
+                    found.append(proc)
+            except Exception:              # gone, or not ours to ask about
+                pass
+        return found
 
     # ── waiting and ending ──────────────────────────────────────────────────
     def wait_job_empty(self, deadline: float) -> None:
         """Windows: waits until the job holds no process, or `deadline` (a
         monotonic time). The stub the spawn returned may have exited while the
-        browser is still shutting down; the job's count is what says so."""
+        browser is still shutting down; the job's count is what says so. A group
+        is waited for by `end` (the grace the survivors of the browser are given),
+        not here."""
         job = self.job
         if job is not None and job.handle:
             job.wait_empty(deadline)
@@ -873,8 +957,20 @@ class EngineTree:
         """Waits ``grace`` for the tree to leave by itself, then ends it.
         Returns how many were sent something (what left by itself is not counted).
 
-        Windows ends the whole job in one call; POSIX asks each process to
-        terminate, waits ``timeout`` and kills the ones that stayed."""
+        Windows ends the whole job in one call; a group is sent SIGTERM as a
+        whole, waited for ``timeout`` and sent SIGKILL (a group is one count: 1
+        is "it was signalled"); without either, each process is asked to
+        terminate, waited for ``timeout`` and killed if it stayed."""
+        if self.group:
+            if not self._group_alive():
+                return 0
+            if grace > 0 and self._wait_group(grace):
+                return 0
+            self._signal_group(signal.SIGTERM)
+            if not self._wait_group(timeout):
+                self._signal_group(signal.SIGKILL)
+                self._wait_group(1.0)
+            return 1
         procs = self.members()
         if procs and grace > 0:
             procs = self._wait(procs, grace)
