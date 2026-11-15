@@ -859,7 +859,10 @@ class Keyboard:
         """The text goes in without key events. This is what is needed for
         a character that is not on the layout."""
         # No `stroke` and no `at`: the command does not declare them, and the protocol rejects what it does not declare. Inside a
-        # stroke it still goes at its instant, and its reply is collected with the others.
+        # stroke it still goes at its instant, and its reply is collected with the others. The engine keeps it in the page's one
+        # order of input commands, so it never overtakes a key still waiting for its birth.
+        # ⛔ KNOWN LIMIT: an input event with no key (this one) is born at its delivery, not at the plan's instant: after a stall it
+        # carries the delivery's time, where a key of the same stroke carries the plan's.
         with self._stroking():
             self._at = self._mark = max(self._mark, self._at)
             self._stroke.send("Page.insertText", {"text": text}, self._at, tagged=False)
