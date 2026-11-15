@@ -797,6 +797,20 @@ def _living_in_group(pgid: int) -> Optional[bool]:
     return None if pids is None else bool(pids)
 
 
+def _command_line_of(pid: int) -> List[str]:
+    """The command line of a process (the one place it is read, which is what a test counts)."""
+    if psutil is None:
+        raise RuntimeError("psutil is not available")
+    return psutil.Process(pid).cmdline()
+
+
+def _command_line_is_final() -> bool:
+    """Whether a process has its final command line from its creation (Windows: `CreateProcess` writes it into the
+    process before its first instruction), so that what was read once is what it is. POSIX forks first and executes
+    after, and a child can be read as its parent for a moment."""
+    return os.name == "nt"
+
+
 #: The flag Firefox's background tasks are started with (`firefox -backgroundtask <name>`); it is accepted with one dash,
 #: two, or a slash.
 BACKGROUND_TASK_FLAGS = ("-backgroundtask", "--backgroundtask", "/backgroundtask")
@@ -888,7 +902,7 @@ class EngineTree:
         self.closed = False
         self._lock = threading.Lock()
         self._seen: Dict[int, Any] = {}
-        #: The pids whose command line says they outlive the browser (`wait_browser_gone`).
+        #: pid -> whether its command line says it outlives the browser (`wait_browser_gone`, `_survives`).
         self._kind: Dict[int, bool] = {}
         self._root: Any = None
         if psutil is not None:
@@ -1071,23 +1085,25 @@ class EngineTree:
         """Whether the process is one that outlives the browser, by its command line. A process that has gone since
         the listing is not left, so it is not a reason to wait: True.
 
-        ⛔ ONLY AN ANSWER OF YES IS KEPT. A process the browser has forked and not yet executed still has the
-        browser's own command line, and asking again a moment later is what tells a sender from the content
-        process it was made out of."""
-        if self._kind.get(pid):
-            return True
-        if psutil is None:
-            return False
+        ⛔ WINDOWS READS A COMMAND LINE ONCE PER PROCESS, YES OR NO: a process has its final command line from the
+        moment it is created, and reading it is a read of the process's PEB (under the GIL) that, repeated at the
+        pace of this loop, would be made about a hundred times a second for every process of the browser until it
+        exits. POSIX remembers only a yes: a process the browser has forked and not yet executed still has the
+        browser's own command line, and asking again a moment later (a read of `/proc`, which is cheap) is what tells
+        a sender from the content process it was made out of."""
+        known = self._kind.get(pid)
+        if known is not None:
+            return known
         try:
-            command = psutil.Process(pid).cmdline()
-        except psutil.NoSuchProcess:
-            return True
-        except Exception:                        # not readable: not ours to call a survivor, and asked again
-            return False
-        if outlives_the_browser(command):
-            self._kind[pid] = True
-            return True
-        return False
+            command = _command_line_of(pid)
+        except Exception as failure:
+            if psutil is not None and isinstance(failure, psutil.NoSuchProcess):
+                return True
+            return False                         # not readable: not ours to call a survivor, and asked again
+        verdict = outlives_the_browser(command)
+        if verdict or _command_line_is_final():
+            self._kind[pid] = verdict
+        return verdict
 
     def _wait(self, procs: List[Any], timeout: float) -> List[Any]:
         """The ones of `procs` still alive after up to `timeout` seconds."""

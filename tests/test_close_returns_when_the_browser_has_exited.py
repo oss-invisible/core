@@ -99,6 +99,17 @@ _CLIENT = textwrap.dedent("""
     connection._spawn_windows = connection._spawn_posix = stand_in
     MODE = sys.argv[1]
 
+    # How many times each process's command line is read (the one seam it is read through).
+    from invisible_core import process as _process
+    READS = {{}}
+    _real_command_line = _process._command_line_of
+
+    def _counted(pid):
+        READS[pid] = READS.get(pid, 0) + 1
+        return _real_command_line(pid)
+
+    _process._command_line_of = _counted
+
     def pids_of(browser):
         out, bye = [], None
         for line in browser.conn.output.tail(200):
@@ -134,7 +145,8 @@ _CLIENT = textwrap.dedent("""
         waited = time.monotonic() - started
         after = snapshot(browser, marker, dirs)
         print("REPORT", json.dumps({{"closed": closed, "at_close": at_close, "waited": waited, "after": after,
-                                    "marker_text": open(marker).read() if os.path.exists(marker) else None}}), flush=True)
+                                    "marker_text": open(marker).read() if os.path.exists(marker) else None,
+                                    "reads": {{str(k): v for k, v in READS.items()}}}}), flush=True)
 
     def smain():
         browser, marker, dirs = main_sync()
@@ -150,7 +162,8 @@ _CLIENT = textwrap.dedent("""
         waited = time.monotonic() - started
         after = snapshot(browser, marker, dirs)
         print("REPORT", json.dumps({{"closed": closed, "at_close": at_close, "waited": waited, "after": after,
-                                    "marker_text": open(marker).read() if os.path.exists(marker) else None}}), flush=True)
+                                    "marker_text": open(marker).read() if os.path.exists(marker) else None,
+                                    "reads": {{str(k): v for k, v in READS.items()}}}}), flush=True)
 
     if MODE == "async":
         asyncio.run(amain())
@@ -223,6 +236,16 @@ def test_a_process_of_the_browser_that_is_not_a_sender_is_waited_for(tmp_path):
 
 
 @pytest.mark.wall_clock
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows process has its final command line from its creation")
+def test_on_windows_a_command_line_is_read_once_per_process_during_a_close(tmp_path):
+    """The loop that waits for the browser to be gone looks every 10 ms: a process that is not a sender stays in it for as long as it
+    lives (here 1.5 s), and its command line (a read of the process's PEB, under the GIL) was read on every look."""
+    report = _run(tmp_path, "sync", sender=0, content=1.5)
+    assert report["reads"], "no command line was read: the seam is not the one the tree reads through"
+    assert max(report["reads"].values()) <= 1, "a command line was read more than once: %r" % report["reads"]
+
+
+@pytest.mark.wall_clock
 def test_the_end_of_the_interpreter_waits_for_the_reaper_and_leaves_nothing(tmp_path):
     """A program that closes its browser and ends, without waiting for anything: the reaper is not a daemon, so the interpreter
     does not end under it. Afterwards no process of the tree is alive and the session's directories are gone, and the sender
@@ -240,13 +263,31 @@ def test_the_end_of_the_interpreter_waits_for_the_reaper_and_leaves_nothing(tmp_
 
 # ── the pieces ──────────────────────────────────────────────────────────────
 
+#: The sender's command line on Windows, as seen 67 times in one GitHub run (the uuid tail made up): the executable is the
+#: browser's own, and the task is `--backgroundtask pingsender`.
+WINDOWS_SENDER = [
+    r"C:\Users\runneradmin\AppData\Local\invisible-playwright\invisible-playwright\Cache\firefox-64_159.0_20261114003728\firefox.exe",
+    "--backgroundtask", "pingsender",
+    "https://incoming.telemetry.mozilla.org/submit/telemetry/de30146e-596a-4c1b-9d27-5e8f0a1b2c3d/event/Firefox/159.0/"
+    "release/20261114003728?v=4",
+]
+WINDOWS_PARENT = [WINDOWS_SENDER[0], "-no-remote", "-profile", r"C:\Users\runneradmin\AppData\Local\Temp\invisible_profile_1_ab",
+                  "-juggler-pipe"]
+WINDOWS_CONTENT = [WINDOWS_SENDER[0], "-contentproc", "--channel=1234.0.1234", "-childID", "1", "-isForBrowser", "-prefsHandle", "800",
+                   "-prefMapHandle", "804", "-jsInitHandle", "808", "-parentBuildID", "20261114003728", "tab"]
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("command", [
+    WINDOWS_SENDER,
+    # Linux: no real line has been captured yet (a hunt will); both forms Firefox can be started in are accepted until then:
+    # the `pingsender` binary as argv[0], and the browser itself with the background task.
     ["pingsender", "https://example.invalid/", "ping.json"],
     ["C:\\Program Files\\Mozilla Firefox\\pingsender.exe", "https://example.invalid/", "ping.json"],
     ["/opt/firefox/pingsender", "x"],
     ["/opt/firefox/PingSender.EXE"],
     ["firefox", "-backgroundtask", "pingsender"],
+    ["/opt/firefox/firefox", "--backgroundtask", "pingsender", "https://incoming.telemetry.mozilla.org/submit/x"],
     ["C:\\fx\\firefox.exe", "--backgroundtask", "pingsender"],
     ["firefox.exe", "/BackgroundTask", "x"],
 ])
@@ -256,6 +297,8 @@ def test_a_sender_and_a_background_task_are_known_by_their_command_line(command)
 
 @pytest.mark.unit
 @pytest.mark.parametrize("command", [
+    WINDOWS_PARENT,
+    WINDOWS_CONTENT,
     [],
     None,
     ["firefox", "-contentproc", "-childID", "1", "tab"],
@@ -267,6 +310,38 @@ def test_a_sender_and_a_background_task_are_known_by_their_command_line(command)
 ])
 def test_a_process_of_the_browser_is_not_taken_for_a_sender(command):
     assert P.outlives_the_browser(command) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("final, reads", [(True, 1), (False, 25)])
+def test_a_command_line_is_read_once_where_it_is_final_and_asked_again_where_it_is_not(monkeypatch, final, reads):
+    """Windows (a process has its final command line from birth): one read per pid, yes or no. POSIX (fork, then exec): a no is
+    asked again, because a child not yet executed still reads as its parent, and a yes is kept."""
+    seen = []
+    monkeypatch.setattr(P, "_command_line_is_final", lambda: final)
+    monkeypatch.setattr(P, "_command_line_of", lambda pid: (seen.append(pid), WINDOWS_CONTENT)[1])
+    tree = P.EngineTree(os.getpid())
+    answers = [tree._survives(1234) for _ in range(25)]
+    assert answers == [False] * 25
+    assert len(seen) == reads, "%d reads for a process looked at 25 times" % len(seen)
+    seen.clear()
+    monkeypatch.setattr(P, "_command_line_of", lambda pid: (seen.append(pid), WINDOWS_SENDER)[1])
+    assert [tree._survives(99) for _ in range(25)] == [True] * 25
+    assert len(seen) == 1, "a sender is known once it is read"
+
+
+@pytest.mark.unit
+def test_a_command_line_that_cannot_be_read_is_asked_again_on_every_platform(monkeypatch):
+    seen = []
+
+    def denied(pid):
+        seen.append(pid)
+        raise PermissionError("not ours")
+
+    monkeypatch.setattr(P, "_command_line_of", denied)
+    tree = P.EngineTree(os.getpid())
+    assert [tree._survives(7) for _ in range(3)] == [False] * 3
+    assert len(seen) == 3
 
 
 @pytest.mark.unit
