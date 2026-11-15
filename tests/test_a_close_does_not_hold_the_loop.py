@@ -1,7 +1,7 @@
 """Closing a browser waits, and the wait is not the event loop's.
 
-The close of a browser waits for its processes to exit, ends the survivors of its tree and removes its profile: seconds of
-waiting, which is how Playwright's own `close()` behaves too (it returns once the processes are gone). What was wrong is WHO
+The teardown of a browser waits for its processes to exit, ends the survivors of its tree and removes its profile: seconds of
+waiting (`close()` returns when the browser has exited, and the launch's reaper does the rest: `wait_reaped`). What was wrong is WHO
 waited. With four browsers in one Python process py-spy put about a fifth of the main thread in the wait for the exit
 (`psutil.wait_procs`) and the removal of the profile (`rmtree`) when one of them closed, all on the event loop that serves the other
 three, plus a scan of every process of the machine, its environment read, to find the tree to end.
@@ -116,10 +116,14 @@ _CLIENT = textwrap.dedent("""
         return [p for p in pids if psutil.pid_exists(p) and psutil.Process(p).status() != psutil.STATUS_ZOMBIE]
 
     async def close(browser):
+        # The whole teardown: the browser's exit, and then what the launch's reaper does after it (the survivors of the tree, the
+        # job, the directories). `close` returns at the first; the contract these tests keep is the second.
         if sys.argv[1] == "inline":
             browser.close()           # the control: the same close, made on the loop itself
+            browser.wait_reaped()
         else:
             await browser.aclose()
+            await browser.await_reaped()
 
     async def main():
         (ta, a), (tb, b) = launch(), launch()

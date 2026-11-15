@@ -44,7 +44,8 @@ from typing import Any, Callable, Optional
 
 from .. import _engine_env
 from .._offloop import off_the_loop
-from ..process import TOKEN_VAR, TREE_REFRESH, EngineTree, SessionToken, register_tree
+from ..process import TOKEN_VAR, TREE_REFRESH, EngineTree, Reaper, SessionToken, register_tree
+from . import _profile
 from .deadline import Deadline
 
 NUL = b"\x00"
@@ -530,6 +531,10 @@ class Connection(EventListeners):
         # ignoring a command, not as an error here.
         self._write_lock = threading.Lock()
         self._closed = False
+        #: What follows the browser's exit (`close`): the launch's `process.Reaper`, or None before the close, and for
+        #: a connection that has no process of its own.
+        self.reaper: Optional[Reaper] = None
+        self._close_lock = threading.Lock()
         self._error: Optional[BaseException] = None
         #: The browser's own output, when this connection launched it. Read
         #: here only to say why the pipe closed.
@@ -879,6 +884,17 @@ class Connection(EventListeners):
         the pipe IS the exit command. `terminate()` remains only as a
         last resort, for whatever did not die on its own.
 
+        ⛔ IT RETURNS WHEN THE BROWSER HAS EXITED: the engine and the
+        processes that belong to it (content, GPU, socket, rdd, utility,
+        forkserver), told from the launch's job or process group. It does
+        not wait for the shutdown-ping sender, the one process Firefox
+        starts to outlive itself (`process.outlives_the_browser`: by its
+        command line), and it never ends it. What is left of the tree, the
+        job and the session's directories are the launch's `reaper`'s
+        (`process.Reaper`, a thread that is not a daemon, so the end of the
+        interpreter waits for it): `reaper.join()` is the wait for all of
+        it.
+
         Idempotent, and only the first call releases anything: a session has
         more than one way out, and a later call must not close a number that
         now belongs to another pipe. The read end is not closed here at all:
@@ -907,25 +923,29 @@ class Connection(EventListeners):
         deadline = time.monotonic() + timeout
         refreshed = time.monotonic()
         while p.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.05)
+            time.sleep(0.01)
             if tree is not None and time.monotonic() - refreshed >= TREE_REFRESH:
                 tree.remember()
                 refreshed = time.monotonic()
         # ⛔ ON WINDOWS THE PROCESS THE SPAWN RETURNED MAY BE THE LAUNCHER STUB, which has exited while the
-        # browser is still shutting down, so its exit says nothing about the tree: the tree is waited for
-        # through the launch's own job (its count of live processes, nothing of the machine is read), up
-        # to the same deadline.
-        if tree is not None:
-            tree.wait_job_empty(deadline)
+        # browser is still shutting down, so its exit says nothing about the tree: the browser is waited for
+        # through the launch's own job (nothing of the machine is read), up to the same deadline.
+        gone = p.poll() is not None
+        if gone and tree is not None:
+            gone = tree.wait_browser_gone(deadline)
         if p.poll() is None:
             try:
                 p.terminate()
             except OSError:
                 pass
-        # Then the launch's job is ended and closed: what is left of THIS launch goes, and no other
-        # browser's, and `close` returns once the kernel has finished (`EngineTree.release`).
-        if tree is not None:
-            tree.release()
+        # What is left of THIS launch is the reaper's, and no other browser's: it waits for the sender to finish
+        # (`SENDER_GRACE`), ends what stays, releases the job (the kernel ends whatever is left of the tree) and runs
+        # what the owner of the session handed to `reaper.then`. A browser that did not exit in time is ended now.
+        with self._close_lock:
+            if self.reaper is not None:
+                return
+            self.reaper = Reaper(tree, grace=_profile.SENDER_GRACE if gone else 0.0)
+        self.reaper.start()
 
     async def aclose(self, timeout: float = 5.0) -> None:
         """`close()` for an event loop: the waits happen in a thread of their own

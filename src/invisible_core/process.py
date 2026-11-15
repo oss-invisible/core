@@ -688,7 +688,7 @@ class EngineJob:
         while self.active():
             if time.monotonic() >= deadline:
                 return False
-            time.sleep(0.05)
+            time.sleep(0.02)
         return True
 
     def pids(self) -> List[int]:
@@ -756,13 +756,14 @@ TREE_REFRESH = 0.1
 CLOSED_KEPT = 64
 
 
-def _living_in_group(pgid: int) -> Optional[bool]:
-    """Whether a process of group `pgid` is alive and not a zombie, from one pass over `/proc/*/stat`
+def _pids_in_group(pgid: int) -> Optional[List[int]]:
+    """The pids of the living members of group `pgid` (a zombie is not one), from one pass over `/proc/*/stat`
     (`pid (comm) state ppid pgrp ...`: state and group only). None where it cannot be told."""
     try:
         names = os.listdir("/proc")
     except OSError:
-        return _living_in_group_by_psutil(pgid)
+        return _pids_in_group_by_psutil(pgid)
+    found: List[int] = []
     for name in names:
         if not name.isdigit():
             continue
@@ -770,23 +771,52 @@ def _living_in_group(pgid: int) -> Optional[bool]:
             with open("/proc/%s/stat" % name, "rb") as stat:
                 tail = stat.read().rpartition(b")")[2].split()
             if int(tail[2]) == pgid and tail[0] not in (b"Z", b"X"):
-                return True
+                found.append(int(name))
         except (OSError, ValueError, IndexError):     # gone since the listing
             continue
-    return False
+    return found
 
 
-def _living_in_group_by_psutil(pgid: int) -> Optional[bool]:
+def _pids_in_group_by_psutil(pgid: int) -> Optional[List[int]]:
     """The same without `/proc` (macOS): psutil reads the state, `getpgid` the group."""
     if psutil is None:
         return None
+    found: List[int] = []
     for proc in psutil.process_iter(["pid", "status"]):
         try:
             if proc.info["status"] != psutil.STATUS_ZOMBIE and os.getpgid(proc.pid) == pgid:
-                return True
+                found.append(proc.pid)
         except Exception:
             continue
-    return False
+    return found
+
+
+def _living_in_group(pgid: int) -> Optional[bool]:
+    """Whether a process of group `pgid` is alive and not a zombie. None where it cannot be told."""
+    pids = _pids_in_group(pgid)
+    return None if pids is None else bool(pids)
+
+
+#: The flag Firefox's background tasks are started with (`firefox -backgroundtask <name>`); it is accepted with one dash,
+#: two, or a slash.
+BACKGROUND_TASK_FLAGS = ("-backgroundtask", "--backgroundtask", "/backgroundtask")
+
+
+def outlives_the_browser(command: Optional[Iterable[str]]) -> bool:
+    """Whether a process, by its COMMAND LINE, is one the browser starts to outlive it: the shutdown-ping sender
+    (an executable named `pingsender`) or its background task (a `-backgroundtask` argument).
+
+    ⛔ BY WHAT THE PROCESS IS, never by being the one that is left: a content process the browser did not end is
+    left as well, and it is not allowed to survive. A command line that could not be read is not one of them."""
+    args = [str(a) for a in command or ()]
+    if not args:
+        return False
+    name = args[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    if name == "pingsender":
+        return True
+    return any(a.lower() in BACKGROUND_TASK_FLAGS for a in args[1:])
 
 
 def _running(proc: Any) -> bool:
@@ -858,6 +888,8 @@ class EngineTree:
         self.closed = False
         self._lock = threading.Lock()
         self._seen: Dict[int, Any] = {}
+        #: The pids whose command line says they outlive the browser (`wait_browser_gone`).
+        self._kind: Dict[int, bool] = {}
         self._root: Any = None
         if psutil is not None:
             try:
@@ -990,15 +1022,72 @@ class EngineTree:
         return found
 
     # ── waiting and ending ──────────────────────────────────────────────────
-    def wait_job_empty(self, deadline: float) -> None:
-        """Windows: waits until the job holds no process, or `deadline` (a
-        monotonic time). The stub the spawn returned may have exited while the
-        browser is still shutting down; the job's count is what says so. A group
-        is waited for by `end` (the grace the survivors of the browser are given),
-        not here."""
+    def wait_browser_gone(self, deadline: float) -> bool:
+        """Waits until the BROWSER has exited: the engine and every process that belongs to it (content, GPU, socket,
+        rdd, utility, forkserver) are gone, or `deadline` (a monotonic time). True when they are, False at the deadline.
+
+        The only processes allowed to be left are the ones Firefox starts to outlive itself, known by their command
+        line (`outlives_the_browser`): the shutdown-ping sender and its background task. They are not waited for and
+        not ended here (the launch's reaper lets them finish).
+
+        Windows asks the job, which holds the launcher stub's browser and every later process by construction; a
+        launch with a group asks the group (one pass over `/proc`, states and groups, then the command line of a
+        process not seen before); a tree of neither lists its descendants. The engine itself is the caller's to have
+        seen exit: a group whose leader is still running is not gone."""
         job = self.job
-        if job is not None and job.handle:
-            job.wait_empty(deadline)
+        while True:
+            if self.group:
+                if self._poll is not None and self._poll() is None:
+                    pids: Optional[List[int]] = [self.pid]
+                else:
+                    pids = self._group_pids()
+            elif job is not None and job.handle:
+                pids = job.pids()
+            else:
+                pids = [proc.pid for proc in self.members()]
+            if pids is None or all(self._survives(pid) for pid in pids):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+
+    def _group_pids(self) -> Optional[List[int]]:
+        """The living members of the group, once `killpg(pgid, 0)` says there are any; a group seen empty is gone for good."""
+        if self._gone:
+            return []
+        try:
+            os.killpg(self.pid, 0)
+        except ProcessLookupError:
+            self._gone = True
+            return []
+        except OSError:
+            pass
+        pids = _pids_in_group(self.pid)
+        if pids is not None and not pids:        # only zombies: nobody is left to wait for
+            self._gone = True
+        return pids
+
+    def _survives(self, pid: int) -> bool:
+        """Whether the process is one that outlives the browser, by its command line. A process that has gone since
+        the listing is not left, so it is not a reason to wait: True.
+
+        ⛔ ONLY AN ANSWER OF YES IS KEPT. A process the browser has forked and not yet executed still has the
+        browser's own command line, and asking again a moment later is what tells a sender from the content
+        process it was made out of."""
+        if self._kind.get(pid):
+            return True
+        if psutil is None:
+            return False
+        try:
+            command = psutil.Process(pid).cmdline()
+        except psutil.NoSuchProcess:
+            return True
+        except Exception:                        # not readable: not ours to call a survivor, and asked again
+            return False
+        if outlives_the_browser(command):
+            self._kind[pid] = True
+            return True
+        return False
 
     def _wait(self, procs: List[Any], timeout: float) -> List[Any]:
         """The ones of `procs` still alive after up to `timeout` seconds."""
@@ -1069,6 +1158,87 @@ class EngineTree:
                 job.wait_empty(time.monotonic() + JOB_END_WAIT)
             job.close()
         self.closed = True
+
+
+class Reaper(threading.Thread):
+    """What follows the exit of the browser, for ONE launch: it keeps the tree until nothing of it is left, ends what
+    stays past the grace, releases the launch (the job) and runs the steps handed to `then` (the removal of the
+    session's directories).
+
+    ⛔ THE CLOSE OF A BROWSER RETURNS WHEN THE BROWSER HAS EXITED (`EngineTree.wait_browser_gone`), NOT WHEN THE LAST
+    PROCESS OF ITS TREE HAS. What stays after it is the sender of the shutdown pings (`outlives_the_browser`), measured
+    at 0.6 s on Linux and 1.0 s on Windows, and nobody who closed a browser is waiting for it: this thread is. It
+    ends it only after `grace`, and never before it has finished.
+
+    A thread that is NOT a daemon: the interpreter's exit waits for it, so a program that closes its browser and
+    ends leaves neither a process of the tree nor a profile (a daemon would be dropped in the middle of the
+    removal). `join()` is the way to wait for all of it, for a caller who wants the guarantee at a point of its
+    own; it costs nothing when nothing was left, because every wait here is on a condition (the job empty, the
+    group empty), never on a time.
+    """
+
+    def __init__(self, tree: Optional[EngineTree], *, grace: float = 0.0, timeout: float = 5.0) -> None:
+        super().__init__(name="invisible-reaper", daemon=False)
+        self.tree = tree
+        self.grace = grace
+        self.timeout = timeout
+        self._lock = threading.Lock()
+        self._steps: List[Any] = []
+        self._finished = False
+
+    @property
+    def finished(self) -> bool:
+        """Whether the tree is ended and every step has run."""
+        return self._finished
+
+    def then(self, step: Any) -> None:
+        """Run `step()` once the tree is gone: by this thread when it is still working, at once by the caller when it
+        has finished. Never raises."""
+        with self._lock:
+            if not self._finished:
+                self._steps.append(step)
+                return
+        try:
+            step()
+        except Exception:
+            pass
+
+    def run(self) -> None:
+        tree = self.tree
+        if tree is not None:
+            try:
+                tree.end(grace=self.grace, timeout=self.timeout)
+            except Exception:
+                pass
+            try:
+                tree.release()
+            except Exception:
+                pass
+        while True:
+            with self._lock:
+                steps, self._steps = self._steps, []
+                if not steps:
+                    self._finished = True
+                    return
+            for step in steps:
+                try:
+                    step()
+                except Exception:
+                    pass
+
+    def start(self) -> None:
+        """Starts the thread; at the end of the interpreter, where a thread can no longer be made, the reaping is
+        done by the caller instead (the same work, on its thread)."""
+        try:
+            super().start()
+        except RuntimeError:
+            self.run()
+
+    def join(self, timeout: Optional[float] = None) -> None:
+        try:
+            super().join(timeout)
+        except RuntimeError:               # it was never started: `start` ran it
+            pass
 
 
 _registry_lock = threading.Lock()
