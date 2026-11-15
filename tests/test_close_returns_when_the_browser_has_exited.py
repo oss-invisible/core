@@ -263,15 +263,15 @@ def test_the_end_of_the_interpreter_waits_for_the_reaper_and_leaves_nothing(tmp_
 
 # ── the pieces ──────────────────────────────────────────────────────────────
 
-#: The sender's command line on Windows, as seen 67 times in one GitHub run (the uuid tail made up): the executable is the
+#: The sender's command line on Windows, as seen 67 times in one GitHub run (the directories and the uuid tail made up): the executable is the
 #: browser's own, and the task is `--backgroundtask pingsender`.
 WINDOWS_SENDER = [
-    r"C:\Users\runneradmin\AppData\Local\invisible-playwright\invisible-playwright\Cache\firefox-64_159.0_20261114003728\firefox.exe",
+    r"D:\cache\invisible-playwright\Cache\firefox-64_159.0_20261114003728\firefox.exe",
     "--backgroundtask", "pingsender",
     "https://incoming.telemetry.mozilla.org/submit/telemetry/de30146e-596a-4c1b-9d27-5e8f0a1b2c3d/event/Firefox/159.0/"
     "release/20261114003728?v=4",
 ]
-WINDOWS_PARENT = [WINDOWS_SENDER[0], "-no-remote", "-profile", r"C:\Users\runneradmin\AppData\Local\Temp\invisible_profile_1_ab",
+WINDOWS_PARENT = [WINDOWS_SENDER[0], "-no-remote", "-profile", r"D:\temp\invisible_profile_1_ab",
                   "-juggler-pipe"]
 WINDOWS_CONTENT = [WINDOWS_SENDER[0], "-contentproc", "--channel=1234.0.1234", "-childID", "1", "-isForBrowser", "-prefsHandle", "800",
                    "-prefMapHandle", "804", "-jsInitHandle", "808", "-parentBuildID", "20261114003728", "tab"]
