@@ -505,6 +505,44 @@ def _is_a_closed_pipe(exc: OSError) -> bool:
 STARTUP_CLOSE_WAIT = 5.0
 
 
+class PendingReply:
+    """The reply of a command already written (`Connection.send_async`), waited on whenever the caller chooses."""
+
+    __slots__ = ("_connection", "method", "_msg_id", "_ready", "_box")
+
+    def __init__(self, connection: "Connection", method: str, msg_id: int, ready: threading.Event, box: list) -> None:
+        self._connection = connection
+        self.method = method
+        self._msg_id = msg_id
+        self._ready = ready
+        self._box = box
+
+    def wait(self, timeout: Optional[float] = 30.0) -> tuple:
+        """The result and the place of the reply (see `Connection.send_placed`), raising what `send` raises.
+
+        ``timeout=None`` waits without a bound of its own: it still ends, because a closed pipe wakes every waiter at once with
+        TargetClosedError."""
+        conn = self._connection
+        method, msg_id, ready, box = self.method, self._msg_id, self._ready, self._box
+        arrived = ready.wait(timeout)
+        if not arrived:
+            with conn._lock:
+                conn._pending.pop(msg_id, None)
+            raise ReplyTimeout(
+                "%s: no response in %.0fs. If this is the FIRST command, "
+                "look at the readiness signal before the pipe."
+                % (method, timeout))
+        response, place = box[0]
+        if "closed" in response:
+            raise conn._closed_error(method)
+        if "interrupted" in response:
+            raise Interrupted(*response["interrupted"])
+        if "error" in response:
+            e = response["error"]
+            raise ProtocolError("%s: %s" % (method, e.get("message", e)))
+        return response.get("result"), place
+
+
 class Connection(EventListeners):
     """A pipe to an already-launched Firefox."""
 
@@ -701,6 +739,17 @@ class Connection(EventListeners):
         the page's process. The engine now ends that wait itself, inside the
         dispatch. [B230])
         """
+        return self.send_async(method, params, session).wait(timeout)
+
+    def send_async(self, method: str, params: Optional[dict] = None,
+                   session: Optional[str] = None) -> "PendingReply":
+        """Write a command and return at once, with the handle its reply is waited on later (`PendingReply.wait`).
+
+        ⛔ FOR A CALLER THAT SCHEDULES ON ITS OWN CLOCK (`_stroke.Stroke`): a command that must leave at an instant of its own plan
+        cannot wait for the reply of the one before it, because under load the engine answers late and everything behind the late
+        reply slips with it. `send` is this and the wait, in that order, and behaves exactly as it did; the wait of a handle that is
+        never waited on is simply not made (its pending entry is dropped with the reply, `_deliver`). A failure to write is raised
+        here, as in `send`; a closed pipe, an engine error or an interruption is raised by `wait`."""
         if self._closed:
             raise self._closed_error()
         with self._lock:
@@ -739,24 +788,7 @@ class Connection(EventListeners):
             with self._lock:
                 self._pending.pop(msg_id, None)
             raise self._closed_error()
-
-        arrived = ready.wait(timeout)
-        if not arrived:
-            with self._lock:
-                self._pending.pop(msg_id, None)
-            raise ReplyTimeout(
-                "%s: no response in %.0fs. If this is the FIRST command, "
-                "look at the readiness signal before the pipe."
-                % (method, timeout))
-        response, place = box[0]
-        if "closed" in response:
-            raise self._closed_error(method)
-        if "interrupted" in response:
-            raise Interrupted(*response["interrupted"])
-        if "error" in response:
-            e = response["error"]
-            raise ProtocolError("%s: %s" % (method, e.get("message", e)))
-        return response.get("result"), place
+        return PendingReply(self, method, msg_id, ready, box)
 
     def startup_send(self, method: str, params: Optional[dict] = None) -> Any:
         """A command that belongs to starting the browser: bounded by what is

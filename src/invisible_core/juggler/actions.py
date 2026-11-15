@@ -34,6 +34,7 @@ from . import _pacing
 from .connection import ReplyTimeout
 from .deadline import Deadline
 from .injected import ContextDestroyed, EvaluationError
+from ._stroke import Stroke
 from .keyboard import BUTTON_MASK, Keyboard
 
 #: The states a pointer action requires, in the order Playwright asks for
@@ -127,6 +128,12 @@ class Actions:
     #: LANDED, and the answers are kept in `_landings` by event type. None
     #: outside a commit. See `_act_on_target`.
     _landing_target = None
+
+    #: ⛔ THE STROKE THE POINTER'S EVENTS GO OUT IN (`_stroke.Stroke`), None outside one: a path, a click, a wheel notch. Each event
+    #: leaves at its planned instant on this client's clock and its reply is collected when the stroke ends, so what the engine
+    #: answers late never moves the next event. A mouse event sent outside a stroke (`mouse.down()`, one `mouse.move()`) waits for
+    #: its own reply, as it always did.
+    _stroke = None
 
     #: ⛔ THE BUTTONS THE MOUSE HOLDS DOWN, as the `buttons` bitmask (left 1,
     #: right 2, middle 4). It is the state of the mouse, so it lives here: set
@@ -1097,9 +1104,9 @@ class Actions:
         unmodified approach followed by a modified click, which no real input
         device produces.
         """
-        def emit(x, y):
+        def emit(x, y, at_ms=None):
             self._mouse_event("mousemove", (x, y), buttons=buttons,
-                              modifiers=modifiers)
+                              modifiers=modifiers, at_ms=at_ms, paced=at_ms is not None)
 
         if self.motion is None:
             if stop_short:
@@ -1144,7 +1151,10 @@ class Actions:
         elif not evs:  # a generator that produced nothing must still arrive
             emit(to_point[0], to_point[1])
             return 1
-        return _pacing.drive(evs, emit, origin=(x0, y0))
+        # ⛔ ONE STROKE FOR THE PATH, each point at its planned instant (`Ev.t_ms`): the pacer holds the clock and a reply is never
+        # waited for between two points.
+        with self._stroking():
+            return _pacing.drive(evs, emit, origin=(x0, y0), timed=True)
 
     def drag_and_drop(self, source: str, target: str, *,
                       timeout: Optional[float] = 30.0,
@@ -1238,12 +1248,12 @@ class Actions:
         """`mouse.wheel`, from where the pointer IS - not from 0,0, and born
         a few ms before the page sees it, as the mouse is ([B301])."""
         from ._behaviour import born
-        self.c.send("Page.dispatchWheelEvent",
-                    born({"x": self.position[0], "y": self.position[1],
-                          "deltaX": dx, "deltaY": dy, "deltaZ": 0,
-                          "modifiers": self.keyboard.modifier_mask()},
-                         self.input_latency, self.acts),
-                    session=self.session, timeout=None)
+        params = born({"x": self.position[0], "y": self.position[1],
+                       "deltaX": dx, "deltaY": dy, "deltaZ": 0,
+                       "modifiers": self.keyboard.modifier_mask()},
+                      self.input_latency, self.acts)
+        with self._stroking() as stroke:
+            stroke.send("Page.dispatchWheelEvent", params, 0.0)
 
     def _click_at_point(self, point, *, button: int = 0,
                         clicks: int = 1, modifiers: int = 0,
@@ -1260,18 +1270,21 @@ class Actions:
         dropped entirely: `event.shiftKey` came back false on a click the
         caller had explicitly modified, with no error anywhere."""
         plan = self._click_plan(clicks, delay_ms)
-        for n in range(1, clicks + 1):
-            dwell_ms, gap_ms = plan[n - 1]
-            self._mouse_event("mousedown", point, button=button,
-                              buttons=self._pressed | BUTTON_MASK[button],
-                              click_count=n, modifiers=modifiers)
-            if dwell_ms > 0.0:
-                time.sleep(dwell_ms / 1000.0)
-            self._mouse_event("mouseup", point, button=button,
-                              buttons=self._pressed & ~BUTTON_MASK[button],
-                              click_count=n, modifiers=modifiers)
-            if gap_ms > 0.0:
-                time.sleep(gap_ms / 1000.0)
+        # ⛔ ONE STROKE FOR THE CLICK: each press goes at its planned instant (`at`) and none waits for the reply of the one before
+        # it. The release is the press plus its dwell, the next press that plus the gap, and the stroke runs to the end of the last gap.
+        at = 0.0
+        with self._stroking() as stroke:
+            for n in range(1, clicks + 1):
+                dwell_ms, gap_ms = plan[n - 1]
+                self._mouse_event("mousedown", point, button=button,
+                                  buttons=self._pressed | BUTTON_MASK[button],
+                                  click_count=n, modifiers=modifiers, at_ms=at)
+                at += max(dwell_ms, 0.0)
+                self._mouse_event("mouseup", point, button=button,
+                                  buttons=self._pressed & ~BUTTON_MASK[button],
+                                  click_count=n, modifiers=modifiers, at_ms=at)
+                at += max(gap_ms, 0.0)
+            stroke.hold_until(at)
 
     def _approach_to_press(self, point, *, modifiers: int = 0) -> int:
         """`_approach`, then the hand's pause before it presses (B271).
@@ -1451,9 +1464,13 @@ class Actions:
                 held, still_since = seen, time.monotonic()
 
     # ── the tools ───────────────────────────────────────────────────────────
+    def _stroking(self):
+        """The stroke the next events go out in: the one running, or a new one that ends with the block."""
+        return Stroke.within(self, self.c, self.session, now=lambda: time.monotonic(), wait=lambda s: time.sleep(s))
+
     def _mouse_event(self, event_type: str, point, *, button: int = 0,
                      buttons: Optional[int] = None, click_count: Optional[int] = None,
-                     modifiers: int = 0):
+                     modifiers: int = 0, at_ms: Optional[float] = None, paced: bool = False):
         if buttons is None:
             buttons = self._pressed
         p = {"type": event_type, "x": point[0], "y": point[1],
@@ -1477,6 +1494,19 @@ class Actions:
         # (`InputLatency`, [B299]); the engine keeps the births in order.
         from ._behaviour import born
         born(p, self.input_latency, self.acts)
+        if self._stroke is not None:
+            # In a stroke the event leaves at `at_ms` (its planned instant, from the start of the stroke; now when none is given)
+            # and its reply is read when the stroke ends: the landing is kept then, before the commit that sent it returns.
+            landing = self._landing_target is not None
+
+            def kept(answer, event_type=event_type, landing=landing):
+                if landing:
+                    self._landings[event_type] = (answer or {}).get("landing")
+            self._stroke.send("Page.dispatchMouseEvent", p,
+                              self._stroke.elapsed_ms() if at_ms is None else at_ms,
+                              paced=paced, on_result=kept)
+            self.position = (point[0], point[1])
+            return
         # No bound of its own: the engine answers once the page has handled
         # the event, and bounds that wait itself (`_awaitInputHandled`, 5 s).
         answer = self.c.send("Page.dispatchMouseEvent", p,
