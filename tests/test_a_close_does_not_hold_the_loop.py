@@ -76,7 +76,7 @@ _ENGINE = textwrap.dedent("""
 #: The client: two browsers made by the real `instance.launch` (only the executable is the stand-in), one closed while a sentinel
 #: task on the loop measures how long the loop stays still, then the other. Prints one JSON line.
 _CLIENT = textwrap.dedent("""
-    import asyncio, json, os, sys, time
+    import asyncio, json, os, sys, threading, time, traceback
     import psutil
     from invisible_core.juggler import connection, instance
     from invisible_core.process import SessionToken, find_processes
@@ -131,6 +131,8 @@ _CLIENT = textwrap.dedent("""
         psutil.Process.environ = lambda self: (scans.append("environ"), real_environ(self))[1]
 
         stop, gaps = asyncio.Event(), []
+        beat, holes, over = [time.monotonic()], [], threading.Event()
+        main_id = threading.get_ident()
 
         async def sentinel():
             last = time.monotonic()
@@ -138,8 +140,65 @@ _CLIENT = textwrap.dedent("""
                 await asyncio.sleep(0.005)
                 now = time.monotonic()
                 gaps.append(now - last)
-                last = now
+                last = beat[0] = now
 
+        def stacks():
+            frames = sys._current_frames()
+            names = {{t.ident: t.name for t in threading.enumerate()}}
+            return {{
+                "main": "".join(traceback.format_stack(frames[main_id])[-6:]),
+                "others": {{names.get(i, str(i)): "".join(traceback.format_stack(f)[-3:])
+                           for i, f in frames.items() if i != main_id and i != threading.get_ident()}}}}
+
+        def idle(frame):
+            # True when the main thread is waiting in the event loop's selector: it is not running anything of anybody's.
+            for _ in range(3):
+                if frame is None:
+                    return False
+                code = frame.f_code
+                if code.co_name in ("_poll", "select") and code.co_filename.endswith(("windows_events.py", "selectors.py")):
+                    return True
+                frame = frame.f_back
+            return False
+
+        held = [0.0]
+
+        def watcher():
+            # A loop that wakes late has two very different causes. The machine did not schedule it (a loaded host: an idle
+            # loop with nothing in it is 140 ms late now and then, measured), and then the main thread is idle in the
+            # selector; or something holds it, and then the main thread is INSIDE that something. `held` is the lateness of
+            # the second kind only, which is what a close on the loop is. Each 30 ms of lateness takes a look at every
+            # thread, so a failure names where they were instead of a number.
+            looked = 0
+            while not over.is_set():
+                time.sleep(0.003)
+                late = time.monotonic() - beat[0]
+                level = int(late / 0.03)
+                if late > 0.03 and not idle(sys._current_frames().get(main_id)):
+                    held[0] = max(held[0], late)
+                if level > looked:
+                    holes.append({{"late_ms": round(late * 1000), **stacks()}})
+                looked = level
+
+        # What the loop's own thread runs while the close is awaited: every blocking step a close makes, by the thread that made it.
+        import shutil
+        on_the_loop, real = [], {{}}
+
+        def watched(owner, name):
+            real[(owner, name)] = original = getattr(owner, name)
+
+            def call(*x, **k):
+                if threading.get_ident() == main_id and not over.is_set():
+                    on_the_loop.append(name)
+                return original(*x, **k)
+            setattr(owner, name, call)
+
+        watched(time, "sleep")
+        watched(os, "close")
+        watched(shutil, "rmtree")
+        watched(psutil, "wait_procs")
+
+        threading.Thread(target=watcher, daemon=True, name="the-watcher").start()
         watch = asyncio.create_task(sentinel())
         await asyncio.sleep(0.1)
         files_a = (a._files.profile, a._files.tmp)
@@ -149,11 +208,14 @@ _CLIENT = textwrap.dedent("""
         took = time.monotonic() - started
         stop.set()
         await watch
+        over.set()
+        for (owner, name), original in real.items():
+            setattr(owner, name, original)
         psutil.process_iter, psutil.Process.environ = real_iter, real_environ
         time.sleep(0.2)
         pa = pids_of(a)                       # the straggler's pid is printed while it closes
         report = {{
-            "gap": max(gaps), "took": took, "scans": scans, "leader": leader,
+            "gap": max(gaps), "took": took, "scans": scans, "leader": leader, "holes": holes[:4], "held": held[0], "on_the_loop": on_the_loop,
             "a_pids": len(pa), "a_alive": alive(pa),
             "a_dirs": [d for d in files_a if os.path.exists(d)],
             "zombies": [p for p in pa if psutil.pid_exists(p) and psutil.Process(p).status() == psutil.STATUS_ZOMBIE],
@@ -179,6 +241,16 @@ def _run_client(tmp_path, engine, how, *more):
     assert done.returncode == 0 and lines, (
         "the client failed (%s):\n%s\n%s" % (done.returncode, done.stdout[-2000:], done.stderr[-4000:]))
     return json.loads(lines[-1][len("REPORT "):])
+
+
+def _holes(report):
+    """What the client saw while its loop was late: the main thread's stack and the other threads' tops."""
+    out = []
+    for hole in report.get("holes") or []:
+        out.append("--- the loop was %d ms late. MAIN THREAD:\n%s" % (hole["late_ms"], hole["main"]))
+        for name, stack in hole["others"].items():
+            out.append("--- thread %s:\n%s" % (name, stack))
+    return "\n".join(out) or "(no look was taken: the lateness was gone before a look, or the whole process was not scheduled)"
 
 
 @pytest.fixture(scope="module")
@@ -209,16 +281,29 @@ def test_the_instrument_sees_a_loop_that_is_held(control):
     assert control["gap"] > 0.5 * control["took"] > 0.15, (
         "the sentinel did not notice a close made on the loop itself: gap %.0f ms of a close of %.0f ms"
         % (control["gap"] * 1000, control["took"] * 1000))
+    assert control["held"] > 0.5 * control["took"], (
+        "the watcher did not tell a held loop from a starved one: held %.0f ms of a close of %.0f ms"
+        % (control["held"] * 1000, control["took"] * 1000))
+    assert control["on_the_loop"], "no blocking step of the close was seen on the loop's thread, closing it there"
 
 
 @pytest.mark.wall_clock
 def test_the_loop_is_not_held_while_a_browser_closes(report):
-    """The loop stood still for the whole of the close, seconds, when a client made it on the loop. Measured by a task that asks to
-    wake every 5 ms and writes down the longest it waited."""
+    """The loop stood still for the whole of the close, seconds, when a client made it on the loop. A sentinel task asks to wake every
+    5 ms and the watcher thread writes down how late it was, and where the main thread was: waiting in the selector (the machine did
+    not run it: on a loaded host an idle loop is 140 ms late now and then, so that is not the close's doing and is not counted), or
+    inside something (held). Nothing may hold it for 50 ms."""
     assert report["took"] > 0.3, "the close finished before the engine could have exited: nothing was waited for"
-    assert report["gap"] < 0.05, (
-        "the loop stood still for %.0f ms while a browser closed (the close took %.0f ms)"
-        % (report["gap"] * 1000, report["took"] * 1000))
+    assert report["held"] < 0.05, (
+        "the loop was held for %.0f ms while a browser closed (the close took %.0f ms; the longest wake was %.0f ms late). "
+        "Where the threads were while it was late:\n%s"
+        % (report["held"] * 1000, report["took"] * 1000, report["gap"] * 1000, _holes(report)))
+
+
+def test_no_blocking_step_of_the_close_runs_on_the_loop_s_thread(report):
+    """The cause, asked directly and without the clock: `time.sleep`, `os.close`, `rmtree` and `psutil.wait_procs` are what a close
+    does while it waits and removes, and none of them may be called by the thread that runs the loop. Red on a close made inline."""
+    assert report["on_the_loop"] == [], "the loop's own thread made these calls while it awaited the close: %s" % report["on_the_loop"]
 
 
 def test_closing_a_browser_reads_no_process_of_the_machine_and_no_environment(report):
@@ -420,5 +505,5 @@ def test_a_group_of_zombies_is_empty_so_a_close_does_not_wait_for_nobody(subreap
     assert subreaped["zombies"], "the setup is not the one under test: nothing was left a zombie: %r" % subreaped
     assert subreaped["took"] < 1 + 2, (
         "the close waited %.1f s for a group of zombies (the straggler lives 1 s)" % subreaped["took"])
-    assert subreaped["gap"] < 0.05, "the loop stood still for %.0f ms" % (subreaped["gap"] * 1000)
+    assert subreaped["held"] < 0.05, "the loop was held for %.0f ms:\n%s" % (subreaped["held"] * 1000, _holes(subreaped))
     assert subreaped["a_dirs"] == [], "the closed browser left its directories: %s" % subreaped["a_dirs"]
