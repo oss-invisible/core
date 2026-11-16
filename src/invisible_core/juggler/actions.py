@@ -1104,9 +1104,8 @@ class Actions:
         unmodified approach followed by a modified click, which no real input
         device produces.
         """
-        def emit(x, y, at_ms=None):
-            self._mouse_event("mousemove", (x, y), buttons=buttons,
-                              modifiers=modifiers, at_ms=at_ms, paced=at_ms is not None)
+        def emit(x, y):
+            self._mouse_event("mousemove", (x, y), buttons=buttons, modifiers=modifiers)
 
         if self.motion is None:
             if stop_short:
@@ -1151,10 +1150,37 @@ class Actions:
         elif not evs:  # a generator that produced nothing must still arrive
             emit(to_point[0], to_point[1])
             return 1
-        # ⛔ ONE STROKE FOR THE PATH, each point at its planned instant (`Ev.t_ms`): the pacer holds the clock and a reply is never
-        # waited for between two points.
-        with self._stroking():
-            return _pacing.drive(evs, emit, origin=(x0, y0), timed=True)
+        return self.walk(evs, origin=(x0, y0), buttons=buttons, modifiers=modifiers)
+
+    def walk(self, events, *, origin: Optional[tuple] = None, buttons: Optional[int] = None, modifiers: int = 0,
+             emit_last: bool = True, now=None, sleep=None) -> int:
+        """Walk a timeline of the pointer as ONE stroke. Returns the number of events delivered.
+
+        ⛔ A PATH IS A STROKE, WHOEVER DREW IT. `events` are the `_pacing.Ev` of a plan (a move, or a wheel notch with its `dx`, `dy`),
+        each with its planned instant `t_ms` from the start of the walk. The `Pacer` holds the clock and decides which events go and
+        which are dropped; each event that goes leaves at its instant carrying `stroke` and `at`, and no reply is waited for between two
+        of them: a slow reply of the engine is never a pause in the path. The replies are collected when the walk ends, and the first
+        failure, in order, is the call's. The client that draws its own cursor (the Playwright wrapper) and the approach this side draws
+        (`_glide`) both come here; a second copy of this loop is the defect it replaced.
+
+        `origin` is where the pointer is before the first event (the pacer's reach is measured from it; the position by default).
+        `emit_last` False leaves the last event to the caller, as `Pacer` defines it. `buttons` and `modifiers` ride on every move
+        like on a single one. `now` and `sleep` are the pacer's clock (a test's); the real one by default."""
+        evs = list(events)
+        if not evs:
+            return 0
+        joined = self._stroke is not None
+        with self._stroking() as stroke:
+            # A walk inside a stroke that already runs (a gesture made of gestures) is measured from that stroke's start.
+            base = stroke.elapsed_ms() if joined else 0.0
+
+            def move(x, y, t_ms):
+                self._mouse_event("mousemove", (x, y), buttons=buttons, modifiers=modifiers, at_ms=base + t_ms, paced=True)
+
+            def wheel(dx, dy, t_ms):
+                self.wheel(dx, dy, at_ms=base + t_ms, paced=True)
+            return _pacing.drive(evs, move, emit_wheel=wheel, emit_last=emit_last, now=now, sleep=sleep,
+                                 origin=self.position if origin is None else origin, timed=True)
 
     def drag_and_drop(self, source: str, target: str, *,
                       timeout: Optional[float] = 30.0,
@@ -1216,7 +1242,8 @@ class Actions:
     # ── the pointer, by coordinates ─────────────────────────────────────────
     def move(self, x: float, y: float, *, steps: int = 1) -> None:
         """`mouse.move`. With `steps > 1` it interpolates, like Playwright
-        does."""
+        does: the caller's explicit call with stock Playwright's meaning, single commands in a row, each waiting for its reply. It is
+        not a human path: the humanised cursor's path goes through `walk`."""
         x0, y0 = self.position
         for i in range(1, max(1, steps) + 1):
             self._mouse_event("mousemove",
@@ -1244,16 +1271,17 @@ class Actions:
         self._click_at_point((x, y), button=button, clicks=clicks,
                              delay_ms=delay_ms)
 
-    def wheel(self, dx: float, dy: float) -> None:
+    def wheel(self, dx: float, dy: float, *, at_ms: Optional[float] = None, paced: bool = False) -> None:
         """`mouse.wheel`, from where the pointer IS - not from 0,0, and born
-        a few ms before the page sees it, as the mouse is ([B301])."""
+        a few ms before the page sees it, as the mouse is ([B301]). A notch of a walk (`walk`) carries its own instant (`at_ms`) and
+        the pacer has already waited for it (`paced`); a lone one is a stroke of its own."""
         from ._behaviour import born
         params = born({"x": self.position[0], "y": self.position[1],
                        "deltaX": dx, "deltaY": dy, "deltaZ": 0,
                        "modifiers": self.keyboard.modifier_mask()},
                       self.input_latency, self.acts)
         with self._stroking() as stroke:
-            stroke.send("Page.dispatchWheelEvent", params, 0.0)
+            stroke.send("Page.dispatchWheelEvent", params, 0.0 if at_ms is None else at_ms, paced=paced)
 
     def _click_at_point(self, point, *, button: int = 0,
                         clicks: int = 1, modifiers: int = 0,
