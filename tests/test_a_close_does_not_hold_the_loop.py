@@ -567,18 +567,30 @@ class _NoSearch:
                             lambda proc: (self.calls.append("environ"), {})[1])
 
 
+#: A process that says its own pid and stays. The processes of a test are counted by the pids they report, never by how many the
+#: tree holds: where the interpreter is a venv's launcher (Windows), `sys.executable` is a process that starts the real interpreter as
+#: its child, so the tree of a `Popen` of it holds two processes, and both are the test's own.
+_SAY_MY_PID = "import os, time; print(os.getpid(), flush=True); time.sleep(60)"
+
+
+def _spawn_saying_its_pid():
+    """(the Popen, the pids of the processes this started: the Popen's own and the one that said its pid)."""
+    child = subprocess.Popen([sys.executable, "-c", _SAY_MY_PID], stdout=subprocess.PIPE, text=True)
+    return child, {child.pid, int(child.stdout.readline())}
+
+
 @pytest.mark.unit
 def test_a_registered_token_is_listed_and_ended_from_its_tree_not_searched(monkeypatch):
     import psutil
 
     searched = _NoSearch(monkeypatch)
     token = P.SessionToken.mint()
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    child, ours = _spawn_saying_its_pid()
     try:
         tree = P.EngineTree(child.pid)
         P.register_tree(token, tree)
-        assert [p.pid for p in P.find_processes(token)] == [child.pid]
-        assert P.reap_session(token, timeout=5) == 1
+        assert {p.pid for p in P.find_processes(token)} == ours
+        assert P.reap_session(token, timeout=5) == len(ours)
         child.wait(timeout=10)
         assert P.find_processes(token) == []
         assert not psutil.pid_exists(child.pid) or child.poll() is not None
@@ -587,6 +599,7 @@ def test_a_registered_token_is_listed_and_ended_from_its_tree_not_searched(monke
         if child.poll() is None:
             child.kill()
             child.wait()
+        child.stdout.close()
 
 
 @pytest.mark.unit
@@ -600,9 +613,9 @@ def test_a_token_no_launch_registered_is_still_searched_for(monkeypatch):
     assert seen == [1]
 
 
-_GRANDCHILD = ("import subprocess, sys, time; "
-               "k = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
-               "print(k.pid, flush=True); time.sleep(60)")
+_GRANDCHILD = ("import os, subprocess, sys, time; "
+               "k = subprocess.Popen([sys.executable, '-c', %r], stdout=subprocess.PIPE, text=True); "
+               "print(os.getpid(), k.pid, k.stdout.readline().strip(), flush=True); time.sleep(60)" % _SAY_MY_PID)
 
 
 @pytest.mark.unit
@@ -611,19 +624,23 @@ def test_the_tree_of_an_engine_is_its_descendants_listed_in_one_pass():
 
     engine = subprocess.Popen([sys.executable, "-c", _GRANDCHILD], stdout=subprocess.PIPE, text=True)
     try:
-        grandchild = int(engine.stdout.readline())
+        engine_said, grandchild_launched, grandchild_said = (int(n) for n in engine.stdout.readline().split())
+        engines = {engine.pid, engine_said}
+        grandchildren = {grandchild_launched, grandchild_said}
         tree = P.EngineTree(engine.pid)
-        assert {p.pid for p in tree.members()} == {engine.pid, grandchild}
+        assert {p.pid for p in tree.members()} == engines | grandchildren
         tree.remember()
-        engine.kill()
+        # The engine is gone (the process that said its pid, whose launcher ends with it) and its child is reparented: it is still the
+        # tree's, because it was listed while its parent lived.
+        psutil.Process(engine_said).kill()
         engine.wait()
-        # The engine is gone and its child is reparented: it is still the tree's, because it was listed while its parent lived.
-        assert {p.pid for p in tree.members()} == {grandchild}
-        assert tree.end(timeout=5) == 1
+        assert {p.pid for p in tree.members()} == grandchildren
+        assert tree.end(timeout=5) == len(grandchildren)
         assert tree.members() == []
-        assert not psutil.pid_exists(grandchild) or not psutil.Process(grandchild).is_running()
+        assert not any(psutil.pid_exists(pid) and psutil.Process(pid).is_running() for pid in grandchildren)
     finally:
         engine.kill()
+        engine.stdout.close()
 
 
 @pytest.mark.unit
