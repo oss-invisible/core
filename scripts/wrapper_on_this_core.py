@@ -97,7 +97,7 @@ EXCLUDED = (
     ("windows", "tests/test_fission_strategy1_bench.py::test_cross_site_iframe_gets_its_own_process",
      "the same oracle as the test above: it asks for the processes of a site by name on its first "
      "line, and tests/_processes.py skips off Linux"),
-    (None, "tests/test_juggler_transport.py::test_the_workbench_inventory_and_the_package_cannot_DRIFT",
+    (None, "tests/test_the_working_clone_has_the_workbench_next_to_it.py::test_the_workbench_inventory_and_the_package_cannot_DRIFT",
      "reads a script of the maintainer's workbench, which no clone has (pytest.skip)"),
     (None, "tests/test_juggler_injected.py::test_OUR_CLIENT_DOES_NOT_CROSS_into_the_page_realm",
      "reads a trap page of the maintainer's workbench, which no clone has (pytest.skip)"),
@@ -231,8 +231,8 @@ WITNESSES = {
         _w_processes_by_site("test_same_site_other_port_stays_in_process"),
     "tests/test_fission_strategy1_bench.py::test_cross_site_iframe_gets_its_own_process":
         _w_processes_by_site("test_cross_site_iframe_gets_its_own_process"),
-    "tests/test_juggler_transport.py::test_the_workbench_inventory_and_the_package_cannot_DRIFT":
-        _w_workbench("tests/test_juggler_transport.py", "test_the_workbench_inventory_and_the_package_cannot_DRIFT",
+    "tests/test_the_working_clone_has_the_workbench_next_to_it.py::test_the_workbench_inventory_and_the_package_cannot_DRIFT":
+        _w_workbench("tests/test_the_working_clone_has_the_workbench_next_to_it.py", "test_the_workbench_inventory_and_the_package_cannot_DRIFT",
                      "the workbench is not next to this checkout", "scripts/inventario_voce6.py", 3),
     "tests/test_juggler_injected.py::test_OUR_CLIENT_DOES_NOT_CROSS_into_the_page_realm":
         _w_workbench("tests/test_juggler_injected.py", "test_OUR_CLIENT_DOES_NOT_CROSS_into_the_page_realm",
