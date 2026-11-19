@@ -72,7 +72,7 @@ def write_user_js(profile_dir: "str | os.PathLike[str]", prefs: Dict[str, Any]) 
     first real run. Bytes, not text: a text-mode write on Windows translates
     every newline, and a prefs file is read by the browser, not by git.
     """
-    # ⛔ THE PREFERRED INTERMEDIATES FILE IS DECLARED HERE, AND ONLY HERE: this is the one writer, so every launch of the core and of the wrapper passes
+    # ⛔ THE PRELOADED INTERMEDIATES FILE IS DECLARED HERE, AND ONLY HERE: this is the one writer, so every launch of the core and of the wrapper passes
     # through it exactly once, and the pref has one author. The cached file is a fact of the machine, not of the seed, so no composer of prefs knows it.
     # A pref the caller already gave wins (and nothing is fetched); a cold cache downloads in line; with no list and no network there is NO line and the
     # warning is said once (`_intermediates.ensure_intermediates`). The weekly check is not made here but after the browser has started (`connection.launch`).
