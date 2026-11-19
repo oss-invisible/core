@@ -197,9 +197,9 @@ def _no_egress_discovery(monkeypatch, request):
     `_geo.discover_egress_ip` or `_geo._http_get`, which overrides this;
     an `e2e` test gets the network.
 
-    The direct exit is kept for two minutes per process (`_geo._egress_kept`),
-    so each test also starts with nothing kept and nothing in flight: an answer
-    one test chose must not be the answer of the next.
+    The core keeps no exit between two calls; a request still in flight
+    (`_geo._egress_flight`) is cleared, so each test starts with nothing in
+    flight: an answer one test chose must not be the answer of the next.
     """
     if request.node.get_closest_marker("e2e"):
         return
@@ -211,7 +211,6 @@ def _no_egress_discovery(monkeypatch, request):
             "monkeypatch invisible_core._geo.discover_egress_ip to give it one")
 
     monkeypatch.setattr(_geo, "_http_get", refuse)
-    monkeypatch.setattr(_geo, "_egress_kept", None)
     monkeypatch.setattr(_geo, "_egress_flight", None)
 
 
