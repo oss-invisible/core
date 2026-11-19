@@ -34,6 +34,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import pathlib
 import signal
 import subprocess
 import sys
@@ -1449,6 +1450,32 @@ def _spawn_posix(executable, argv, env):
 LAUNCH_EVENT = "invisible_core.engine.launch"
 
 
+def _declare_intermediates(profile_dir: str) -> None:
+    """Declare the preloaded intermediates file to the engine: ONE line in the profile's `user.js`, the pref `INTERMEDIATES_PREF` with the file's absolute path.
+
+    HERE because this is the one place the clients' launches meet: the core's own (`instance.launch`) and the wrapper's server both write their `user.js` and
+    then call `launch`, and the cached file is a fact of the machine, not of the seed, so no composer of prefs can know it. It is the only declaration of
+    the pref. A cold cache downloads in line (nothing else could be declared); with no list and no network the line is not written and the engine starts
+    without one. A pref the caller already wrote is the caller's: it wins and nothing is fetched."""
+    from .. import _intermediates
+    from ..constants import INTERMEDIATES_PREF
+    from ..launch import _pref_literal
+
+    directory = pathlib.Path(profile_dir)
+    if not directory.is_dir():
+        return
+    user_js = directory / "user.js"
+    text = user_js.read_text(encoding="utf-8", errors="replace") if user_js.is_file() else ""
+    if json.dumps(INTERMEDIATES_PREF) in text:
+        return
+    path = _intermediates.ensure_intermediates()
+    if path is None:
+        return
+    line = "user_pref(%s, %s);\n" % (json.dumps(INTERMEDIATES_PREF), _pref_literal(INTERMEDIATES_PREF, str(path)))
+    with open(user_js, "ab") as f:
+        f.write((("\n" if text and not text.endswith("\n") else "") + line).encode("utf-8"))
+
+
 def launch(executable: str, profile_dir: str, *, headless: bool = True,
           argv_extra: Optional[list] = None, env: Optional[dict] = None,
           ready_timeout: Optional[float] = 60.0,
@@ -1493,8 +1520,12 @@ def launch(executable: str, profile_dir: str, *, headless: bool = True,
     argv.append("-silent")
 
     full_env = _engine_env.compose(os.environ if env is None else env, locale)
+    _declare_intermediates(profile_dir)
     spawn = _spawn_windows if sys.platform == "win32" else _spawn_posix
     to_browser, from_browser, p = spawn(executable, argv, full_env)
+    # The check of the intermediates list that has fallen due is made only now that the browser is running, in a thread: a launch never waits for Mozilla.
+    from .. import _intermediates
+    _intermediates.refresh_intermediates_in_background()
     # ⛔ THE SESSION'S TOKEN MEANS THIS LAUNCH'S TREE from here on: `find_processes` and `reap` list and end it from the
     # tree (its job, its engine's descendants) instead of searching the machine for the processes that carry the token.
     tree = getattr(p, "tree", None)

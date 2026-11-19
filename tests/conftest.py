@@ -154,6 +154,21 @@ def _no_geoip_download(monkeypatch, request):
                         raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_intermediates_download(monkeypatch, request):
+    """The launch declares Mozilla's intermediates list (`juggler.connection.launch`), and a launch is made by many tests that think they are hermetic.
+
+    A cold cache would download the list from Mozilla in line, and a warm one would start a background check, so the two functions the launch calls are
+    stubbed, as `ensure_geoip_mmdb` is above: no list, no thread, no request. The tests of the list itself (`test_intermediates_*`) bring the real ones
+    back by name, and a test marked `e2e` (it needs the network, by that marker's own definition) gets them untouched."""
+    if request.node.get_closest_marker("e2e"):
+        return
+    import invisible_core._intermediates as _im
+
+    monkeypatch.setattr(_im, "ensure_intermediates", lambda *a, **kw: None)
+    monkeypatch.setattr(_im, "refresh_intermediates_in_background", lambda *a, **kw: None)
+
+
 class _ExitNotAskedInTests(ConnectionError):
     """What a hermetic test gets when it asks the network for its exit."""
 
