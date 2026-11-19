@@ -58,8 +58,9 @@ from .download import DOWNLOAD_ATTEMPTS, _with_retries, state_dir
 
 __all__ = ["ensure_intermediates", "refresh_intermediates_in_background", "intermediates_path"]
 
-#: How often Mozilla is asked whether the collection changed: once per interval, kept in a file beside the versions (the same rule as GeoIP's).
-INTERMEDIATES_CHECK_INTERVAL_S = 24 * 3600
+#: How often Mozilla is asked whether the collection changed: once a WEEK, kept in a file beside the versions. Mozilla adds about one intermediate a day
+#: (19/11/2026: 1,853 records, 35 new in 28 days), so a week-old list lacks a handful of certificates, the ones a retail Firefox would also lack for days.
+INTERMEDIATES_CHECK_INTERVAL_S = 7 * 24 * 3600
 
 #: The collection's name as the file says it.
 _COLLECTION = "security-state/intermediates"

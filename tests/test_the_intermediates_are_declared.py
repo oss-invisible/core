@@ -196,6 +196,25 @@ def test_a_cached_list_is_returned_and_the_network_is_not_asked(cache, mozilla, 
     assert mozilla.calls == []
 
 
+@pytest.mark.parametrize("days_ago, due", [(2, False), (6, False), (8, True)])
+def test_mozilla_is_asked_at_most_once_a_week(cache, mozilla, days_ago, due):
+    """The known-bad is the daily check GeoIP has: the list is asked about once a WEEK. A check recorded two or six days ago starts no refresh and asks
+    nobody; one recorded eight days ago does start one."""
+    import time as _time
+    _put_version(cache, 1000)
+    state = asset.check_state_path(_root(cache))
+    state.write_text(json.dumps({"checked_at": _time.time() - days_ago * 24 * 3600}), encoding="utf-8")
+    if not due:
+        mozilla.forbidden = True
+    thread = im.refresh_intermediates_in_background()
+    if due:
+        assert thread is not None, "a check eight days old must start a refresh"
+        thread.join(30)
+    else:
+        assert thread is None
+        assert mozilla.calls == []
+
+
 # --- b. the launch returns while the refresh is still asking; the new list appears whole; and only after the browser started -------------------------------
 
 def _launch(monkeypatch, profile: Path, log: list):
