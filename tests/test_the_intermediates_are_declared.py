@@ -1,10 +1,10 @@
-"""The preloaded intermediate certificates are declared by the core, from a list it downloaded and checked, and a launch never waits for Mozilla.
+"""The preloaded intermediate certificates are declared by the core, from a list it downloaded and checked; a launch never waits for Mozilla and starts no thread
+for it, and the one who looks for a newer list is `update_intermediates` (the `fetch` command).
 
 A retail Firefox has the intermediates of the public web in cert_storage from its first second (Mozilla's Remote Settings collection `security-state/intermediates`).
 The engine does not sync that collection any more: the core downloads the list (from the user's Python), verifies it, caches it, and the launch declares the file
 to the engine with the pref `zoom.stealth.intermediates.file`. Nothing here reaches Mozilla: the transport (`_intermediates._get`, the module's one network seam) is a
-fake that serves a synthetic collection built from certificates made in this file, and answers in whatever order and at whatever moment the test says. No test
-measures a time: the waits are events, the asserts are on what happened and in which order.
+fake that serves a synthetic collection built from certificates made in this file. No test measures a time: the asserts are on what happened and in which order.
 """
 from __future__ import annotations
 
@@ -35,9 +35,8 @@ from test_a_launch_has_one_deadline import _Browser
 
 pytestmark = pytest.mark.unit
 
-#: The two functions the launch calls, as they are in the package: the conftest of the suite stubs them for every test that is not about them.
+#: The function the launch calls, as it is in the package: the conftest of the suite stubs it for every test that is not about it.
 REAL_ENSURE = im.ensure_intermediates
-REAL_REFRESH = im.refresh_intermediates_in_background
 
 BASE = "https://attachments.invalid/"
 CHANGESET = "https://firefox.settings.services.mozilla.com/v2/buckets/security-state/collections/intermediates/changeset?"
@@ -85,8 +84,6 @@ class Mozilla:
         self.missing_from_bundle: set = set()
         self.forbidden = False
         self.offline = False
-        self.gate = None                              # when set (a threading.Event), the changes feed waits on it
-        self.reached_gate = threading.Event()         # set the moment a request is waiting on the gate
         for i, name in enumerate(names):
             self.add(name, "rec-%d" % i)
 
@@ -120,9 +117,6 @@ class Mozilla:
         if self.offline:
             raise requests.ConnectionError("no route to host")
         if url == INTERMEDIATES_LATEST_URL:
-            if self.gate is not None:
-                self.reached_gate.set()
-                assert self.gate.wait(30), "the test never released the transport"
             return json.dumps({"timestamp": 1, "changes": [{"bucket": "security-state", "collection": "intermediates",
                                                            "last_modified": self.timestamp}]}).encode()
         if url.startswith(CHANGESET):
@@ -141,8 +135,6 @@ def cache(tmp_path, monkeypatch):
     monkeypatch.setenv("INVISIBLE_PLAYWRIGHT_CACHE_DIR", str(tmp_path))
     monkeypatch.delenv("STEALTHFOX_INTERMEDIATES", raising=False)
     monkeypatch.setattr(im, "ensure_intermediates", REAL_ENSURE)
-    monkeypatch.setattr(im, "refresh_intermediates_in_background", REAL_REFRESH)
-    monkeypatch.setattr(im, "_CHECKED_THIS_PROCESS", False)
     monkeypatch.setattr(im, "_WARNED", False)
     monkeypatch.setattr(download, "_SLEEP", lambda seconds: None)   # the retries ask again at once
     monkeypatch.setattr(download, "_note", lambda message: None)
@@ -176,47 +168,19 @@ def _beside_the_root(cache: Path) -> list:
     return sorted(p.name for p in cache.iterdir() if p.name.startswith(".tmp-intermediates"))
 
 
-def _refresh_and_wait() -> None:
-    thread = im.refresh_intermediates_in_background()
-    assert thread is not None, "no check was due"
-    thread.join(30)
-    assert not thread.is_alive()
-
-
 # --- a. a list in the cache is the answer, and nobody is asked -------------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("last_check", ["recent", "expired"])
-def test_a_cached_list_is_returned_and_the_network_is_not_asked(cache, mozilla, last_check):
-    """The known-bad is a launch that asks Mozilla whether the list changed: a day gone by made every launch wait for a round trip. The transport RAISES if it
-    is called at all; an expired check is the case that matters, because it is the one a naive `ensure` would act on."""
+def test_a_cached_list_is_returned_and_the_network_is_not_asked(cache, mozilla):
+    """The known-bad is a launch that asks Mozilla whether the list changed: a copy, however old, is the answer and the transport RAISES if it is called at
+    all. A check state a month old (what the old weekly model read as "due") is on disk to prove that no clock decides anything here."""
     path = _put_version(cache, 1000)
-    if last_check == "recent":
-        asset.record_check(_root(cache))
+    asset.check_state_path(_root(cache)).write_text(json.dumps({"checked_at": 1.0}), encoding="utf-8")
     mozilla.forbidden = True
     assert im.ensure_intermediates() == path
     assert mozilla.calls == []
 
 
-@pytest.mark.parametrize("days_ago, due", [(2, False), (6, False), (8, True)])
-def test_mozilla_is_asked_at_most_once_a_week(cache, mozilla, days_ago, due):
-    """The known-bad is the daily check GeoIP has: the list is asked about once a WEEK. A check recorded two or six days ago starts no refresh and asks
-    nobody; one recorded eight days ago does start one."""
-    import time as _time
-    _put_version(cache, 1000)
-    state = asset.check_state_path(_root(cache))
-    state.write_text(json.dumps({"checked_at": _time.time() - days_ago * 24 * 3600}), encoding="utf-8")
-    if not due:
-        mozilla.forbidden = True
-    thread = im.refresh_intermediates_in_background()
-    if due:
-        assert thread is not None, "a check eight days old must start a refresh"
-        thread.join(30)
-    else:
-        assert thread is None
-        assert mozilla.calls == []
-
-
-# --- b. the launch returns while the refresh is still asking; the new list appears whole; and only after the browser started -------------------------------
+# --- b. a launch starts no thread and asks nobody -----------------------------------------------------------------------------------------------------
 
 def _launch(monkeypatch, profile: Path, log: list, prefs=None):
     """What a client does, over the fake browser: `write_user_js` (the one writer of the pref) and then `connection.launch`, with a log of who was called in
@@ -229,25 +193,16 @@ def _launch(monkeypatch, profile: Path, log: list, prefs=None):
         seen["user_js_at_spawn"] = (profile / "user.js").read_text(encoding="utf-8") if (profile / "user.js").is_file() else ""
         return browser.spawn(executable, argv, env)
 
-    threads = []
-
     def ensure(*a, **k):
         log.append("ensure")
         return REAL_ENSURE(*a, **k)
 
-    def refresh(*a, **k):
-        log.append("refresh")
-        t = REAL_REFRESH(*a, **k)
-        threads.append(t)
-        return t
-
     monkeypatch.setattr(connection, "_spawn_windows", spawn)
     monkeypatch.setattr(connection, "_spawn_posix", spawn)
     monkeypatch.setattr(im, "ensure_intermediates", ensure)
-    monkeypatch.setattr(im, "refresh_intermediates_in_background", refresh)
     write_user_js(profile, {"a": 1} if prefs is None else prefs)
     conn = connection.launch("firefox", str(profile), ready_timeout=30.0)
-    return conn, seen, threads
+    return conn, seen
 
 
 def _pref_value(user_js_text: str) -> str:
@@ -258,44 +213,36 @@ def _pref_value(user_js_text: str) -> str:
     return json.loads(line[len(head):-2])
 
 
-def test_the_launch_returns_while_the_check_is_still_asking_and_the_new_list_lands_whole(cache, mozilla, monkeypatch, tmp_path):
-    """The known-bad is the check made in the launch's own thread: the transport here is held on an event the test has not released, so a launch that waits for
-    it cannot return (it runs in a worker, and the test asserts it DID return before the release). Then the release: the new version appears complete (both
-    files) and the old one is pruned. The log proves the order: the list is resolved BEFORE the browser starts, the check is made AFTER."""
-    _put_version(cache, 1000)                          # a list is cached; no check was ever recorded, so one is due
-    mozilla.gate = threading.Event()
+def test_a_launch_with_a_cached_list_starts_no_thread_for_it_and_asks_nobody(cache, mozilla, monkeypatch, tmp_path):
+    """The known-bad is the check made after the spawn, in a daemon thread (`invisible-intermediates`): the launch started a thread of the core and, once a
+    week, a request to Mozilla from the user's process. Here the cache has a list, the state file says the old weekly check is long overdue, and the
+    transport raises if touched. Two spies: every `Thread.start` of the launch is recorded with its target's module, and the threads alive after the launch are
+    compared with those before it. None of them is the core's intermediates thread, and the transport was not called."""
+    _put_version(cache, 1000)
+    asset.check_state_path(_root(cache)).write_text(json.dumps({"checked_at": 1.0}), encoding="utf-8")
+    mozilla.forbidden = True
+    started = []
+    real_start = threading.Thread.start
+
+    def spy(self):
+        started.append((self.name, getattr(getattr(self, "_target", None), "__module__", None)))
+        return real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", spy)
+    before = set(threading.enumerate())
     profile = tmp_path / "profile"
     profile.mkdir()
     log: list = []
-    result: dict = {}
-    returned = threading.Event()
-
-    def run():
-        result["conn"], result["seen"], result["threads"] = _launch(monkeypatch, profile, log)
-        returned.set()
-
-    worker = threading.Thread(target=run, daemon=True)
-    worker.start()
+    conn, seen = _launch(monkeypatch, profile, log)
     try:
-        assert returned.wait(60), "the launch did not return while the check was still waiting on Mozilla"
-        assert mozilla.reached_gate.wait(60), "the background check never asked"
-        assert log == ["ensure", "spawn", "refresh"]
-        assert _versions(cache) == ["1000"], "the new list was visible before the transport answered"
-        thread = result["threads"][0]
-        assert thread is not None and thread.is_alive()
+        new = [t.name for t in threading.enumerate() if t not in before]
+        assert log == ["ensure", "spawn"]
+        assert not [n for n in started if "intermediates" in n[0] or n[1] == im.__name__], started
+        assert "invisible-intermediates" not in new, new
+        assert mozilla.calls == []
+        assert _pref_value(seen["user_js_at_spawn"]) == str(_root(cache) / "1000" / INTERMEDIATES_FILE_NAME)
     finally:
-        mozilla.gate.set()
-    thread.join(60)
-    assert not thread.is_alive()
-    assert _versions(cache) == ["2000"]
-    new = _root(cache) / "2000"
-    assert sorted(p.name for p in new.iterdir()) == ["SOURCES.json", INTERMEDIATES_FILE_NAME]
-    listing = json.loads((new / INTERMEDIATES_FILE_NAME).read_bytes())
-    assert listing["count"] == 3 and listing["collection_timestamp"] == 2000
-    assert _beside_the_root(cache) == []
-    # what this launch declared is the list it started with, not the one that arrived after
-    assert _pref_value(result["seen"]["user_js_at_spawn"]) == str(_root(cache) / "1000" / INTERMEDIATES_FILE_NAME)
-    result["conn"].close()
+        conn.close()
 
 
 # --- c. a record that does not add up refuses the whole download ------------------------------------------------------------------------------------
@@ -322,21 +269,21 @@ def _swapped_bytes(m):
 
 
 @pytest.mark.parametrize("corrupt", [_corrupt_hash, _corrupt_der_hash, _corrupt_subject, _corrupt_size, _swapped_bytes])
-def test_a_certificate_that_does_not_add_up_leaves_the_cache_as_it_was(cache, mozilla, corrupt):
+def test_a_certificate_that_does_not_add_up_leaves_the_cache_as_it_was(cache, mozilla, corrupt, capsys):
     """The known-bad: a list kept although one record's sha256, derHash or subject disagrees with its certificate. A refusal is total: the cached version is
-    intact and no other directory, finished or half, is left in the root or beside it."""
+    intact, no other directory, finished or half, is left in the root or beside it, and the user is told on stderr instead of getting an exception."""
     kept = _put_version(cache, 1000, b'{"format":1,"kept":true}')
     corrupt(mozilla)
-    _refresh_and_wait()
+    assert im.update_intermediates() == (kept, False)
     assert _versions(cache) == ["1000"]
     assert kept.read_bytes() == b'{"format":1,"kept":true}'
     assert _beside_the_root(cache) == []
-    assert not (_root(cache) / asset.CHECK_STATE_NAME).exists(), "a check that did not finish is not recorded"
+    assert "could not look for a newer list" in capsys.readouterr().err
 
 
-# --- d. a thread that dies in the middle of the writing leaves nothing broken -----------------------------------------------------------------------------
+# --- d. a process that dies in the middle of the writing leaves nothing broken -----------------------------------------------------------------------------
 
-def test_a_thread_that_dies_while_writing_leaves_the_cache_and_the_root_as_they_were(cache, mozilla, monkeypatch):
+def test_an_update_that_dies_while_writing_leaves_the_cache_and_the_root_as_they_were(cache, mozilla, monkeypatch):
     """The known-bad is the version written in place: an exception between the two files left a directory with a listing and no sources, taken by the next launch
     for the newest list. The version is built beside the root and renamed in one step, so the root never shows it half."""
     kept = _put_version(cache, 1000, b'{"format":1,"kept":true}')
@@ -346,7 +293,7 @@ def test_a_thread_that_dies_while_writing_leaves_the_cache_and_the_root_as_they_
         raise OSError("the disk went away")
 
     monkeypatch.setattr(im, "_write_files", dies_after_the_first_file)
-    _refresh_and_wait()
+    assert im.update_intermediates() == (kept, False)
     assert _versions(cache) == ["1000"]
     assert kept.read_bytes() == b'{"format":1,"kept":true}'
     assert _beside_the_root(cache) == [], "the half-built directory was left beside the root"
@@ -361,7 +308,7 @@ def test_a_cold_cache_with_no_network_gives_none_a_warning_and_no_pref(cache, mo
     mozilla.offline = True
     profile = tmp_path / "profile"
     profile.mkdir()
-    conn, seen, _threads = _launch(monkeypatch, profile, [])
+    conn, seen = _launch(monkeypatch, profile, [])
     try:
         err = capsys.readouterr().err
         assert err.count("intermediate certificates could not be downloaded") == 1
@@ -380,12 +327,11 @@ def test_the_pref_is_the_path_of_the_cached_file_and_is_declared_once(cache, moz
     """The known-bad is a launch with the file in the cache and no pref (the engine never reads it), or one that appends the line again on every launch of
     the same profile. The line is in `user.js` BEFORE the process starts, equals the file's absolute path, and a second launch of the profile adds nothing."""
     path = _put_version(cache, 1000)
-    asset.record_check(_root(cache))
     mozilla.forbidden = True
     profile = tmp_path / "profile"
     profile.mkdir()
     for _ in range(2):
-        conn, seen, _threads = _launch(monkeypatch, profile, [])
+        conn, seen = _launch(monkeypatch, profile, [])
         conn.close()
         text = (profile / "user.js").read_text(encoding="utf-8")
         assert text.count(INTERMEDIATES_PREF) == 1, text
@@ -447,7 +393,6 @@ def test_every_road_of_the_core_s_launch_writes_the_pref_once(cache, mozilla, mo
     """The known-bad is a declaration made in `connection.launch` only: `build_launch_plan` writes its `user.js` and the caller spawns the browser itself, so
     that road never carried the pref. Both roads end in `write_user_js`, the one writer, and each has the line exactly once, equal to the cached file."""
     path = _put_version(cache, 1000)
-    asset.record_check(_root(cache))
     mozilla.forbidden = True
     text = ROADS[road](monkeypatch, tmp_path)
     assert text.count(INTERMEDIATES_PREF) == 1, text
@@ -474,7 +419,6 @@ def test_a_pref_the_caller_gave_wins_and_nothing_is_fetched(cache, mozilla, monk
 def test_the_writer_does_not_touch_the_prefs_it_was_given(cache, mozilla, tmp_path):
     """The dict of the caller is read, not changed: a second launch from the same dict must decide again (the cache may have changed)."""
     _put_version(cache, 1000)
-    asset.record_check(_root(cache))
     prefs = {"a": 1}
     write_user_js(tmp_path / "p", prefs)
     assert prefs == {"a": 1}
@@ -518,7 +462,7 @@ def test_a_cold_cache_downloads_in_line_and_the_file_has_the_declared_format(cac
     sources = json.loads((path.parent / "SOURCES.json").read_text(encoding="utf-8"))
     assert sources["collection_timestamp"] == 2000 and sources["count"] == 3 and sources["set_sha256"] == listing["set_sha256"]
     assert sources["server"].startswith("https://firefox.settings.services.mozilla.com/")
-    assert (_root(cache) / asset.CHECK_STATE_NAME).is_file()
+    assert not (_root(cache) / asset.CHECK_STATE_NAME).exists(), "there is no schedule, so no state of one"
 
 
 def test_a_record_the_bundle_lacks_is_fetched_by_its_own_location(cache, mozilla):
@@ -529,13 +473,73 @@ def test_a_record_the_bundle_lacks_is_fetched_by_its_own_location(cache, mozilla
     assert BASE + "sec/rec-0.pem" not in mozilla.calls
 
 
-def test_a_newer_list_replaces_the_older_one_and_a_process_asks_once(cache, mozilla):
+# --- the `fetch` command: is there a newer list? (`update_intermediates`) --------------------------------------------------------------------------------
+
+def test_fetch_puts_a_newer_list_in_place_and_prunes_the_old_one(cache, mozilla):
+    """The known-bad is a `fetch` that leaves the list as it is: the cache holds version 1000, the feed says 2000, and afterwards the cache holds 2000 whole
+    (both files, nothing left beside the root) and the 1000 is pruned."""
     _put_version(cache, 1000)
-    _refresh_and_wait()
+    path, changed = im.update_intermediates()
+    assert changed is True
+    assert path == _root(cache) / "2000" / INTERMEDIATES_FILE_NAME
     assert _versions(cache) == ["2000"]
-    n = len(mozilla.calls)
-    assert im.refresh_intermediates_in_background() is None, "a process asks at most once"
-    assert len(mozilla.calls) == n
+    assert sorted(p.name for p in path.parent.iterdir()) == ["SOURCES.json", INTERMEDIATES_FILE_NAME]
+    assert json.loads(path.read_bytes())["collection_timestamp"] == 2000
+    assert _beside_the_root(cache) == []
+    assert im.intermediates_path() == path
+
+
+@pytest.mark.parametrize("cached", [2000, 3000])
+def test_fetch_downloads_nothing_when_the_feed_is_not_newer(cache, mozilla, cached):
+    """The feed says 2000: a cache at 2000 (same) or 3000 (ahead) is kept and the only request is the feed's own, a few hundred bytes. No changeset, no bundle."""
+    kept = _put_version(cache, cached)
+    assert im.update_intermediates() == (kept, False)
+    assert mozilla.calls == [INTERMEDIATES_LATEST_URL]
+    assert _versions(cache) == [str(cached)]
+
+
+def test_fetch_asks_the_feed_every_time_it_is_run(cache, mozilla):
+    """No schedule: two runs in a row are two questions (the second one finds the list current and downloads nothing)."""
+    _put_version(cache, 1000)
+    assert im.update_intermediates()[1] is True
+    assert im.update_intermediates()[1] is False
+    assert mozilla.calls.count(INTERMEDIATES_LATEST_URL) == 2
+    assert len([u for u in mozilla.calls if u.startswith(CHANGESET)]) == 1
+
+
+def test_fetch_with_a_cold_cache_downloads(cache, mozilla):
+    path, changed = im.update_intermediates()
+    assert changed is True and path == _root(cache) / "2000" / INTERMEDIATES_FILE_NAME and path.is_file()
+
+
+def test_fetch_with_no_network_keeps_the_cache_and_warns_without_raising(cache, mozilla, capsys):
+    """The known-bad is a `fetch` that fails because Mozilla cannot be reached: the cached list is untouched, the answer is that list and `changed` is False, and
+    one line on stderr says so."""
+    kept = _put_version(cache, 1000, b'{"format":1,"kept":true}')
+    mozilla.offline = True
+    assert im.update_intermediates() == (kept, False)
+    assert kept.read_bytes() == b'{"format":1,"kept":true}'
+    assert _versions(cache) == ["1000"] and _beside_the_root(cache) == []
+    err = capsys.readouterr().err
+    assert err.count("could not look for a newer list") == 1 and "stays" in err
+
+
+def test_fetch_with_no_network_and_a_cold_cache_gives_none_and_a_warning(cache, mozilla, capsys):
+    mozilla.offline = True
+    assert im.update_intermediates() == (None, False)
+    assert "starts without it" in capsys.readouterr().err
+    assert _versions(cache) == []
+
+
+def test_fetch_with_the_variable_set_does_nothing(cache, mozilla, monkeypatch, tmp_path):
+    """STEALTHFOX_INTERMEDIATES is the user's file: no request at all (the transport raises if touched), the cache is not changed."""
+    kept = _put_version(cache, 1000)
+    mozilla.forbidden = True
+    mine = tmp_path / "mine.json"
+    mine.write_bytes(b"{}")
+    monkeypatch.setenv("STEALTHFOX_INTERMEDIATES", str(mine))
+    assert im.update_intermediates() == (mine, False)
+    assert mozilla.calls == [] and _versions(cache) == ["1000"] and kept.is_file()
 
 
 def test_the_override_is_the_file_and_asks_nothing(cache, mozilla, monkeypatch, tmp_path):
@@ -544,19 +548,16 @@ def test_the_override_is_the_file_and_asks_nothing(cache, mozilla, monkeypatch, 
     mine.write_bytes(b"{}")
     monkeypatch.setenv("STEALTHFOX_INTERMEDIATES", str(mine))
     assert im.ensure_intermediates() == mine
-    assert im.refresh_intermediates_in_background() is None
     monkeypatch.setenv("STEALTHFOX_INTERMEDIATES", str(tmp_path / "missing.json"))
     with pytest.raises(RuntimeError, match="missing file"):
         im.ensure_intermediates()
     assert mozilla.calls == []
 
 
-def test_with_the_variable_set_nothing_is_downloaded_and_no_check_is_started(cache, mozilla, monkeypatch, tmp_path):
-    """STEALTHFOX_INTERMEDIATES is the user's file: the core neither downloads nor checks, whatever the cache and the clock say. The known-bad is a check that
-    ignores the variable: here the last check is long overdue, the transport raises if it is touched, and a
-    thread spy proves no thread was even created. The launch (writer + `connection.launch`) declares the user's file."""
+def test_with_the_variable_set_nothing_is_downloaded_and_no_thread_is_started(cache, mozilla, monkeypatch, tmp_path):
+    """STEALTHFOX_INTERMEDIATES is the user's file: the core neither downloads nor checks. The transport raises if it is touched, and a thread spy proves no
+    thread of the intermediates was created. The launch (writer + `connection.launch`) declares the user's file."""
     _put_version(cache, 1000)
-    asset.check_state_path(_root(cache)).write_text(json.dumps({"checked_at": 1.0}), encoding="utf-8")   # a check long overdue
     mozilla.forbidden = True
     mine = tmp_path / "mine.json"
     mine.write_bytes(b"{}")
@@ -565,9 +566,9 @@ def test_with_the_variable_set_nothing_is_downloaded_and_no_check_is_started(cac
     real_start = threading.Thread.start
     monkeypatch.setattr(threading.Thread, "start", lambda self: (started.append(self.name), real_start(self))[1])
     profile = tmp_path / "profile"
-    conn, seen, threads = _launch(monkeypatch, profile, [])
+    profile.mkdir()
+    conn, seen = _launch(monkeypatch, profile, [])
     try:
-        assert threads == [None]
         assert "invisible-intermediates" not in started, started
         assert _pref_value(seen["user_js_at_spawn"]) == str(mine)
         assert mozilla.calls == []
