@@ -30,6 +30,7 @@ from invisible_core.constants import (
     INTERMEDIATES_SERVER_INFO_URL,
 )
 from invisible_core.juggler import connection
+from invisible_core.launch import write_user_js
 from test_a_launch_has_one_deadline import _Browser
 
 pytestmark = pytest.mark.unit
@@ -217,8 +218,9 @@ def test_mozilla_is_asked_at_most_once_a_week(cache, mozilla, days_ago, due):
 
 # --- b. the launch returns while the refresh is still asking; the new list appears whole; and only after the browser started -------------------------------
 
-def _launch(monkeypatch, profile: Path, log: list):
-    """`connection.launch` over the fake browser, with a log of who was called in which order."""
+def _launch(monkeypatch, profile: Path, log: list, prefs=None):
+    """What a client does, over the fake browser: `write_user_js` (the one writer of the pref) and then `connection.launch`, with a log of who was called in
+    which order."""
     browser = _Browser()
     seen = {}
 
@@ -243,6 +245,7 @@ def _launch(monkeypatch, profile: Path, log: list):
     monkeypatch.setattr(connection, "_spawn_posix", spawn)
     monkeypatch.setattr(im, "ensure_intermediates", ensure)
     monkeypatch.setattr(im, "refresh_intermediates_in_background", refresh)
+    write_user_js(profile, {"a": 1} if prefs is None else prefs)
     conn = connection.launch("firefox", str(profile), ready_timeout=30.0)
     return conn, seen, threads
 
@@ -263,7 +266,6 @@ def test_the_launch_returns_while_the_check_is_still_asking_and_the_new_list_lan
     mozilla.gate = threading.Event()
     profile = tmp_path / "profile"
     profile.mkdir()
-    (profile / "user.js").write_text('user_pref("a", 1);\n', encoding="utf-8")
     log: list = []
     result: dict = {}
     returned = threading.Event()
@@ -359,7 +361,6 @@ def test_a_cold_cache_with_no_network_gives_none_a_warning_and_no_pref(cache, mo
     mozilla.offline = True
     profile = tmp_path / "profile"
     profile.mkdir()
-    (profile / "user.js").write_text('user_pref("a", 1);\n', encoding="utf-8")
     conn, seen, _threads = _launch(monkeypatch, profile, [])
     try:
         err = capsys.readouterr().err
@@ -383,7 +384,6 @@ def test_the_pref_is_the_path_of_the_cached_file_and_is_declared_once(cache, moz
     mozilla.forbidden = True
     profile = tmp_path / "profile"
     profile.mkdir()
-    (profile / "user.js").write_text('user_pref("a", 1);\n', encoding="utf-8")
     for _ in range(2):
         conn, seen, _threads = _launch(monkeypatch, profile, [])
         conn.close()
@@ -393,6 +393,100 @@ def test_the_pref_is_the_path_of_the_cached_file_and_is_declared_once(cache, moz
         assert Path(_pref_value(text)).is_absolute()
         assert seen["user_js_at_spawn"].count(INTERMEDIATES_PREF) == 1, "the line was not there when the process started"
         assert 'user_pref("a", 1);' in text, "the caller's own lines are kept"
+
+
+# --- g. every road of the core's launch writes the pref once, from the one writer; the caller's pref wins; no list, no pref -----------------------------------
+
+def _plan_user_js(monkeypatch, tmp_path: Path) -> str:
+    """`build_launch_plan`, hermetic like tests/test_launch.py, and the `user.js` it wrote."""
+    import invisible_core._fpforge as _fp
+    import invisible_core._geo as _geo
+    import invisible_core._proxy as _proxy
+    import invisible_core.download as _dl
+    import invisible_core.prefs as _prefs
+    from invisible_core._geo import SessionGeo
+    from invisible_core._locale import decide_session_locale
+    from invisible_core.launch import build_launch_plan
+
+    monkeypatch.setattr(_dl, "ensure_binary", lambda ver=None: "/fake/firefox")
+    monkeypatch.setattr(_geo, "prepare_session_geo",
+                        lambda tz, proxy, locale="auto", **_kw: SessionGeo("America/New_York", "198.51.100.4", locale=decide_session_locale("en-US")))
+    monkeypatch.setattr(_fp, "generate_profile", lambda seed, pin=None: object())
+    monkeypatch.setattr(_prefs, "translate_profile_to_prefs", lambda fp, **kw: {"zoom.stealth.screen.dpr": 1.25})
+    monkeypatch.setattr(_proxy, "configure_proxy", lambda proxy, prefs: None)
+    pdir = tmp_path / "plan_profile"
+    build_launch_plan(42, profile_dir=pdir, timezone="auto", locale="auto")
+    return (pdir / "user.js").read_text(encoding="utf-8")
+
+
+class _Stop(Exception):
+    pass
+
+
+def _instance_user_js(monkeypatch, tmp_path: Path, prefs=None) -> str:
+    """`instance.launch` (the core's own client): the `user.js` as it is when `connection.launch` is called, which then stops the launch."""
+    from invisible_core.juggler import instance
+
+    seen = {}
+
+    def stop(executable, profile_dir, **kw):
+        seen["text"] = (Path(profile_dir) / "user.js").read_text(encoding="utf-8")
+        raise _Stop()
+
+    monkeypatch.setattr(connection, "launch", stop)
+    with pytest.raises(_Stop):
+        instance.launch("firefox", prefs=prefs or {"a": 1}, profile_dir=str(tmp_path / "instance_profile"))
+    return seen["text"]
+
+
+ROADS = {"build_launch_plan": _plan_user_js, "instance.launch": _instance_user_js}
+
+
+@pytest.mark.parametrize("road", sorted(ROADS))
+def test_every_road_of_the_core_s_launch_writes_the_pref_once(cache, mozilla, monkeypatch, tmp_path, road):
+    """The known-bad is a declaration made in `connection.launch` only: `build_launch_plan` writes its `user.js` and the caller spawns the browser itself, so
+    that road never carried the pref. Both roads end in `write_user_js`, the one writer, and each has the line exactly once, equal to the cached file."""
+    path = _put_version(cache, 1000)
+    asset.record_check(_root(cache))
+    mozilla.forbidden = True
+    text = ROADS[road](monkeypatch, tmp_path)
+    assert text.count(INTERMEDIATES_PREF) == 1, text
+    assert _pref_value(text) == str(path)
+    assert mozilla.calls == []
+
+
+@pytest.mark.parametrize("road", ["write_user_js", "instance.launch"])
+def test_a_pref_the_caller_gave_wins_and_nothing_is_fetched(cache, mozilla, monkeypatch, tmp_path, road):
+    """The known-bad is the core overwriting, or adding beside, what the caller declared: the caller's path is the only line, and with a COLD cache the
+    network is not asked (a fetch for a value nobody will use)."""
+    mozilla.forbidden = True
+    mine = str(tmp_path / "mine.json")
+    prefs = {"a": 1, INTERMEDIATES_PREF: mine}
+    if road == "write_user_js":
+        text = write_user_js(tmp_path / "p", prefs).read_text(encoding="utf-8")
+    else:
+        text = _instance_user_js(monkeypatch, tmp_path, prefs)
+    assert text.count(INTERMEDIATES_PREF) == 1, text
+    assert _pref_value(text) == mine
+    assert mozilla.calls == [] and _versions(cache) == []
+
+
+def test_the_writer_does_not_touch_the_prefs_it_was_given(cache, mozilla, tmp_path):
+    """The dict of the caller is read, not changed: a second launch from the same dict must decide again (the cache may have changed)."""
+    _put_version(cache, 1000)
+    asset.record_check(_root(cache))
+    prefs = {"a": 1}
+    write_user_js(tmp_path / "p", prefs)
+    assert prefs == {"a": 1}
+
+
+@pytest.mark.parametrize("road", sorted(ROADS))
+def test_with_no_list_and_no_network_no_road_writes_the_pref(cache, mozilla, monkeypatch, tmp_path, road):
+    """The known-bad is a pref that names a file that is not there. Cold cache, Mozilla unreachable: the profile carries no line, on either road."""
+    mozilla.offline = True
+    text = ROADS[road](monkeypatch, tmp_path)
+    assert INTERMEDIATES_PREF not in text
+    assert _versions(cache) == []
 
 
 def test_the_pref_name_is_written_in_one_place_of_the_package():
@@ -455,6 +549,30 @@ def test_the_override_is_the_file_and_asks_nothing(cache, mozilla, monkeypatch, 
     with pytest.raises(RuntimeError, match="missing file"):
         im.ensure_intermediates()
     assert mozilla.calls == []
+
+
+def test_with_the_variable_set_nothing_is_downloaded_and_no_check_is_started(cache, mozilla, monkeypatch, tmp_path):
+    """STEALTHFOX_INTERMEDIATES is the user's file: the core neither downloads nor checks, whatever the cache and the clock say. The known-bad is a check that
+    ignores the variable: here the last check is long overdue, the transport raises if it is touched, and a
+    thread spy proves no thread was even created. The launch (writer + `connection.launch`) declares the user's file."""
+    _put_version(cache, 1000)
+    asset.check_state_path(_root(cache)).write_text(json.dumps({"checked_at": 1.0}), encoding="utf-8")   # a check long overdue
+    mozilla.forbidden = True
+    mine = tmp_path / "mine.json"
+    mine.write_bytes(b"{}")
+    monkeypatch.setenv("STEALTHFOX_INTERMEDIATES", str(mine))
+    started = []
+    real_start = threading.Thread.start
+    monkeypatch.setattr(threading.Thread, "start", lambda self: (started.append(self.name), real_start(self))[1])
+    profile = tmp_path / "profile"
+    conn, seen, threads = _launch(monkeypatch, profile, [])
+    try:
+        assert threads == [None]
+        assert "invisible-intermediates" not in started, started
+        assert _pref_value(seen["user_js_at_spawn"]) == str(mine)
+        assert mozilla.calls == []
+    finally:
+        conn.close()
 
 
 #: A real intermediate of Mozilla's collection (record 515b5465-..., SZAFIR Trusted CA6): the DER reader meets a certificate it did not make.

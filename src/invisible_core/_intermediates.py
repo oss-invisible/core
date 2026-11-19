@@ -3,7 +3,7 @@
 A retail Firefox has the intermediates of the public web in `cert_storage` from the first second: it takes them from Mozilla's Remote Settings collection
 `security-state/intermediates`. The engine does not sync that collection any more (a sync reaches Mozilla's servers from the engine's own process, on a clock
 nobody declared), so the core DECLARES the list: this module downloads it from the same service Firefox uses, from the USER's Python, verifies it and keeps
-it in the cache as `intermediates.json`; the launch hands the engine its path (the pref `INTERMEDIATES_PREF`, written once, in `juggler.connection.launch`).
+it in the cache as `intermediates.json`; the launch hands the engine its path (the pref `INTERMEDIATES_PREF`, written once, by `launch.write_user_js`, the one writer of `user.js`).
 
 THE FILE (read by the engine; its format is the engine's contract and is changed with it):
 

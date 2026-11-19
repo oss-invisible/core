@@ -156,7 +156,7 @@ def _no_geoip_download(monkeypatch, request):
 
 @pytest.fixture(autouse=True)
 def _no_intermediates_download(monkeypatch, request):
-    """The launch declares Mozilla's intermediates list (`juggler.connection.launch`), and a launch is made by many tests that think they are hermetic.
+    """The launch declares Mozilla's intermediates list (`launch.write_user_js`), and a launch is made by many tests that think they are hermetic.
 
     A cold cache would download the list from Mozilla in line, and a warm one would start a background check, so the two functions the launch calls are
     stubbed, as `ensure_geoip_mmdb` is above: no list, no thread, no request. The tests of the list itself (`test_intermediates_*`) bring the real ones
