@@ -15,15 +15,23 @@ A version is COMPLETE with `manifest.json` AND at least one `generated-*`. It is
 INCLUDED, and renamed into the root in one step: a reader sees a whole version or none, and a download, a verification or a generation that fails deletes the staging
 directory and leaves the cache exactly as it was. A `generated-<build_id>` for another engine is built the same way (a staging directory, one rename) and is immutable once in
 place. The newest two versions are kept (a launch may be copying from the previous one); the newest is the highest tuple of the three timestamps. `updated_utc` is the clock
-of the fetch that built the version, and it is what the ten-day warning reads.
+of the fetch that built the version, and it is what the ten-day rule reads.
+
+THE TEN-DAY RULE (`_security_state_generate.is_stale`; cert_storage's own, security/manager/ssl/cert_storage/src/lib.rs:464-483: filters are fresh while `now < last_crlite_update
++ 10 days`, and `last_crlite_update` is the time of OUR generation, which cert_storage cannot be told otherwise). Data is STALE from exactly ten days after `updated_utc`.
+  * The core NEVER generates from stale data: not for a new engine at a launch, not in `update_security_state` with nothing newer, nowhere (`_ensure_generated`). A generation made
+    now from old data would look fresh, which a retail Firefox never does. Without a generation for this engine the launch starts as with no directory, and says to run
+    `invisible-playwright fetch`. A version a fetch has just built has `updated_utc` = now, so it is fresh and is generated as ever.
+  * A launch whose data is stale copies `security_state/` WITHOUT `crlite.filter` and the `*.delta` files (only `data.safe.bin`: intermediates and OneCRL) and says so. A ready
+    directory the user gave has no age and is copied whole.
 
 THE ROADS:
   * `update_security_state` is what `invisible-playwright fetch` calls, because the user asked: it reads the changes feed (one request, a few hundred bytes) EVERY time, and
     only when a collection is newer than the newest version does it download, and only that collection (an unchanged one is copied from the newest version, never linked;
     the CRLite files already held are not downloaded again). There is no schedule and no state file.
   * `ensure_security_state` / `place_security_state` is what a launch calls BEFORE the browser starts (`launch.write_user_js`, the one writer). A warm cache with a generation for
-    the engine in use is answered with NO request, whatever its age; a version with no generation for this engine is generated from the cached data, in line, with no network;
-    a cold cache downloads and generates once, in line. Any failure is one warning per process and the browser starts like a retail one with a new profile.
+    the engine in use is answered with NO request, whatever its age (an old one is copied without the CRLite files); a FRESH version with no generation for this engine is
+    generated from the cached data, in line, with no network (a stale one is not: see the rule); a cold cache downloads and generates once, in line. Any failure is one warning per process and the browser starts like a retail one with a new profile.
   * `STEALTHFOX_SECURITY_STATE` names a ready directory (`securitystate-result.json` and, when it has data, `security_state/`): it is copied as it is and nothing is asked,
     downloaded or generated.
 """
@@ -52,6 +60,7 @@ from ._security_state_generate import (
     age_warning,
     engine_id_of,
     generate,
+    is_stale,
     place_in_profile,
 )
 from .constants import (
@@ -94,6 +103,10 @@ _AGE_WARNED = False
 
 class SecurityStateError(RuntimeError):
     """The feed or the cache says something the core cannot use. The caller's cache stays as it was."""
+
+
+class StaleSecurityState(SecurityStateError):
+    """The cached data is stale (`is_stale`) and has no generation for this engine: it is not generated, because a generation made now would look fresh to cert_storage."""
 
 
 @dataclass(frozen=True)
@@ -156,6 +169,11 @@ def _warn_once(message: str) -> None:
         return
     _WARNED = True
     print("invisible_core: " + message, file=sys.stderr, flush=True)
+
+
+def _now() -> datetime:
+    """THE ONE READ OF THE CLOCK of this module, for the public entry points called with no `now`; everything below them is given the moment as data. A test replaces it."""
+    return datetime.now(timezone.utc)
 
 
 def _utc(now: datetime) -> str:
@@ -296,12 +314,16 @@ def _generate_into(out_dir: Path, data_dir: Path, eng: _Engine) -> None:
     generate(command, _inputs_in(data_dir), eid, out_dir)
 
 
-def _ensure_generated(version: Path, eng: _Engine) -> Path:
+def _ensure_generated(version: Path, eng: _Engine, now: datetime) -> Path:
     """The `generated-<build_id>` of a version for this engine, made from the version's own files when it is not there (no network). It is built in a staging directory and
-    renamed in: immutable once in place."""
+    renamed in: immutable once in place. STALE data (`is_stale` at `now`; the manifest's `updated_utc`) is never generated from: `StaleSecurityState`, nothing written."""
     destination = version / _generated_name(eng.id)
     if _generated_ok(destination):
         return destination
+    updated = (_read_manifest(version) or {}).get("updated_utc")
+    if is_stale(updated, now):
+        raise StaleSecurityState("the cached data (updated_utc=%r) is stale, ten days old or more, and has no generation for this engine; a generation made now would look "
+                                 "fresh to cert_storage, so none is made" % (updated,))
     staging = _asset.new_staging(_root(), STAGING_PREFIX)
     try:
         _generate_into(staging, version, eng)
@@ -343,7 +365,7 @@ def _build_version(root: Path, previous: Optional[_Version], feed: Dict[str, int
         destination = root / name
         if _is_complete(destination):
             # The data is a version the cache already holds (the feed was ahead of the collection's own timestamp): nothing new, only perhaps this engine's generation.
-            _ensure_generated(destination, eng)
+            _ensure_generated(destination, eng, now)
             return destination
         _generate_into(staging / _generated_name(eng.id), staging, eng)
         collections = dict(zip(COLLECTIONS, stamps))
@@ -374,12 +396,12 @@ def update_security_state(*, engine: "Optional[str | os.PathLike[str]]" = None, 
     eng: Optional[_Engine] = None
     try:
         eng = _the_engine(engine)
-        moment = datetime.now(timezone.utc) if now is None else now
+        moment = _now() if now is None else now
         with _asset.machine_lock(root, _asset.LOCK_WAIT_S):
             feed = _latest(download.DOWNLOAD_ATTEMPTS)
             newest = _newest(root)
             if newest is not None and all(feed[c] <= newest.stamps[i] for i, c in enumerate(COLLECTIONS)):
-                return _ensure_generated(newest.path, eng), False
+                return _ensure_generated(newest.path, eng, moment), False
             built = _build_version(root, newest, feed, moment, eng, download.DOWNLOAD_ATTEMPTS)
             return built / _generated_name(eng.id), built != getattr(newest, "path", None)
     except Exception as exc:
@@ -414,7 +436,7 @@ def _make_ready(root: Path, eng: _Engine, now: datetime) -> Ready:
         if newest is None:
             _build_version(root, None, _latest(download.DOWNLOAD_ATTEMPTS), now, eng, download.DOWNLOAD_ATTEMPTS)
         else:
-            _ensure_generated(newest.path, eng)
+            _ensure_generated(newest.path, eng, now)
         made = _lookup(root, eng)
     if made is None:
         raise SecurityStateError("no generation for the engine is in the cache after it was made")
@@ -435,29 +457,34 @@ def _ensure(engine, now: datetime) -> Optional[Ready]:
             mark_checked=lambda: None,
             fetch=lambda: _make_ready(root, eng, now),
         )
+    except StaleSecurityState as exc:
+        _warn_once("the security state (intermediates, OneCRL, CRLite) could not be made (%s); the browser starts like a retail one with a new profile. "
+                   "Run `invisible-playwright fetch` to download newer data." % (exc,))
+        return None
     except Exception as exc:
         _warn_once("the security state (intermediates, OneCRL, CRLite) could not be made (%s); the browser starts like a retail one with a new profile. "
                    "Connect once to download it, or set %s to a ready directory." % (exc, environment.SECURITY_STATE))
         return None
 
 
-def ensure_security_state(*, engine: "Optional[str | os.PathLike[str]]" = None) -> Optional[Ready]:
-    """The ready security state of this engine, or None.
+def ensure_security_state(*, engine: "Optional[str | os.PathLike[str]]" = None, now: Optional[datetime] = None) -> Optional[Ready]:
+    """The ready security state of this engine, or None. `now` is the moment the ten-day rule is judged at; None is the real clock, and only here.
 
     Resolution order:
       1. ``STEALTHFOX_SECURITY_STATE`` -> that directory (user-supplied / CI), as `Ready(dir, None)`; one that does not hold `securitystate-result.json` is an error.
       2. The newest version in the cache has a generation for this engine -> it, with NO request, however old it is: newer data is looked for only by `update_security_state`.
-      3. A version with no generation for this engine (the engine changed) -> generated in line from the cached data, with no network.
+      3. A FRESH version with no generation for this engine (the engine changed) -> generated in line from the cached data, with no network. A STALE one (`is_stale`) is
+         never generated from: a warning that says to run `invisible-playwright fetch`, and None.
       4. A cold cache -> downloaded and generated once, in line (the callers of one process share it, other processes wait for the machine lock and read what it left).
       5. Anything that fails -> a warning on stderr once per process, and None."""
-    return _ensure(engine, datetime.now(timezone.utc))
+    return _ensure(engine, _now() if now is None else now)
 
 
-def _age_warn_once(ready: Ready, now: Optional[datetime]) -> None:
+def _age_warn_once(ready: Ready, now: datetime) -> None:
     global _AGE_WARNED
     if ready.updated_utc is None or _AGE_WARNED:
         return
-    text = age_warning(ready.updated_utc, datetime.now(timezone.utc) if now is None else now)
+    text = age_warning(ready.updated_utc, now)
     if text is None:
         return
     _AGE_WARNED = True
@@ -467,17 +494,21 @@ def _age_warn_once(ready: Ready, now: Optional[datetime]) -> None:
 def place_security_state(profile_dir: "str | os.PathLike[str]", *, engine: "Optional[str | os.PathLike[str]]" = None, now: Optional[datetime] = None) -> bool:
     """What a launch calls: puts a COPY of the ready `security_state/` in `profile_dir`; True when something was copied.
 
-    `ensure_security_state` (looked up in this module's globals, so a test that stubs it stubs the launch), `place_in_profile` (a copy, never a link: the engine rewrites the files in place), and the ten-day warning of `age_warning` printed once per
-    process when the data is older than a retail Firefox would use (a ready directory the user gave has no age, so no warning). With nothing ready, or nothing to copy (a ready
-    directory with no data), the profile is not touched. A copy that fails is removed whole and said once: half a `cert_storage` is worse than none."""
-    ready = ensure_security_state(engine=engine)
+    `ensure_security_state` (looked up in this module's globals, so a test that stubs it stubs the launch) and `place_in_profile` (a copy, never a link: the engine rewrites the
+    files in place). When the data is STALE (`is_stale` at `now`: ten days or more, or an `updated_utc` nobody can read) the copy leaves out `crlite.filter` and the `*.delta` files
+    and the warning of `age_warning` is printed once per process: a retail Firefox does not use filters that old. A ready directory the user gave has no age: copied whole, no
+    warning. With nothing ready, or nothing to copy (a ready directory with no data), the profile is not touched. A copy that fails is removed whole and said once: half a
+    `cert_storage` is worse than none. `now` is the clock of the decision; None is the real clock, and only here."""
+    moment = _now() if now is None else now
+    ready = ensure_security_state(engine=engine, now=moment)
     if ready is None:
         return False
+    stale = ready.updated_utc is not None and is_stale(ready.updated_utc, moment)
     try:
-        copied = place_in_profile(ready.path, Path(profile_dir))
+        copied = place_in_profile(ready.path, Path(profile_dir), without_crlite=stale)
     except Exception as exc:
         shutil.rmtree(Path(profile_dir) / SECURITY_STATE_DIR_NAME, ignore_errors=True)
         _warn_once("the security state could not be copied into the profile (%s); the browser starts like a retail one with a new profile" % (exc,))
         return False
-    _age_warn_once(ready, now)
+    _age_warn_once(ready, moment)
     return copied

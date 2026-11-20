@@ -334,6 +334,22 @@ def test_with_nothing_ready_the_profile_is_not_touched(tmp_path):
     assert gen.place_in_profile(ready, other) is False and list(other.iterdir()) == []
 
 
+@pytest.mark.unit
+def test_a_copy_without_the_crlite_files_leaves_the_filter_and_every_delta_out_and_keeps_the_rest(tmp_path):
+    ready, profile = _ready(tmp_path / "ready"), tmp_path / "profile"
+    (ready / SECURITY_STATE_DIR_NAME / "20261112-0-default.filter.delta").write_bytes(b"d1")
+    (ready / SECURITY_STATE_DIR_NAME / "UPPER.DELTA").write_bytes(b"d2")
+    (ready / SECURITY_STATE_DIR_NAME / "keep.bin").write_bytes(b"keep")
+    profile.mkdir()
+    assert gen.place_in_profile(ready, profile, without_crlite=True) is True
+    state = profile / SECURITY_STATE_DIR_NAME
+    assert sorted(p.name for p in state.iterdir()) == ["data.safe.bin", "keep.bin", "sub"]
+    assert (state / "data.safe.bin").read_bytes() == b"data" and os.stat(state / "data.safe.bin").st_nlink == 1
+    assert list((state / "sub").iterdir()) == [], "a delta in a subdirectory is left out as well"
+    assert (ready / SECURITY_STATE_DIR_NAME / "crlite.filter").read_bytes() == b"filter", "the cache is not touched"
+    assert gen._is_crlite_file("CRLITE.FILTER") and gen._is_crlite_file("X.Filter.DELTA") and not gen._is_crlite_file("data.safe.bin")
+
+
 # --- the age of the revocation data -------------------------------------------------------------------------------------------------------------------
 
 NOW = datetime(2026, 11, 20, 12, 0, 0, tzinfo=timezone.utc)
@@ -344,16 +360,36 @@ def _updated(age_s: float) -> str:
 
 
 @pytest.mark.unit
-def test_ten_days_exactly_is_not_a_warning():
-    assert gen.age_warning(_updated(CRLITE_MAX_AGE_S), NOW) is None
+def test_the_rule_is_cert_storage_s_at_second_granularity_ten_days_exactly_is_stale():
+    """`now < updated + 10 days` is fresh (cert_storage lib.rs:464-483), so ten days less a second is fresh, exactly ten days and a second more are stale; a date nobody can read is stale."""
+    assert gen.is_stale(_updated(CRLITE_MAX_AGE_S - 1), NOW) is False
+    assert gen.is_stale(_updated(CRLITE_MAX_AGE_S), NOW) is True
+    assert gen.is_stale(_updated(CRLITE_MAX_AGE_S + 1), NOW) is True
+    assert gen.is_stale(_updated(3600), NOW) is False
+    assert gen.is_stale(_updated(-3600), NOW) is False  # an update dated in the future is not old
+    for garbage in ["", "yesterday", "2026-13-45T00:00:00Z", None, 17]:
+        assert gen.is_stale(garbage, NOW) is True, garbage
+
+
+@pytest.mark.unit
+def test_a_naive_now_and_a_fraction_of_a_second_do_not_move_the_boundary():
+    edge = _updated(CRLITE_MAX_AGE_S)
+    assert gen.is_stale(edge, NOW.replace(tzinfo=None)) is True
+    assert gen.is_stale(_updated(CRLITE_MAX_AGE_S - 1), (NOW + timedelta(microseconds=900000)).replace(tzinfo=None)) is False
+
+
+@pytest.mark.unit
+def test_just_under_ten_days_is_not_a_warning():
+    assert gen.age_warning(_updated(CRLITE_MAX_AGE_S - 1), NOW) is None
     assert gen.age_warning(_updated(3600), NOW) is None
     assert gen.age_warning(_updated(-3600), NOW) is None  # an update dated in the future is not old
 
 
 @pytest.mark.unit
-def test_a_second_past_ten_days_is_a_warning():
-    text = gen.age_warning(_updated(CRLITE_MAX_AGE_S + 1), NOW)
-    assert text and "10 days old" in text and "invisible-playwright fetch" in text and "CRLite" in text
+def test_ten_days_exactly_is_a_warning_that_says_the_filters_are_left_out():
+    text = gen.age_warning(_updated(CRLITE_MAX_AGE_S), NOW)
+    assert text and "10 days old" in text and "left out" in text and "invisible-playwright fetch" in text and "CRLite" in text
+    assert "10 days old" in gen.age_warning(_updated(CRLITE_MAX_AGE_S + 1), NOW)
     assert "15 days old" in gen.age_warning(_updated(15 * 86400 + 5), NOW)
 
 
@@ -361,4 +397,4 @@ def test_a_second_past_ten_days_is_a_warning():
 @pytest.mark.parametrize("garbage", ["", "yesterday", "2026-13-45T00:00:00Z", None, 17])
 def test_a_date_that_cannot_be_read_is_a_warning(garbage):
     text = gen.age_warning(garbage, NOW)
-    assert text and "age is unknown" in text and "invisible-playwright fetch" in text
+    assert text and "age is unknown" in text and "left out" in text and "invisible-playwright fetch" in text

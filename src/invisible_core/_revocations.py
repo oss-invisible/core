@@ -299,6 +299,11 @@ _DEVICE_NAMES = frozenset({"con", "prn", "aux", "nul", "com1", "com2", "com3", "
                            "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"})
 
 
+#: The name the engine's generate mode gives the full CRLite filter in `security_state/` (`_security_state_generate.CRLITE_FILTER_FILE_NAME`): an attachment of this name (full or
+#: delta, any case) would be a second file the launch could take for the engine's own, or be taken for one when the filters are left out of a stale profile.
+ENGINE_FILTER_NAME = "crlite.filter"
+
+
 def _safe_basename(name) -> bool:
     """A plain file name: no separator, no `..`, no drive letter, no empty name, nothing Windows would reinterpret."""
     if not isinstance(name, str) or _SAFE_NAME.fullmatch(name) is None or ".." in name:
@@ -318,6 +323,8 @@ def _attachment_of(record: dict) -> dict:
         raise RevocationsError("record %s: the attachment's filename is not a plain file name: %r" % (rid, name))
     if name.lower() == CRLITE_FILE_NAME:
         raise RevocationsError("record %s: the attachment's filename is the manifest's" % rid)
+    if name.lower() == ENGINE_FILTER_NAME:
+        raise RevocationsError("record %s: the attachment's filename is the one the engine writes the full filter under in security_state" % rid)
     digest = attachment.get("hash")
     if not isinstance(digest, str) or _HEX64.fullmatch(digest) is None:
         raise RevocationsError("record %s: the attachment has no sha256" % rid)

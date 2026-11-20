@@ -248,6 +248,40 @@ def test_a_filename_that_is_not_a_plain_basename_is_refused(name):
         rv.crlite_records(changeset([full]))
 
 
+@pytest.mark.parametrize("name", ["crlite.filter", "CRLITE.FILTER", "Crlite.Filter"])
+@pytest.mark.parametrize("incremental", [False, True], ids=["full", "delta"])
+def test_an_attachment_named_as_the_engine_names_the_full_filter_is_refused(name, incremental):
+    """The engine writes the full filter as `security_state/crlite.filter`: an attachment of that name, full or delta, in any case, is refused."""
+    full = crlite("a", 1, incremental=False)
+    records = [full]
+    if incremental:
+        delta = crlite("b", 2, incremental=True, filename=name)
+        records.append(delta)
+    else:
+        full["attachment"]["filename"] = name
+    with pytest.raises(rv.RevocationsError, match="security_state"):
+        rv.crlite_records(changeset(records))
+
+
+@pytest.mark.parametrize("name", ["a/b.delta", "a\\b.delta", "..\\crlite.filter", "../crlite.filter", "sub/crlite.filter"])
+@pytest.mark.parametrize("incremental", [False, True], ids=["full", "delta"])
+def test_a_filename_with_a_path_separator_is_refused_for_a_full_filter_and_for_a_delta(name, incremental):
+    full = crlite("a", 1, incremental=False)
+    records = [full]
+    if incremental:
+        records.append(crlite("b", 2, incremental=True, filename=name))
+    else:
+        full["attachment"]["filename"] = name
+    with pytest.raises(rv.RevocationsError, match="not a plain file name"):
+        rv.crlite_records(changeset(records))
+
+
+def test_the_name_refused_is_the_one_the_generate_mode_gives_the_full_filter():
+    from invisible_core import _security_state_generate as gen
+
+    assert rv.ENGINE_FILTER_NAME == gen.CRLITE_FILTER_FILE_NAME
+
+
 def test_two_records_with_the_same_filename_are_refused():
     one = crlite("a", 1, incremental=False, filename="same.filter")
     two = crlite("b", 2, incremental=True, filename="SAME.filter")

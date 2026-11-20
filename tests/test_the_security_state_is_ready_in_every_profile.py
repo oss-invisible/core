@@ -6,8 +6,9 @@ engine wrote into its profile: no pref, no network on a warm cache, no thread. N
 network seam of the core) is a fake service that serves the feed, the three collections and the attachments and records every URL it was asked, and the engine is the stand-in
 of `_fake_security_state_engine.py` (which refuses whatever the generate contract forbids), reached through the one seam of the module (`_security_state._engine_for`).
 
-No test measures a time and none reads a clock: the time of a fetch and the "now" of the age warning are passed as data. Every refusal is judged by the TREE of the cache, which
-must be exactly what it was.
+No test measures a time and none reads a clock: the time of a fetch and the "now" of every decision (the age warning, the copy without the CRLite files, the refusal to generate
+from stale data) are passed as data, and a launch that is given none reads `ss._now`, which the `cache` fixture fixes at `T0`. Every refusal is judged by the TREE of the cache,
+which must be exactly what it was.
 """
 from __future__ import annotations
 
@@ -126,6 +127,7 @@ def cache(tmp_path, monkeypatch) -> Path:
     monkeypatch.setattr(ss, "ensure_security_state", REAL_ENSURE)
     monkeypatch.setattr(ss, "_WARNED", False)
     monkeypatch.setattr(ss, "_AGE_WARNED", False)
+    monkeypatch.setattr(ss, "_now", lambda: T0)   # the one clock of the module: a launch with no `now` is at T0
     monkeypatch.setattr(ss, "_SLOT", asset.FlightSlot())
     monkeypatch.setattr(download, "_SLEEP", lambda seconds: None)   # the retries ask again at once
     monkeypatch.setattr(download, "_note", lambda message: None)
@@ -286,13 +288,13 @@ def test_an_engine_that_changed_generates_again_from_the_cached_data_and_asks_no
     first, _ = ss.update_security_state(now=T0)
     engine.build_id = BUILD_B
     service.calls.clear()
-    ready = REAL_ENSURE()
+    ready = REAL_ENSURE(now=T0)
     assert ready is not None and ready.path == ready_of(cache, "1000-1100-1200", BUILD_B)
     assert service.calls == []
     assert engine.runs == [BUILD_A, BUILD_B]
     assert first.is_dir() and (first / SECURITY_STATE_DIR_NAME).is_dir(), "the old generation stays"
     assert ready.updated_utc == T0_UTC
-    assert REAL_ENSURE().path == ready.path and engine.runs == [BUILD_A, BUILD_B], "once generated, it is a lookup"
+    assert REAL_ENSURE(now=T0).path == ready.path and engine.runs == [BUILD_A, BUILD_B], "once generated, it is a lookup"
     assert json.loads((ready.path / SECURITY_STATE_RESULT_NAME).read_text())["engine"]["build_id"] == BUILD_B
 
 
@@ -313,7 +315,7 @@ def test_a_regeneration_that_fails_leaves_the_version_as_it_was_and_the_launch_w
     engine.build_id = BUILD_B
     engine.mode = "exit1"
     before = snapshot(cache)
-    assert REAL_ENSURE() is None
+    assert REAL_ENSURE(now=T0) is None
     assert snapshot(cache) == before
     assert capsys.readouterr().err.count("could not be made") == 1
 
@@ -418,18 +420,120 @@ def test_the_four_prefs_are_written_in_one_place_of_the_package_and_the_launch_w
 
 # --- the warning at ten days ------------------------------------------------------------------------------------------------------------------------
 
+TEN_DAYS = timedelta(days=10)
+ONE_SECOND = timedelta(seconds=1)
+
+
 @pytest.mark.integration
-def test_data_older_than_ten_days_is_a_warning_on_stderr_once_and_exactly_ten_days_is_not(cache, service, engine, tmp_path, capsys):
+def test_data_ten_days_old_or_more_is_a_warning_on_stderr_once_and_just_under_ten_days_is_not(cache, service, engine, tmp_path, capsys):
     ss.update_security_state(now=T0)
     capsys.readouterr()
-    assert ss.place_security_state(tmp_path / "a", now=T0 + timedelta(days=10)) is True
-    assert capsys.readouterr().err == "", "exactly ten days is not a warning"
-    assert ss.place_security_state(tmp_path / "b", now=T0 + timedelta(days=10, seconds=1)) is True
+    assert ss.place_security_state(tmp_path / "a", now=T0 + TEN_DAYS - ONE_SECOND) is True
+    assert capsys.readouterr().err == "", "ten days less a second is fresh"
+    assert ss.place_security_state(tmp_path / "b", now=T0 + TEN_DAYS) is True
     err = capsys.readouterr().err
-    assert err.count("revocation data is 10 days old") == 1 and "invisible-playwright fetch" in err
+    assert err.count("revocation data is 10 days old") == 1 and "left out" in err and "invisible-playwright fetch" in err, "exactly ten days is stale"
     assert ss.place_security_state(tmp_path / "c", now=T0 + timedelta(days=30)) is True
     assert capsys.readouterr().err == "", "once per process"
-    assert state_files(tmp_path / "c") == state_files(tmp_path / "a"), "the warning does not stop the copy"
+    assert sorted(state_files(tmp_path / "c")) == ["data.safe.bin"] and sorted(state_files(tmp_path / "a")) == sorted(state_files(ready_of(cache, "1000-1100-1200")))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("age", [TEN_DAYS, TEN_DAYS + ONE_SECOND, timedelta(days=45)])
+def test_a_launch_with_stale_data_copies_only_the_data_without_the_crlite_filter_and_the_deltas(cache, service, engine, tmp_path, capsys, age):
+    """(b) The known-bad is a stale profile that still carries `crlite.filter` and the deltas: cert_storage would take them for fresh, because their time is the time of OUR
+    generation. With data ten days old (exactly: it is stale) the profile has `security_state/data.safe.bin` and nothing of the filters; the cache keeps them whole."""
+    ready, _ = ss.update_security_state(now=T0)
+    cached = state_files(ready)
+    assert "crlite.filter" in cached and any(n.endswith(".delta") for n in cached)
+    service.calls.clear()
+    capsys.readouterr()
+    before = snapshot(cache)
+    assert ss.place_security_state(tmp_path / "p", now=T0 + age) is True
+    state = state_files(tmp_path / "p")
+    assert sorted(state) == ["data.safe.bin"] and state["data.safe.bin"] == cached["data.safe.bin"]
+    assert not [n for n in state if n == "crlite.filter" or n.endswith(".delta")]
+    err = capsys.readouterr().err
+    assert "CRLite filters are left out" in err and "invisible-playwright fetch" in err and "%d days old" % age.days in err
+    assert snapshot(cache) == before and service.calls == [], "the cache is as it was and nothing was asked"
+
+
+@pytest.mark.integration
+def test_a_launch_with_data_ten_days_less_a_second_old_copies_everything_and_says_nothing(cache, service, engine, tmp_path, capsys):
+    ready, _ = ss.update_security_state(now=T0)
+    capsys.readouterr()
+    assert ss.place_security_state(tmp_path / "p", now=T0 + TEN_DAYS - ONE_SECOND) is True
+    assert state_files(tmp_path / "p") == state_files(ready)
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("age", [TEN_DAYS, TEN_DAYS + ONE_SECOND])
+def test_an_engine_that_changed_is_not_generated_for_when_the_cached_data_is_stale(cache, service, engine, tmp_path, capsys, age):
+    """(a) The known-bad is a generation made at launch from old data: cert_storage would date it at the moment of the generation and the old filters would look fresh, which a
+    retail Firefox never does. Ten days exactly, and ten days and a second: the engine is not run, nothing is asked, the cache is as it was, the launch copies nothing and the
+    warning says to run fetch."""
+    ss.update_security_state(now=T0)
+    engine.build_id = BUILD_B
+    service.calls.clear()
+    capsys.readouterr()
+    before = snapshot(cache)
+    assert REAL_ENSURE(now=T0 + age) is None
+    assert ss.place_security_state(tmp_path / "p", now=T0 + age) is False
+    assert not (tmp_path / "p" / SECURITY_STATE_DIR_NAME).exists()
+    assert engine.runs == [BUILD_A], "no generation was run"
+    assert service.calls == [] and snapshot(cache) == before
+    err = capsys.readouterr().err
+    assert err.count("could not be made") == 1 and "invisible-playwright fetch" in err, "one warning per process, and it names fetch"
+
+
+@pytest.mark.integration
+def test_an_engine_that_changed_is_generated_for_when_the_cached_data_is_ten_days_less_a_second_old(cache, service, engine, tmp_path, capsys):
+    ss.update_security_state(now=T0)
+    engine.build_id = BUILD_B
+    service.calls.clear()
+    capsys.readouterr()
+    ready = REAL_ENSURE(now=T0 + TEN_DAYS - ONE_SECOND)
+    assert ready is not None and ready.path == ready_of(cache, "1000-1100-1200", BUILD_B)
+    assert engine.runs == [BUILD_A, BUILD_B], "one generation"
+    assert service.calls == []
+    assert ss.place_security_state(tmp_path / "p", now=T0 + TEN_DAYS - ONE_SECOND) is True
+    assert state_files(tmp_path / "p") == state_files(ready.path)
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("age", [TEN_DAYS, TEN_DAYS + ONE_SECOND])
+def test_a_fetch_with_nothing_newer_after_an_engine_change_does_not_generate_from_stale_data(cache, service, engine, capsys, age):
+    """(a) `update_security_state` too: the feed has nothing newer, the engine changed, the data is stale: no generation, `(None, False)`, the cache exactly as it was."""
+    ss.update_security_state(now=T0)
+    engine.build_id = BUILD_B
+    service.calls.clear()
+    capsys.readouterr()
+    before = snapshot(cache)
+    assert ss.update_security_state(now=T0 + age) == (None, False)
+    assert engine.runs == [BUILD_A]
+    assert service.calls == [SECURITY_STATE_LATEST_URL], "only the feed was asked"
+    assert snapshot(cache) == before
+    assert "could not update the security state" in capsys.readouterr().err
+
+
+@pytest.mark.integration
+def test_a_fetch_with_nothing_newer_ten_days_less_a_second_after_an_engine_change_generates(cache, service, engine):
+    ss.update_security_state(now=T0)
+    engine.build_id = BUILD_B
+    assert ss.update_security_state(now=T0 + TEN_DAYS - ONE_SECOND) == (ready_of(cache, "1000-1100-1200", BUILD_B), False)
+    assert engine.runs == [BUILD_A, BUILD_B]
+
+
+@pytest.mark.integration
+def test_a_fetch_that_builds_a_new_version_after_a_long_time_generates_from_its_own_fresh_data(cache, service, engine):
+    """The data of a fetch has `updated_utc` = the fetch's own `now`, so it is fresh whatever the age of the previous version."""
+    ss.update_security_state(now=T0)
+    service.onecrl_ts += 1
+    path, changed = ss.update_security_state(now=T0 + timedelta(days=60))
+    assert changed is True and path == ready_of(cache, "1000-1101-1200")
+    assert engine.runs == [BUILD_A, BUILD_A]
 
 
 @pytest.mark.unit
@@ -437,10 +541,13 @@ def test_a_state_the_user_gave_has_no_age_and_no_warning(cache, service, tmp_pat
     given = tmp_path / "given"
     (given / SECURITY_STATE_DIR_NAME).mkdir(parents=True)
     (given / SECURITY_STATE_DIR_NAME / "data.safe.bin").write_bytes(b"mine")
+    (given / SECURITY_STATE_DIR_NAME / "crlite.filter").write_bytes(b"filter")
+    (given / SECURITY_STATE_DIR_NAME / "1.filter.delta").write_bytes(b"delta")
     (given / SECURITY_STATE_RESULT_NAME).write_text("{}")
     monkeypatch.setenv("STEALTHFOX_SECURITY_STATE", str(given))
     assert ss.place_security_state(tmp_path / "p", now=T0 + timedelta(days=3650)) is True
     assert capsys.readouterr().err == ""
+    assert state_files(tmp_path / "p") == {"data.safe.bin": b"mine", "crlite.filter": b"filter", "1.filter.delta": b"delta"}, "a directory the user gave is copied whole, whatever the date"
 
 
 # --- nothing that fails changes the cache --------------------------------------------------------------------------------------------------------

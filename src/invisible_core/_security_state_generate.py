@@ -27,6 +27,13 @@ cache in one step, so a reader sees a complete generation or none.
 
 EVERY PROFILE GETS A COPY (`place_in_profile`), never a link, on Linux and on Windows: the engine rewrites the filter and delta files IN PLACE while it runs, and a link would
 let one session write into the cache and into every other session's profile.
+
+THE TEN-DAY RULE, in ONE place (`is_stale`). cert_storage keeps `last_crlite_update`, the time of the last write of a filter or a delta, and treats the filters as fresh only
+while `now < last_crlite_update + 10 days` (security/manager/ssl/cert_storage/src/lib.rs:464-483, whole seconds). A generation of ours is made when WE run the engine, so one
+made from old data would look fresh to cert_storage, which a retail Firefox never does, and cert_storage cannot be told another time. So the core never generates from stale data
+(`_security_state`), and a launch with stale data copies `security_state/` WITHOUT the CRLite filter and its deltas (`place_in_profile(without_crlite=True)`): only
+`data.safe.bin` (intermediates and OneCRL). FRESH is `now < updated_utc + CRLITE_MAX_AGE_S`; STALE is `now - updated_utc >= CRLITE_MAX_AGE_S`, so exactly ten days IS stale; a
+date that cannot be read is stale.
 """
 from __future__ import annotations
 
@@ -60,7 +67,7 @@ from .launch import _pref_literal
 from .process import SessionToken, find_processes, reap_session, wait_until_gone
 from .seal import EngineMismatch, read_engine_identity
 
-__all__ = ["GENERATE_TIMEOUT_S", "GenerationError", "EngineId", "Expected", "Inputs", "engine_id_of", "generate", "validate_result", "place_in_profile", "age_warning"]
+__all__ = ["GENERATE_TIMEOUT_S", "GenerationError", "EngineId", "Expected", "Inputs", "engine_id_of", "generate", "validate_result", "place_in_profile", "age_warning", "is_stale"]
 
 #: What the engine is given to import the files and exit, in seconds: an import of a few thousand records and a filter is a matter of seconds, and a hung engine is ended.
 GENERATE_TIMEOUT_S = 120
@@ -72,7 +79,8 @@ STDERR_TAIL_BYTES = 4000
 TREE_GONE_WAIT_S = 10.0
 REMOVE_ATTEMPTS = 40
 #: The files the engine must have left in `security_state/`.
-REQUIRED_FILES = ("data.safe.bin", "crlite.filter")
+CRLITE_FILTER_FILE_NAME = "crlite.filter"
+REQUIRED_FILES = ("data.safe.bin", CRLITE_FILTER_FILE_NAME)
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
@@ -364,11 +372,22 @@ def generate(command: Sequence[str], inputs: Inputs, engine: EngineId, out_dir: 
         _remove_tree(base)
 
 
-def place_in_profile(ready: Path, profile_dir: Path) -> bool:
+def _is_crlite_file(name: str) -> bool:
+    """The files of the CRLite filters in `security_state/`: the full filter (`crlite.filter`) and every delta (`*.delta`). Not case-sensitive."""
+    low = name.lower()
+    return low == CRLITE_FILTER_FILE_NAME or low.endswith(".delta")
+
+
+def _without_crlite(_directory: str, names: List[str]) -> List[str]:
+    return [n for n in names if _is_crlite_file(n)]
+
+
+def place_in_profile(ready: Path, profile_dir: Path, *, without_crlite: bool = False) -> bool:
     """Puts a copy of the generated `security_state` in a session's profile; False (nothing touched) when `ready` has none.
 
     A COPY, never a link: the engine rewrites the filter and the delta files in place, and a link would write into the cache and into every other profile. A `security_state` the
-    profile already has is replaced."""
+    profile already has is replaced. With `without_crlite` the CRLite filter (`crlite.filter`) and every `*.delta` are not copied (the rest, `data.safe.bin`, is): that is what a
+    launch with stale data does (`is_stale`)."""
     src = Path(ready) / SECURITY_STATE_DIR_NAME
     if not src.is_dir():
         return False
@@ -377,26 +396,45 @@ def place_in_profile(ready: Path, profile_dir: Path) -> bool:
         dst.unlink()
     elif dst.exists():
         shutil.rmtree(dst)
-    shutil.copytree(src, dst, copy_function=shutil.copyfile)
+    shutil.copytree(src, dst, copy_function=shutil.copyfile, ignore=_without_crlite if without_crlite else None)
     return True
 
 
-def age_warning(updated_utc: Any, now: datetime) -> Optional[str]:
-    """The text to print (stderr-ready) when the revocation data is older than a retail Firefox would use, else None.
-
-    cert_storage treats the CRLite filters as absent `CRLITE_MAX_AGE_S` (ten days) after their last update, so a profile older than that is not the one a retail Firefox has.
-    Exactly ten days is not a warning. A date that cannot be read is one: nothing says how old the data is. `now` is given, never read from the clock."""
-    advice = "run `invisible-playwright fetch` to update it"
+def _stamp_of(updated_utc: Any) -> Optional[datetime]:
+    """The moment `updated_utc` says (UTC, whole seconds), or None when it says none."""
     try:
         stamp = datetime.fromisoformat(str(updated_utc).strip().replace("Z", "+00:00"))
     except ValueError:
-        return ("warning: the revocation data says no usable date (updated_utc=%r), so its age is unknown; a retail Firefox does not use the CRLite filters "
-                "once they are more than %d days old; %s" % (updated_utc, CRLITE_MAX_AGE_S // 86400, advice))
+        return None
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.replace(microsecond=0)
+
+
+def _age_s(stamp: datetime, now: datetime) -> int:
     current = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
-    age = current - stamp
-    if age.total_seconds() <= CRLITE_MAX_AGE_S:
+    return int((current.replace(microsecond=0) - stamp).total_seconds())
+
+
+def is_stale(updated_utc: Any, now: datetime) -> bool:
+    """THE rule, used by the warning, by the generation and by the copy into a profile: cert_storage's, at second granularity (lib.rs:464-483: `now < last_update + 10 days` is
+    fresh). The data is STALE when `now - updated_utc >= CRLITE_MAX_AGE_S` (exactly ten days is stale) and when `updated_utc` cannot be read. `now` is given, never read from the clock."""
+    stamp = _stamp_of(updated_utc)
+    return True if stamp is None else _age_s(stamp, now) >= CRLITE_MAX_AGE_S
+
+
+def age_warning(updated_utc: Any, now: datetime) -> Optional[str]:
+    """The text to print (stderr-ready) when the revocation data is stale (`is_stale`), else None.
+
+    cert_storage treats the CRLite filters as absent `CRLITE_MAX_AGE_S` (ten days) after their last update, so a launch with data that old leaves them out of the profile: it is the
+    state a retail Firefox has. Exactly ten days is stale. A date that cannot be read is stale too: nothing says how old the data is. `now` is given, never read from the clock."""
+    if not is_stale(updated_utc, now):
         return None
-    return ("warning: the revocation data is %d days old (updated %s); past %d days a retail Firefox does not use the CRLite filters; %s"
-            % (age.days, stamp.strftime("%Y-%m-%dT%H:%M:%SZ"), CRLITE_MAX_AGE_S // 86400, advice))
+    advice = "run `invisible-playwright fetch` to update it"
+    days = CRLITE_MAX_AGE_S // 86400
+    stamp = _stamp_of(updated_utc)
+    if stamp is None:
+        return ("warning: the revocation data says no usable date (updated_utc=%r), so its age is unknown; the CRLite filters are left out of the profile because a retail "
+                "Firefox does not use them once they are %d days old or more; %s" % (updated_utc, days, advice))
+    return ("warning: the CRLite filters are left out of the profile because the revocation data is %d days old (updated %s); from %d days on a retail Firefox does not use "
+            "them; %s" % (_age_s(stamp, now) // 86400, stamp.strftime("%Y-%m-%dT%H:%M:%SZ"), days, advice))
