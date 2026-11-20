@@ -487,12 +487,14 @@ jobs:
   # the index: for a release of the core, no test of the wrapper that stands on the
   # core's Juggler client (Lifecycle, InjectedScript, Connection, the protocol) had
   # ever run on the code that was about to go out. This job checks out the wrapper's
-  # main, installs it, puts THIS checkout's core over the pin, fetches the engine
-  # the seal names and runs those test files, on Linux and Windows.
+  # main (or the branch the pull request declares), installs it, puts THIS checkout's
+  # core over the pin, fetches the engine the seal names and runs those test files, on
+  # Linux and Windows.
   #
   # WHEN: on a release pull request (head branch `release/*`), on every push to
-  # main, and on a pull request that touches the job itself (this file, the script,
-  # its table of seconds, or its test): `wrapper-job-needed` decides and says it in
+  # main, on a pull request that touches the job itself (this file, the script,
+  # its table of seconds, or its test) and on one whose body declares a wrapper
+  # branch (`wrapper-ref: <branch>`): `wrapper-job-needed` decides and says it in
   # its output `run`. Any other pull request skips the job, and the `gate` below
   # knows that is the right state for those and the wrong one for the others.
   #
@@ -528,6 +530,7 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           # A diff that cannot be read is red (set -e), never "nothing changed".
           set -e
@@ -536,6 +539,9 @@ jobs:
             run=true
           else
             case "$HEAD_REF" in release/*) run=true ;; esac
+            # A pull request that declares a wrapper branch wants it tried: a loose look at
+            # the body (the grammar is judged by the job itself, which is red on a bad line).
+            if printf '%s\n' "${PR_BODY:-}" | grep -Eiq '^wrapper-ref[[:space:]]*:'; then run=true; fi
             git diff --name-only "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed.txt"
             while IFS= read -r path; do
               case "$path" in
@@ -576,14 +582,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/checkout@v4
-        with:
-          repository: oss-invisible/playwright
-          ref: main
-          path: wrapper
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # WHICH BRANCH OF THE WRAPPER. Its `main`, always, on a push and on a tag. A pull
+      # request of the core that changes an API the wrapper uses can declare, in ONE line
+      # of its body, `wrapper-ref: <branch>` (grammar and checks: `wrapper-ref` of
+      # scripts/wrapper_on_this_core.py), and then that branch is tried. The body is
+      # untrusted input: it reaches the script through `env:` and a file, never through
+      # an interpolation in `run:`. The judge and the list compared with are still main's.
+      - id: wrapper_ref
+        name: which branch of the wrapper this run tries
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr_body.txt"
+          python scripts/wrapper_on_this_core.py wrapper-ref --event "$EVENT" --body-file "$RUNNER_TEMP/pr_body.txt"
+      - uses: actions/checkout@v4
+        with:
+          repository: oss-invisible/playwright
+          ref: ${{ steps.wrapper_ref.outputs.ref }}
+          path: wrapper
       - name: the list of tests is not shorter than main's
         run: |
           # The list of main is what main's copy of the script computes on THIS wrapper
