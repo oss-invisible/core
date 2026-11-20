@@ -627,6 +627,11 @@ jobs:
       - name: the wrapper, then THIS core over its pin
         run: |
           python -m pip install --upgrade pip
+          # THIS core first: a wrapper branch a pull request declares pins the release it is
+          # made with (this one, not yet on the index), and pip takes the installed copy for it;
+          # a wrapper whose pin is another version replaces it, and the line after the wrapper
+          # puts this core back over the pin.
+          python -m pip install .
           (cd wrapper && python -m pip install ".[dev]")
           # Playwright only as a system tool, for the libraries Firefox needs on a bare runner.
           python -m pip install "playwright==$(cat wrapper/scripts/playwright_pin.txt)"
