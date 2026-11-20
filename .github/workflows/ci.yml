@@ -40,6 +40,11 @@ env:
 jobs:
   tests:
     runs-on: ${{ matrix.os }}
+    # TEMP and TMP on D:\a\_temp (the runner's temp folder): the Firefox profiles land in TEMP and on C: they saturate the disk (queue up to 144,
+    # latencies up to 4 s, parent main thread still 40-60 s). On the job, not in a step: `runner.temp` is not readable in a job's `env`.
+    env:
+      TEMP: ${{ startsWith(matrix.os, 'windows') && 'D:\a\_temp' || '/tmp' }}
+      TMP: ${{ startsWith(matrix.os, 'windows') && 'D:\a\_temp' || '/tmp' }}
     strategy:
       fail-fast: false
       matrix:
@@ -176,6 +181,11 @@ jobs:
   # reader gets it.
   repair-through-the-installer:
     runs-on: ${{ matrix.os }}
+    # TEMP and TMP on D:\a\_temp (the runner's temp folder): the Firefox profiles land in TEMP and on C: they saturate the disk (queue up to 144,
+    # latencies up to 4 s, parent main thread still 40-60 s). On the job, not in a step: `runner.temp` is not readable in a job's `env`.
+    env:
+      TEMP: ${{ startsWith(matrix.os, 'windows') && 'D:\a\_temp' || '/tmp' }}
+      TMP: ${{ startsWith(matrix.os, 'windows') && 'D:\a\_temp' || '/tmp' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -233,6 +243,11 @@ jobs:
   # (wrapper-on-this-core) and wherever INVPW_BINARY_PATH names a binary.
   engine-born-in-the-job:
     runs-on: windows-2022
+    # TEMP and TMP on D:\a\_temp (the runner's temp folder): the Firefox profiles land in TEMP and on C: they saturate the disk (queue up to 144,
+    # latencies up to 4 s, parent main thread still 40-60 s). On the job, not in a step: `runner.temp` is not readable in a job's `env`.
+    env:
+      TEMP: 'D:\a\_temp'
+      TMP: 'D:\a\_temp'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -439,6 +454,11 @@ jobs:
   # An empty profile (USERPROFILE, APPDATA, LOCALAPPDATA) stands for the empty HOME.
   default-selection-stays-inside-windows:
     runs-on: windows-2022
+    # TEMP and TMP on D:\a\_temp (the runner's temp folder): the Firefox profiles land in TEMP and on C: they saturate the disk (queue up to 144,
+    # latencies up to 4 s, parent main thread still 40-60 s). On the job, not in a step: `runner.temp` is not readable in a job's `env`.
+    env:
+      TEMP: 'D:\a\_temp'
+      TMP: 'D:\a\_temp'
     timeout-minutes: 30
     defaults:
       run:
@@ -573,7 +593,11 @@ jobs:
     defaults:
       run:
         shell: bash
+    # TEMP and TMP on D:\a\_temp (the runner's temp folder): the Firefox profiles land in TEMP and on C: they saturate the disk (queue up to 144,
+    # latencies up to 4 s, parent main thread still 40-60 s). On the job, not in a step: `runner.temp` is not readable in a job's `env`.
     env:
+      TEMP: ${{ startsWith(matrix.runner, 'windows') && 'D:\a\_temp' || '/tmp' }}
+      TMP: ${{ startsWith(matrix.runner, 'windows') && 'D:\a\_temp' || '/tmp' }}
       INVISIBLE_CORE_PIN: allow
       INVISIBLE_CORE_AUTOFIX: "off"
       PYTHONUNBUFFERED: "1"
@@ -712,8 +736,11 @@ jobs:
           Get-Process firefox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           "left: " + @(Get-Process firefox -ErrorAction SilentlyContinue).Count
 
+  noreply-identity:
+    uses: ./.github/workflows/noreply-identity.yml
+
   gate:
-    needs: [tests, msix-host, arm64-host, branding-is-retail, repair-through-the-installer,
+    needs: [noreply-identity, tests, msix-host, arm64-host, branding-is-retail, repair-through-the-installer,
             default-selection-stays-inside, default-selection-stays-inside-windows,
             wrapper-job-needed, wrapper-on-this-core]
     if: always()
@@ -725,6 +752,7 @@ jobs:
           # (tests/test_the_wrapper_job_runs_on_the_core.py holds the two alike).
           WRAPPER_JOB_REQUIRED: ${{ needs.wrapper-job-needed.outputs.run == 'true' }}
         run: |
+          echo "noreply-identity: ${{ needs.noreply-identity.result }}"
           echo "tests: ${{ needs.tests.result }}"
           echo "msix-host: ${{ needs.msix-host.result }}"
           echo "arm64-host: ${{ needs.arm64-host.result }}"
@@ -734,6 +762,7 @@ jobs:
           echo "default-selection-stays-inside-windows: ${{ needs.default-selection-stays-inside-windows.result }}"
           echo "wrapper-job-needed: ${{ needs.wrapper-job-needed.result }}"
           echo "wrapper-on-this-core: ${{ needs.wrapper-on-this-core.result }} (required: $WRAPPER_JOB_REQUIRED)"
+          test "${{ needs.noreply-identity.result }}" = "success"
           test "${{ needs.tests.result }}" = "success"
           test "${{ needs.msix-host.result }}" = "success"
           test "${{ needs.arm64-host.result }}" = "success"
