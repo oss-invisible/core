@@ -203,6 +203,13 @@ def test_a_tag_with_a_real_tagger_on_a_commit_main_already_has_fails(repo):
     assert "commits=0" in proc.stdout
 
 
+def test_a_tag_pushed_with_its_commit_as_after_still_has_its_tagger_judged(repo):
+    tag = repo.tag("v1", repo.root, tagger=REAL)
+    proc = repo.push("refs/tags/v1", ZEROS, repo.root)
+    assert proc.returncode == 1, out(proc)
+    assert f"{tag[:12]} tagger: {REAL_MASKED}" in proc.stdout
+
+
 def test_a_tag_with_a_noreply_tagger_passes(repo):
     tag = repo.tag("v1", repo.root, tagger=NOREPLY)
     proc = repo.push("refs/tags/v1", ZEROS, tag)

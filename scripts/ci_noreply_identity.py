@@ -177,6 +177,12 @@ def plan_push(a: argparse.Namespace) -> tuple[str, Found, list[str]]:
     if git("cat-file", "-e", a.after, check=False).returncode != 0 and is_tag:
         git("fetch", "--no-tags", a.remote, f"+{a.ref}:{a.ref}")
     tag_found = taggers(a.after) if git("cat-file", "-t", a.after).stdout.strip() == "tag" else []
+    # `after` may name the peeled commit rather than the tag object: the tagger is
+    # then read from the pushed ref itself, so an annotated tag is never judged
+    # as a lightweight one.
+    if is_tag and not tag_found and (
+            git("cat-file", "-t", a.ref, check=False).stdout.strip() == "tag"):
+        tag_found = taggers(git("rev-parse", a.ref).stdout.strip())
     pushed = a.ref if is_tag else f"refs/remotes/{a.remote}/{a.ref[len('refs/heads/'):]}"
     excluded = refs_already_public(a.remote, pushed)
     # After a force-push the old tip may be gone: the ref is then new for us.
