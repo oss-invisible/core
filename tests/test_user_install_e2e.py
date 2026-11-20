@@ -123,6 +123,20 @@ def readme_install_lines() -> list:
         f"there is no way in for this test to follow")
 
 
+def _pinned_to_the_ledger(lines: list) -> list:
+    """On a ledger pull request, `user-install.yml` names the version the PR records (`INVCORE_E2E_VERSION`, the one it adds to PUBLISHED.json):
+    that one is installed, not "the latest" of the index, which can be another (main may already declare, and the index by then serve, the
+    next release). A scheduled or dispatched run has no such variable and installs what the README's line installs."""
+    version = os.environ.get("INVCORE_E2E_VERSION")
+    if not version:
+        return lines
+    add = [i for i, l in enumerate(lines) if l.split()[:2] == ["uv", "add"] and DIST in l.split()]
+    assert len(add) == 1, lines
+    out = list(lines)
+    out[add[0]] = out[add[0]].replace(DIST, f"{DIST}=={version}", 1)
+    return out
+
+
 @pytest.fixture(scope="module")
 def clean_venv():
     """A project `uv init` made, with the README's install lines run inside it,
@@ -144,7 +158,7 @@ def clean_venv():
         project = root / "project"
         _run([uv, "init", "--python", ">=3.11", "--no-workspace", "--vcs", "none",
               str(project)], timeout=300, env=env)
-        for line in readme_install_lines():
+        for line in _pinned_to_the_ledger(readme_install_lines()):
             _run(shlex.split(line), cwd=project, timeout=900, env=env)
         py = _venv_python(project / ".venv")
         assert py.exists(), "the README's lines made no venv at {}".format(py)
@@ -199,6 +213,15 @@ def test_the_version_the_index_serves_matches_this_checkout(clean_venv: Path):
         f"{derived} from its own packaged seal - the two disagree inside one "
         f"install, which means the seal that shipped is not the one the version "
         f"was computed from")
+
+    # On a ledger pull request the version under test is the one the PR records, not the one the tree derives: the tree may be ahead of
+    # the index (its release is not published until this ledger is merged).
+    recorded = os.environ.get("INVCORE_E2E_VERSION")
+    if recorded:
+        assert served == recorded, (
+            f"the index served {DIST} {served} while the ledger pull request records {recorded}: the install "
+            f"did not resolve the version of the pull request")
+        return
 
     here = Path(__file__).resolve().parents[1]
     # The checkout's version is derived too, so it is read by executing the

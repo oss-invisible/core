@@ -197,6 +197,28 @@ jobs:
           powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
           "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      # ⛔ THE VERSION OF A LEDGER PULL REQUEST IS THE ONE IT ADDS TO PUBLISHED.json, NOT THE ONE THE TREE DECLARES.
+      # The ledger PR of a release is merged after this job is green, and the next release's tree can already be on main (the seal or CORE_REVISION
+      # ahead): its version is not published until this ledger is merged (its tag asks for it), so a wait on the version derived from the tree
+      # could never end and the PR could never merge; and an index that already serves a newer one made the install check another release. The
+      # versions are compared as data: the ledger at the base of the pull request against the ledger at its head. Nothing added is an error (there
+      # is no release to check), and so is more than one (the job installs and launches one version). INVCORE_E2E_VERSION then carries it to the
+      # wait and to the install below. A scheduled or dispatched run has no pull request and no such version: it installs the latest, as before.
+      - name: the version this ledger pull request records
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
+          git show "$BASE_SHA:PUBLISHED.json" > "$RUNNER_TEMP/ledger-base.json"
+          git show "$HEAD_SHA:PUBLISHED.json" > "$RUNNER_TEMP/ledger-head.json"
+          version="$(python scripts/ci_ledger_added_versions.py --base "$RUNNER_TEMP/ledger-base.json" --head "$RUNNER_TEMP/ledger-head.json")"
+          echo "INVCORE_E2E_VERSION=$version" >> "$GITHUB_ENV"
+          echo "::notice::this ledger pull request records invisible-core $version"
+
       # PyPI does not serve a new version to pip the instant twine finishes, and
       # this workflow runs on the ledger pull request, which the publish job
       # opens seconds after the upload.
@@ -233,29 +255,8 @@ jobs:
           import json, os, subprocess, sys, time, tomllib
           meta = tomllib.load(open("pyproject.toml", "rb"))["project"]
           dist = meta["name"]
-          # NOT meta["version"]. This package declares `dynamic = ["version"]` -
-          # the version is DERIVED from the packaged seal's tag plus
-          # CORE_REVISION, and there is no literal in pyproject.toml to read. So
-          # this step raised KeyError: 'version' on line 3, on every release, on
-          # both runners, since it was written: the check that a user can install
-          # this from the index and launch it had never once executed. Found
-          # 2026-08-01 by reading a red run that had been red all along.
-          #
-          # Derived the way the package derives it - but LOADED AS A FILE, not
-          # imported as `invisible_core._version`, which is what the fix for the
-          # KeyError above did and what broke this step the next time it ran.
-          # Importing a submodule executes the PACKAGE first, and this job
-          # installs pip, pytest and packaging only, so `invisible_core/__init__`
-          # died on `No module named 'platformdirs'` - one line below a comment
-          # explaining the previous fix. `_version.py` needs nothing but json,
-          # pathlib and the seal.json sitting beside it, so loading the file
-          # directly is both correct and dependency-free.
-          import importlib.util
-          _spec = importlib.util.spec_from_file_location(
-              "_core_version", "src/invisible_core/_version.py")
-          _mod = importlib.util.module_from_spec(_spec)
-          _spec.loader.exec_module(_mod)
-          version = _mod.__version__
+          # The version the ledger pull request records (the step above), never the one the tree derives: main may already be at the next one.
+          version = os.environ["INVCORE_E2E_VERSION"]
           deadline = time.monotonic() + 600
           deadline = min(deadline, time.monotonic() + float(os.environ.get("INDEX_WAIT_SECONDS", "600")))
           poll = float(os.environ.get("INDEX_WAIT_POLL", "15"))
@@ -293,6 +294,8 @@ jobs:
           # rate-limited walk SKIPS, and a skip is not a check.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INVPW_E2E_SOURCE: ${{ github.event.inputs.source || 'index' }}
+          # INVCORE_E2E_VERSION (set above on a ledger pull request, absent otherwise) is read by the install test: it adds exactly that version
+          # (`uv add invisible-core==X`) and compares what the index serves with it, not with the version of the tree.
         shell: bash
         run: |
           set -o pipefail   # or the tee below would swallow pytest's exit code
