@@ -34,7 +34,7 @@ from .prefs import (
 )
 from .download import ensure_binary
 from ._geoip_db import ensure_geoip_mmdb
-from ._intermediates import ensure_intermediates, refresh_intermediates_in_background
+from ._intermediates import ensure_intermediates, update_intermediates
 from ._geo import (
     GeoTimezoneError,
     SessionGeo,
@@ -110,7 +110,7 @@ __all__ = [
     "ensure_geoip_mmdb",
     # the preloaded intermediate certificates the core declares to the engine
     "ensure_intermediates",
-    "refresh_intermediates_in_background",
+    "update_intermediates",
     # geo / timezone / language: ONE decision, read by every consumer
     "prepare_session_geo",
     "SessionGeo",

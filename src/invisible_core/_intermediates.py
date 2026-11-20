@@ -15,10 +15,11 @@ compact, UTF-8, LF, the certs sorted by derHash; `SOURCES.json` beside it says w
 directory per version in the cache, the highest wins (`_cached_asset`).
 
 TWO ROADS, and only the second ever touches the network on a warm cache:
-  * `ensure_intermediates()` is what a launch calls BEFORE the browser starts. A copy in the cache is returned at once, with NO request, whatever the age of the
-    last check: a launch never waits for Mozilla because a day went by. Only a cold cache downloads, in line (there is nothing else to declare).
-  * `refresh_intermediates_in_background()` is called AFTER the browser has started. When the last check is older than a day it starts a daemon thread that asks
-    for the collection's timestamp and, when it is newer, downloads, verifies and puts the new version in place; it counts from the next launch.
+  * `ensure_intermediates()` is what a launch calls BEFORE the browser starts. A copy in the cache is returned at once, with NO request, whatever its age:
+    a launch never waits for Mozilla and starts no thread for it. Only a cold cache downloads, in line (there is nothing else to declare).
+  * `update_intermediates()` is what `invisible-playwright fetch` calls, because the user asked for it: it asks the changes feed (a few hundred bytes)
+    for the collection's timestamp EVERY time and, when it is newer than the cache's, downloads, verifies and puts the new version in place. There is no
+    schedule and no state file: the user's command is the clock, and the answer of the feed is the only thing that decides.
 
 NOTHING THAT DOES NOT ADD UP IS KEPT. Every record is checked against what the server itself says about it (the sha256 of the attachment, the hash of the
 DER, the subject) and the number of certificates against the number of records; one piece that fails refuses the whole download and the copy in the cache stays
@@ -35,11 +36,10 @@ import os
 import re
 import shutil
 import sys
-import threading
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import requests
 
@@ -56,19 +56,10 @@ from .constants import (
 )
 from .download import DOWNLOAD_ATTEMPTS, _with_retries, state_dir
 
-__all__ = ["ensure_intermediates", "refresh_intermediates_in_background", "intermediates_path"]
-
-#: How often Mozilla is asked whether the collection changed: once a WEEK, kept in a file beside the versions. Mozilla adds about one intermediate a day
-#: (19/11/2026: 1,853 records, 35 new in 28 days), so a week-old list lacks a handful of certificates, the ones a retail Firefox would also lack for days.
-INTERMEDIATES_CHECK_INTERVAL_S = 7 * 24 * 3600
+__all__ = ["ensure_intermediates", "update_intermediates", "intermediates_path"]
 
 #: The collection's name as the file says it.
 _COLLECTION = "security-state/intermediates"
-
-#: Set by the first background check of this process, good or not: a process asks at most once. A failed check is not written to the state file (the next
-#: process asks again) but is not repeated in this process.
-_CHECKED_THIS_PROCESS = False
-_check_lock = threading.Lock()
 
 #: The one cold download in flight in this process: the callers of a cold cache share it.
 _SLOT = _asset.FlightSlot()
@@ -333,7 +324,7 @@ def _write_files(directory: Path, listing_bytes: bytes, sources_bytes: bytes) ->
 def _download_and_publish(attempts: int, expected: int) -> Path:
     """Download, verify and put a new version in the cache; its path. Raises on anything that does not add up, with the cache as it was.
 
-    The version is built in a directory BESIDE the root and renamed into it in one step, so it is seen complete or not at all and a thread that dies in the
+    The version is built in a directory BESIDE the root and renamed into it in one step, so it is seen complete or not at all and a process that dies in the
     middle leaves nothing in the root."""
     changeset = _get_json(INTERMEDIATES_CHANGESET_URL_TEMPLATE.format(expected=expected), attempts)
     base = _attachments_base(attempts)
@@ -363,9 +354,7 @@ def _fetch_cold() -> Path:
     """Nothing is cached: download in line, one process of the machine at a time, with the attempts a download has. Whoever gets the lock after another
     process finished uses what that one left."""
     def fetch_locked(_have):
-        path = _download_and_publish(DOWNLOAD_ATTEMPTS, 0)
-        _asset.record_check(_root())
-        return path
+        return _download_and_publish(DOWNLOAD_ATTEMPTS, 0)
 
     return _asset.check_and_fetch(
         _asset.machine_lock(_root(), _asset.LOCK_WAIT_S),
@@ -380,8 +369,7 @@ def ensure_intermediates(*, inline: bool = True) -> Optional[Path]:
 
     Resolution order:
       1. ``STEALTHFOX_INTERMEDIATES`` -> that file (user-supplied / test); a missing one is an error.
-      2. A copy is cached -> it, with NO request, however old the last check is: the check that has fallen due is made after the launch
-         (`refresh_intermediates_in_background`), never here.
+      2. A copy is cached -> it, with NO request, however old it is: a newer list is looked for only by `update_intermediates` (the `fetch` command).
       3. Cold cache and `inline` -> download in line (the callers of one process share it), with the attempts of a download.
       4. Cold cache and no network (or `inline=False`) -> None, with a warning on stderr once per process: the browser starts without the list, which is the
          state it was in before the core declared one.
@@ -411,7 +399,7 @@ def ensure_intermediates(*, inline: bool = True) -> Optional[Path]:
         return None
 
 
-# --- after the launch: the check that fell due, in a daemon thread ---------------------------------------------------------------------------------------
+# --- the user's `fetch`: is there a newer list? ------------------------------------------------------------------------------------------------------------
 
 def _latest_timestamp(attempts: int) -> int:
     """The collection's timestamp, from the changes feed (a few hundred bytes), not from the collection."""
@@ -424,38 +412,27 @@ def _latest_timestamp(attempts: int) -> int:
     raise IntermediatesError("the changes feed does not list the collection")
 
 
-def _refresh() -> None:
-    """The body of the background thread. Any failure ends it quietly: the copy in the cache is untouched (nothing was put in place) and the next process
-    asks again, because a check that did not finish is not recorded."""
-    root = _root()
-    with _asset.machine_lock(root, _asset.LOCK_WAIT_S):
-        if not _asset.state_is_due(root, INTERMEDIATES_CHECK_INTERVAL_S):
-            return  # another process checked while this one waited
-        have = _cached_file()
-        latest = _latest_timestamp(1)
-        if have is None or latest > _version_of(have):
-            _download_and_publish(1, latest)
-        _asset.record_check(root)
+def update_intermediates() -> Tuple[Optional[Path], bool]:
+    """Ask whether the collection has a newer list than the cache's and, if so, download, verify and put it in place. `(path, changed)`: the list to declare
+    (None when there is none) and whether this call put a new version in the cache.
 
-
-def _run_refresh() -> None:
+    Called by `invisible-playwright fetch`, so it asks EVERY time (a few hundred bytes from the changes feed) and downloads only when the feed's timestamp is
+    greater than the cached version (or the cache is empty). One process of the machine at a time; whoever gets the lock after another finished re-reads what
+    that one left. ``STEALTHFOX_INTERMEDIATES`` set -> nothing is asked or downloaded: `(that path, False)`. No network, or anything that does not add up ->
+    the cache is as it was, one warning on stderr, and no exception."""
+    override = os.environ.get(environment.INTERMEDIATES)
+    if override:
+        return Path(override), False
     try:
-        _refresh()
-    except Exception:
-        pass
-
-
-def refresh_intermediates_in_background() -> Optional[threading.Thread]:
-    """Called once the browser has started. When the last check is older than a day (and this process has not asked yet), a daemon thread asks Mozilla
-    whether the collection has a newer timestamp and, if so, downloads, verifies and puts the new version in place. Returns at once, with the thread (None
-    when no check is due); the new list is declared by the next launch, never by this one."""
-    global _CHECKED_THIS_PROCESS
-    with _check_lock:
-        if _CHECKED_THIS_PROCESS or os.environ.get(environment.INTERMEDIATES):
-            return None
-        if not _asset.state_is_due(_root(), INTERMEDIATES_CHECK_INTERVAL_S):
-            return None
-        _CHECKED_THIS_PROCESS = True
-    thread = threading.Thread(target=_run_refresh, name="invisible-intermediates", daemon=True)
-    thread.start()
-    return thread
+        with _asset.machine_lock(_root(), _asset.LOCK_WAIT_S):
+            have = _cached_file()
+            latest = _latest_timestamp(DOWNLOAD_ATTEMPTS)
+            if have is not None and latest <= _version_of(have):
+                return have, False
+            return _download_and_publish(DOWNLOAD_ATTEMPTS, latest), True
+    except Exception as exc:
+        kept = _cached_file()
+        print("invisible_core: could not look for a newer list of preloaded intermediate certificates (%s); %s" % (
+            exc, "the one in the cache stays" if kept is not None else "there is none in the cache, and the browser starts without it"),
+            file=sys.stderr, flush=True)
+        return kept, False
