@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -235,24 +236,33 @@ def cached_font_manifest_path(manifest: str) -> "Path | None":
     out = d / f"bundle-fonts-{digest}.list"
     if not out.is_file() or out.stat().st_size != len(raw):
         assert bytes([13, 10]) not in raw, "il manifest ha terminazioni CRLF"
-        # Write to a sibling and rename: two sessions starting together must
-        # never let one read the half-written file of the other.
-        tmp = out.with_suffix(f".{os.getpid()}.tmp")
+        # The file is addressed by the hash of its own bytes, so an existing one is the same file: it is never replaced
+        # and never read, because on Windows another session's browser holds it open. The temporary name is unique per
+        # process and per call; os.link creates `out` whole in one step or fails with FileExistsError.
+        tmp = out.with_name(f"{out.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
         tmp.write_bytes(raw)
         try:
-            os.replace(tmp, out)
-        except PermissionError:
-            # Windows refuses to replace a file another process holds open without FILE_SHARE_DELETE, and a browser
-            # holds this one open: two sessions starting together on a fresh cache, the second one's rename came after
-            # the first one's browser opened the file (the Windows e2e of 13/11, 16 launches refused with WinError 5 in
-            # one job). The file is addressed by the hash of its own bytes, so the one there is the same; it is kept,
-            # and checked, rather than replaced. A file that is NOT the same is a real failure and still raises.
+            try:
+                os.link(tmp, out)
+            except FileExistsError:
+                pass
+            except OSError:
+                # No hard links on this file system: fall back to a rename, which Windows may refuse while a
+                # browser holds the existing file; that is accepted when the file there has the right size.
+                try:
+                    os.replace(tmp, out)
+                except PermissionError:
+                    pass
+            if out.stat().st_size != len(raw):
+                raise OSError(
+                    f"{out} exists with {out.stat().st_size} bytes, expected {len(raw)}: "
+                    "the font manifest cache file does not match its own hash"
+                )
+        finally:
             try:
                 tmp.unlink()
             except OSError:
                 pass
-            if not (out.is_file() and out.read_bytes() == raw):
-                raise
     return out
 
 
