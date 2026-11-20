@@ -48,6 +48,9 @@ UV = "UV"
 GEOIP_MMDB = "STEALTHFOX_GEOIP_MMDB"
 #: A local intermediates list (`intermediates.json`) instead of the downloaded one (`_intermediates`).
 INTERMEDIATES = "STEALTHFOX_INTERMEDIATES"
+#: A ready security state (a directory holding `securitystate-result.json` and, when there is data, `security_state/`) instead of the generated one
+#: (`_security_state`): copied into every profile as it is, and `fetch` neither downloads nor generates.
+SECURITY_STATE = "STEALTHFOX_SECURITY_STATE"
 #: The font manifest the engine loads; a value already set wins (`launch`).
 FONT_MANIFEST = "STEALTHFOX_FONT_MANIFEST"
 #: The host network a session declares, `v4=<address>;v6=<0|1>`; a value already set wins (`launch`).
