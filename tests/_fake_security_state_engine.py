@@ -1,10 +1,14 @@
 """A stand-in for the engine's security-state GENERATE MODE, a standalone script: `python -I _fake_security_state_engine.py -headless -no-remote -profile <dir>`.
 
-It respects the contract of `invisible_core._security_state_generate` exactly, and refuses (exit 2, message on stderr) whatever the core must not do: other arguments than the three
-of the contract, a work profile that holds anything but `user.js`, a `user.js` that is not exactly the four prefs (generate = true, three absolute paths of files that exist).
+It respects the contract of `invisible_core._security_state_generate` exactly. It PRINTS NOTHING: the outcome is the exit code and `securitystate-result.json` (with `"ok": false` and
+an `"error"` text on a failure). It refuses (exit 2, the result written when the profile directory exists) whatever the core must not do: other arguments than the three of the
+contract, a work profile that holds anything but `user.js`, a `user.js` that is not exactly the four prefs (generate = true, three absolute paths of files that exist), and a
+per-user variable (`XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `APPDATA`, `LOCALAPPDATA`) that is not set, not an absolute path, not an existing directory, not inside the parent of
+the profile directory, or inside the profile itself.
 
 Then it reads the three inputs and leaves `security_state/` and `securitystate-result.json` in the profile. Its identity is `FAKE_ENGINE_VERSION` / `FAKE_ENGINE_BUILD_ID`; its
-behaviour is `FAKE_ENGINE_MODE`: ok (default), exit1, noresult, badjson, wrongbuild, wronghashes, wrongtimestamp, nofilter, hang.
+behaviour is `FAKE_ENGINE_MODE`: ok (default), exit1 (result ok false with an error, exit 1), nowrite (exit 3, no result at all), noresult (exit 0, no result), badjson, wrongbuild,
+wronghashes, wrongtimestamp, nofilter, hang, noisy (prints to stdout and stderr, then succeeds), envdump (succeeds, the four variables as it saw them under the extra key `env`).
 `hang` starts a child that also sleeps and then sleeps itself; the pids go to the profile (`hang.pids`) and, when `FAKE_ENGINE_PIDFILE` is set, to that file (the profile is
 deleted by the core, so a test reads them there).
 """
@@ -20,10 +24,45 @@ PREFS = ("zoom.stealth.securitystate.generate", "zoom.stealth.intermediates.file
 LINE = re.compile(r'^user_pref\(("(?:[^"\\]|\\.)*"), (true|false|"(?:[^"\\]|\\.)*"|-?\d+)\);$')
 
 
+RESULT_NAME = "securitystate-result.json"
+HOME_VARIABLES = ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "APPDATA", "LOCALAPPDATA")
+PROFILE = None
+
+
+def fail(code, message):
+    """The only way out of a failure: the result with ok false and the error (when the profile directory exists), and the exit code. Nothing is printed."""
+    if PROFILE and os.path.isdir(PROFILE):
+        with open(os.path.join(PROFILE, RESULT_NAME), "w", encoding="utf-8") as f:
+            json.dump({"format": 1, "ok": False, "error": "fake engine: " + message}, f)
+    sys.exit(code)
+
+
 def refuse(message):
-    sys.stderr.write("fake engine: " + message + "\n")
-    sys.stderr.flush()
-    sys.exit(2)
+    fail(2, message)
+
+
+def inside(path, parent):
+    path, parent = os.path.realpath(path), os.path.realpath(parent)
+    try:
+        return os.path.commonpath([path, parent]) == parent and path != parent
+    except ValueError:  # another drive
+        return False
+
+
+def check_home_directories(profile):
+    parent = os.path.dirname(os.path.realpath(profile))
+    for name in HOME_VARIABLES:
+        value = os.environ.get(name)
+        if not value:
+            refuse("%s is not set" % name)
+        if not os.path.isabs(value):
+            refuse("%s is %r: not an absolute path" % (name, value))
+        if not os.path.isdir(value):
+            refuse("%s is %r: not an existing directory" % (name, value))
+        if not inside(value, parent):
+            refuse("%s is %r: not inside %r, the directory that holds the profile" % (name, value, parent))
+        if os.path.realpath(value) == os.path.realpath(profile) or inside(value, profile):
+            refuse("%s is %r: inside the profile" % (name, value))
 
 
 def read_prefs(profile):
@@ -52,12 +91,15 @@ def main():
     args = sys.argv[1:]
     if len(args) != 4 or args[:3] != ["-headless", "-no-remote", "-profile"]:
         refuse("arguments are %r, the contract is -headless -no-remote -profile <dir>" % (args,))
+    global PROFILE
     profile = args[3]
+    PROFILE = profile
     if not os.path.isabs(profile) or not os.path.isdir(profile):
         refuse("the profile %r is not an existing absolute directory" % profile)
     if sorted(os.listdir(profile)) != ["user.js"]:
         refuse("the work profile holds %r, it must hold only user.js" % sorted(os.listdir(profile)))
     prefs = read_prefs(profile)
+    check_home_directories(profile)
     if prefs[PREFS[0]] is not True:
         refuse("%s is %r, not true" % (PREFS[0], prefs[PREFS[0]]))
     for name in PREFS[1:]:
@@ -79,8 +121,14 @@ def main():
         time.sleep(3600)
         return 0
     if mode == "exit1":
-        sys.stderr.write("fake engine: cert_storage refused the import\n")
-        return 1
+        fail(1, "cert_storage refused the import")
+    if mode == "nowrite":
+        return 3
+    if mode == "noisy":
+        sys.stdout.write("noise on stdout " * 100000)
+        sys.stdout.flush()
+        sys.stderr.write("noise on stderr " * 100000)
+        sys.stderr.flush()
 
     inter_path, onecrl_path, crlite_path = (prefs[n] for n in PREFS[1:])
     inter_bytes = open(inter_path, "rb").read()
@@ -119,6 +167,8 @@ def main():
         },
         "crlite_filter_hashes": hashes,
     }
+    if mode == "envdump":
+        result["env"] = {name: os.environ.get(name) for name in HOME_VARIABLES}
     if mode == "noresult":
         return 0
     with open(os.path.join(profile, "securitystate-result.json"), "w", encoding="utf-8") as f:

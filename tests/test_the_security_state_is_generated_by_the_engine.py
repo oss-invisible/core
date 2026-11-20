@@ -143,6 +143,7 @@ def test_inputs_that_cannot_be_read_refuse_before_any_engine_starts(run):
 
 @pytest.mark.parametrize("mode, says", [
     ("exit1", "refused the import"),
+    ("nowrite", "not writable"),
     ("noresult", SECURITY_STATE_RESULT_NAME),
     ("badjson", "not JSON"),
     ("wrongbuild", "build_id"),
@@ -156,6 +157,100 @@ def test_a_generation_that_is_not_what_was_asked_keeps_nothing(run, mode, says):
         run(mode)
     assert not run.out_dir.exists(), "nothing is copied"
     assert list(run.work_root.iterdir()) == [], "the work profile is deleted"
+
+
+@pytest.mark.integration
+def test_an_engine_that_exits_non_zero_is_known_by_its_code_and_the_error_of_its_result(run):
+    with pytest.raises(gen.GenerationError) as e:
+        run("exit1")
+    assert "exited with 1" in str(e.value) and "cert_storage refused the import" in str(e.value)
+
+
+@pytest.mark.integration
+def test_an_engine_that_exits_non_zero_and_leaves_no_result_is_a_work_profile_that_was_not_writable(run):
+    with pytest.raises(gen.GenerationError) as e:
+        run("nowrite")
+    assert "exited with 3" in str(e.value) and "work profile was not writable" in str(e.value)
+
+
+@pytest.mark.unit
+def test_a_report_that_is_not_ok_says_its_error_in_the_refusal(tmp_path):
+    inputs = _inputs(tmp_path)
+    result = _good(inputs)
+    result.update(ok=False, error="cert_storage said no")
+    with pytest.raises(gen.GenerationError, match="cert_storage said no"):
+        gen.validate_result(result, inputs, ENGINE)
+
+
+class _Spy:
+    """Replaces `subprocess.Popen` in the module under test: records every call's arguments and starts the real process."""
+
+    def __init__(self, real):
+        self.real, self.calls = real, []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((list(argv), kwargs))
+        return self.real(argv, **kwargs)
+
+
+@pytest.mark.integration
+def test_the_core_does_not_read_the_engine_s_output_and_a_noisy_engine_changes_nothing(run, monkeypatch):
+    spy = _Spy(subprocess.Popen)
+    monkeypatch.setattr(gen.subprocess, "Popen", spy)
+    result = run("noisy")
+    assert result["ok"] is True and (run.out_dir / SECURITY_STATE_DIR_NAME / "crlite.filter").is_file()
+    (_, kwargs), = spy.calls
+    assert kwargs["stdout"] is subprocess.DEVNULL and kwargs["stderr"] is subprocess.DEVNULL and kwargs["stdin"] is subprocess.DEVNULL
+    assert list(run.work_root.iterdir()) == []
+
+
+HOME_VARIABLES = ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "APPDATA", "LOCALAPPDATA")
+
+
+@pytest.mark.integration
+def test_the_per_user_directories_are_inside_the_work_directory_and_go_with_it(run, monkeypatch):
+    spy = _Spy(subprocess.Popen)
+    monkeypatch.setattr(gen.subprocess, "Popen", spy)
+    # What the host says is not what the engine is given.
+    for name in HOME_VARIABLES:
+        monkeypatch.setenv(name, str(run.work_root.parent / "the-hosts"))
+    result = run("envdump")
+    (argv, kwargs), = spy.calls
+    profile = Path(argv[-1])
+    work = profile.parent
+    assert profile.name == "profile" and work.parent == run.work_root
+    seen = result["env"]
+    assert sorted(seen) == sorted(HOME_VARIABLES)
+    for name in HOME_VARIABLES:
+        directory = Path(seen[name])
+        assert directory.is_absolute() and directory.parent == work and directory != profile, name
+        assert kwargs["env"][name] == seen[name], "the variable the core passed is the one the engine saw"
+    assert len({seen[n] for n in HOME_VARIABLES}) == 4
+    assert not work.exists() and list(run.work_root.iterdir()) == [], "the work directory, with the per-user directories, is gone"
+    assert not (run.work_root.parent / "the-hosts").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("variable", HOME_VARIABLES)
+@pytest.mark.parametrize("what", ["unset", "relative", "missing", "outside", "profile"])
+def test_the_fake_engine_refuses_a_per_user_directory_that_is_not_inside_the_work_directory(tmp_path, variable, what):
+    inputs = _inputs(tmp_path / "inputs")
+    work = tmp_path / "work"
+    profile = work / "profile"
+    profile.mkdir(parents=True)
+    gen._write_user_js(profile, inputs)
+    env = {k: v for k, v in os.environ.items() if k not in HOME_VARIABLES}
+    for name in HOME_VARIABLES:
+        (work / name).mkdir()
+        env[name] = str(work / name)
+    (tmp_path / "elsewhere").mkdir()
+    if what == "unset":
+        del env[variable]
+    else:
+        env[variable] = {"relative": "relative-dir", "missing": str(work / "missing"), "outside": str(tmp_path / "elsewhere"), "profile": str(profile)}[what]
+    done = subprocess.run([sys.executable, "-I", str(FAKE), "-headless", "-no-remote", "-profile", str(profile)], env=env, capture_output=True)
+    assert done.returncode == 2 and done.stdout == b"" and done.stderr == b""
+    assert variable in json.loads((profile / SECURITY_STATE_RESULT_NAME).read_text())["error"]
 
 
 @pytest.mark.integration

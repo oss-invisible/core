@@ -8,13 +8,17 @@ ones Firefox's own code wrote, never ours.
 THE CONTRACT (fixed; the engine's side is written against the same text):
   * the core launches `<engine> -headless -no-remote -profile <work profile>` on an EMPTY work profile whose `user.js` holds EXACTLY four prefs: `SECURITY_STATE_GENERATE_PREF`
     = true and the absolute paths of the three inputs (`INTERMEDIATES_PREF`, `ONECRL_PREF`, `CRLITE_PREF`);
-  * exit 0 is ok, anything else is an error with its message on stderr;
+  * the engine writes NOTHING on stdout or stderr, and the core reads none of it (both go to the null device). The outcome is ONLY the exit code and the result file: exit 0 is ok;
+    anything else is an error, and the result file then holds `"ok": false` and `"error": "<text>"` (an engine that exits non-zero and leaves no result file could not write
+    its work profile: that is what the absence means);
+  * the per-user directories of the engine point INSIDE the work directory (the one that holds the profile and is deleted at the end), so nothing is written outside it:
+    `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` (Linux) and `APPDATA`, `LOCALAPPDATA` (Windows) are set to subdirectories of it on every platform;
   * it leaves `<work profile>/security_state/` (`SECURITY_STATE_DIR_NAME`: at least `data.safe.bin` and `crlite.filter`, plus the `*.delta` files) and
     `<work profile>/securitystate-result.json` (`SECURITY_STATE_RESULT_NAME`):
       {"format":1,"ok":true,"error":null,"engine":{"version":"..","build_id":".."},
        "collections":{"intermediates":{"collection_timestamp":N},"onecrl":{"collection_timestamp":N},
                       "cert-revocations":{"collection_timestamp":N,"channel":"default"}},
-       "crlite_filter_hashes":["<sha256 hex of each CRLite file it loaded: the full filter and the deltas>"]}
+       "crlite_filter_hashes":["<sha256 of the BYTES of each CRLite file it loaded, in lowercase hex: the full filter and the deltas>"]}
 
 NOTHING THAT DOES NOT ADD UP IS KEPT. `validate_result` compares the report with what the core GAVE (the engine's build id, the three collection timestamps and the set of
 CRLite hashes); a report that differs in one thing refuses the whole generation, and the directory is not copied. The core never trusts an exit code alone: an engine that
@@ -73,8 +77,8 @@ __all__ = ["GENERATE_TIMEOUT_S", "GenerationError", "EngineId", "Expected", "Inp
 GENERATE_TIMEOUT_S = 120
 #: The collection ids of the result (`INTERMEDIATES` is the Remote Settings collection `security-state/intermediates`, the report names it by its short id).
 INTERMEDIATES_COLLECTION_ID = "intermediates"
-#: What is kept of the engine's stderr for the message of an error.
-STDERR_TAIL_BYTES = 4000
+#: The per-user directories of the engine, each a subdirectory of the work directory: variable -> name.
+HOME_DIRECTORIES = (("XDG_CONFIG_HOME", "xdg-config"), ("XDG_CACHE_HOME", "xdg-cache"), ("APPDATA", "appdata"), ("LOCALAPPDATA", "localappdata"))
 #: What the core waits for the tree to be gone after it has ended it, and for the work profile to be removable (Windows holds a directory a moment after its last process).
 TREE_GONE_WAIT_S = 10.0
 REMOVE_ATTEMPTS = 40
@@ -223,17 +227,6 @@ def _write_user_js(profile: Path, inputs: Inputs) -> None:
     (profile / "user.js").write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
 
 
-def _stderr_tail(path: Path) -> str:
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - STDERR_TAIL_BYTES))
-            return f.read().decode("utf-8", "replace").strip()
-    except OSError:
-        return ""
-
-
 def _remove_tree(path: Path) -> None:
     """Removes `path`, retrying: on Windows a directory stays locked a moment after the last process that used it has gone."""
     for attempt in range(REMOVE_ATTEMPTS):
@@ -275,34 +268,48 @@ def _wait_for_exit(proc: "subprocess.Popen[bytes]", timeout_s: float) -> Optiona
         return None
 
 
-def _run(command: Sequence[str], profile: Path, stderr_path: Path, timeout_s: float) -> None:
-    """Runs the engine on `profile`; returns when it exited 0 and its tree is gone, raises `GenerationError` otherwise (its tree gone as well)."""
+def _engine_said(code: int, profile: Path) -> str:
+    """The message of a non-zero exit: the code and what the engine's result file says (the engine writes nothing on stdout or stderr, and the core reads none of it)."""
+    path = profile / SECURITY_STATE_RESULT_NAME
+    try:
+        result = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, ValueError):
+        return "the engine exited with %s and left no %s, so the work profile was not writable" % (code, SECURITY_STATE_RESULT_NAME)
+    error = result.get("error") if isinstance(result, dict) else None
+    return "the engine exited with %s: %s" % (code, error if error else "its %s gives no error" % (SECURITY_STATE_RESULT_NAME,))
+
+
+def _run(command: Sequence[str], work: Path, profile: Path, timeout_s: float) -> None:
+    """Runs the engine on `profile` (a directory of `work`); returns when it exited 0 and its tree is gone, raises `GenerationError` otherwise (its tree gone as well)."""
     token = SessionToken.mint()
     # The environment the core gives every engine it starts (`_engine_env.compose`): the host's `MOZ_*`, GL and toolkit families, zone and language out (`without_the_hosts`),
     # `MOZ_CRASHREPORTER_DISABLE=1` (a crash must not open a dialog nobody reads) and the display backend written on every launch. No locale is declared: a generation shows no
-    # page. Stamped with the token, which the engine's children inherit.
-    env = token.stamp(_engine_env.compose(dict(os.environ)))
+    # page. Then the per-user directories, inside `work` on every platform, so that nothing is written outside it. Stamped with the token, which the engine's children inherit.
+    env = _engine_env.compose(dict(os.environ))
+    for variable, name in HOME_DIRECTORIES:
+        directory = work / name
+        directory.mkdir(exist_ok=True)
+        env[variable] = str(directory)
+    env = token.stamp(env)
     argv = list(command) + ["-headless", "-no-remote", "-profile", str(profile)]
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     failure: Optional[str] = None
     proc: Optional["subprocess.Popen[bytes]"] = None
     try:
-        with open(stderr_path, "wb") as err:
-            try:
-                proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err, env=env, creationflags=flags)
-            except OSError as e:
-                raise GenerationError("cannot start the engine %r: %s" % (argv[0], e)) from e
-            code = _wait_for_exit(proc, timeout_s)
-            if code is None:
-                failure = "the engine did not finish within %s s; its tree was ended" % (timeout_s,)
-            elif code != 0:
-                failure = "the engine exited with %s" % (code,)
+        try:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, creationflags=flags)
+        except OSError as e:
+            raise GenerationError("cannot start the engine %r: %s" % (argv[0], e)) from e
+        code = _wait_for_exit(proc, timeout_s)
+        if code is None:
+            failure = "the engine did not finish within %s s; its tree was ended" % (timeout_s,)
+        elif code != 0:
+            failure = _engine_said(code, profile)
     finally:
         if proc is not None:
             _end_the_tree(proc, token)
     if failure is not None:
-        tail = _stderr_tail(stderr_path)
-        raise GenerationError(failure + (": " + tail if tail else " (nothing on stderr)"))
+        raise GenerationError(failure)
 
 
 def _check_directory(state: Path) -> None:
@@ -362,7 +369,7 @@ def generate(command: Sequence[str], inputs: Inputs, engine: EngineId, out_dir: 
         profile = base / "profile"
         profile.mkdir()
         _write_user_js(profile, inputs)
-        _run(command, profile, base / "stderr.txt", timeout_s)
+        _run(command, base, profile, timeout_s)
         result = _read_result(profile / SECURITY_STATE_RESULT_NAME)
         validate_result(result, inputs, engine)
         _check_directory(profile / SECURITY_STATE_DIR_NAME)
