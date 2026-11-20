@@ -432,7 +432,7 @@ def context_proxy_command(proxy: Dict[str, Any],
     return _command(proxy, measure_proxy_udp(proxy, udp_stun_servers) or UNMEASURED)
 
 
-def launch_proxy_command(proxy: Dict[str, Any], udp_exit: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def launch_proxy_command(proxy: Dict[str, Any], *, udp_exit: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """The params of ``Browser.setBrowserProxy`` for ``proxy``, WITHOUT touching the network.
 
     The measurement belongs to the launch's geo step (``prepare_session_geo``, beside the TCP discovery): its verdict

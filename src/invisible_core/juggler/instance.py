@@ -186,7 +186,7 @@ def launch(executable: str, *, prefs: Optional[Dict] = None,
         proxy_command = None
         if proxy:
             try:
-                proxy_command = launch_proxy_command(proxy, udp_exit)
+                proxy_command = launch_proxy_command(proxy, udp_exit=udp_exit)
             except ValueError as exc:
                 raise EngineError("the proxy cannot be applied: %s" % exc)
         # ⛔ THE PROXY IS SET BY THE CORE'S `launch`, before any page exists,
