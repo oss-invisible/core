@@ -711,8 +711,11 @@ jobs:
           Get-Process firefox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           "left: " + @(Get-Process firefox -ErrorAction SilentlyContinue).Count
 
+  noreply-identity:
+    uses: ./.github/workflows/noreply-identity.yml
+
   gate:
-    needs: [tests, msix-host, arm64-host, branding-is-retail, repair-through-the-installer,
+    needs: [noreply-identity, tests, msix-host, arm64-host, branding-is-retail, repair-through-the-installer,
             default-selection-stays-inside, default-selection-stays-inside-windows,
             wrapper-job-needed, wrapper-on-this-core]
     if: always()
@@ -724,6 +727,7 @@ jobs:
           # (tests/test_the_wrapper_job_runs_on_the_core.py holds the two alike).
           WRAPPER_JOB_REQUIRED: ${{ needs.wrapper-job-needed.outputs.run == 'true' }}
         run: |
+          echo "noreply-identity: ${{ needs.noreply-identity.result }}"
           echo "tests: ${{ needs.tests.result }}"
           echo "msix-host: ${{ needs.msix-host.result }}"
           echo "arm64-host: ${{ needs.arm64-host.result }}"
@@ -733,6 +737,7 @@ jobs:
           echo "default-selection-stays-inside-windows: ${{ needs.default-selection-stays-inside-windows.result }}"
           echo "wrapper-job-needed: ${{ needs.wrapper-job-needed.result }}"
           echo "wrapper-on-this-core: ${{ needs.wrapper-on-this-core.result }} (required: $WRAPPER_JOB_REQUIRED)"
+          test "${{ needs.noreply-identity.result }}" = "success"
           test "${{ needs.tests.result }}" = "success"
           test "${{ needs.msix-host.result }}" = "success"
           test "${{ needs.arm64-host.result }}" = "success"
