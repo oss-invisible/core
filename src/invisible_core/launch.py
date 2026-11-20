@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional
 from . import _engine_env
 from . import environment
 from ._headless import DESKTOP_ENV
-from .constants import INTERMEDIATES_PREF
 from ._webrtc_network import network_to_declare
 
 
@@ -45,7 +44,7 @@ def _pref_literal(name: str, v: Any) -> str:
                     "(a fraction is written as a string)" % (name, type(v).__name__))
 
 
-def write_user_js(profile_dir: "str | os.PathLike[str]", prefs: Dict[str, Any]) -> Path:
+def write_user_js(profile_dir: "str | os.PathLike[str]", prefs: Dict[str, Any], *, engine: "Optional[str | os.PathLike[str]]" = None) -> Path:
     """Write ``prefs`` as ``user_pref(...)`` lines into ``<profile_dir>/user.js``.
 
     Creates ``profile_dir`` if missing; overwrites any existing ``user.js``.
@@ -72,21 +71,22 @@ def write_user_js(profile_dir: "str | os.PathLike[str]", prefs: Dict[str, Any]) 
     first real run. Bytes, not text: a text-mode write on Windows translates
     every newline, and a prefs file is read by the browser, not by git.
     """
-    # ⛔ THE PRELOADED INTERMEDIATES FILE IS DECLARED HERE, AND ONLY HERE: this is the one writer, so every launch of the core and of the wrapper passes
-    # through it exactly once, and the pref has one author. The cached file is a fact of the machine, not of the seed, so no composer of prefs knows it.
-    # A pref the caller already gave wins (and nothing is fetched); a cold cache downloads in line; with no list and no network there is NO line and the
-    # warning is said once (`_intermediates.ensure_intermediates`). A launch checks for no newer list: that is `fetch`'s job (`_intermediates.update_intermediates`).
-    if INTERMEDIATES_PREF not in prefs:
-        from ._intermediates import ensure_intermediates
-
-        listing = ensure_intermediates()
-        if listing is not None:
-            prefs = {**prefs, INTERMEDIATES_PREF: str(listing)}
     d = Path(profile_dir)
     d.mkdir(parents=True, exist_ok=True)
     out = d / "user.js"
     lines = [f"user_pref({json.dumps(k)}, {_pref_literal(k, v)});" for k, v in prefs.items()]
     out.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    # ⛔ THE SECURITY STATE (the intermediates, OneCRL and the CRLite filters a retail Firefox has in `cert_storage` from its first second) IS PLACED HERE, AND ONLY
+    # HERE: this is the one writer, so every launch of the core and of the wrapper passes through it exactly once, and the directory has one author. It is COPIED
+    # into the profile (`<profile>/security_state/`, generated once by the engine and kept in the cache), never linked: the engine rewrites those files in place, and a
+    # link would write into the cache and into every other profile. NO PREF carries it: the engine finds the directory where cert_storage always looks. A warm cache
+    # is answered with no request and no thread, whatever its age (a newer state is looked for only by `fetch`, `_security_state.update_security_state`); a cold
+    # cache, or an engine the cache has no generation for, generates in line; with nothing to copy and no network there is NO directory, one warning is said once, and
+    # the browser starts like a retail one with a new profile (`_security_state.place_security_state`). `engine` is the binary this launch will run, when the caller
+    # chose it.
+    from ._security_state import place_security_state
+
+    place_security_state(d, engine=engine)
     return out
 
 
@@ -389,7 +389,7 @@ def build_launch_plan(
         show_cursor=show_cursor,
     ).prefs
     pdir = Path(profile_dir)
-    write_user_js(pdir, prefs)
+    write_user_js(pdir, prefs, engine=binary)
     env = build_launch_env(prefs, network_declared=network_to_declare(seed))
     argv = [binary, "-no-remote", "-profile", str(pdir)]
     argv += list(extra_args or [])

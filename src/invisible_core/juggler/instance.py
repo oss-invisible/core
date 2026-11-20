@@ -180,7 +180,7 @@ def launch(executable: str, *, prefs: Optional[Dict] = None,
         from .keyboard import KEYBOARD_LAYOUT_PREF, profiles_pref
         layout = browser_prefs.pop(KEYBOARD_LAYOUT_PREF, None) or profiles_pref(
             browser_prefs.get("intl.accept_languages") or "")
-        write_user_js(files.profile, browser_prefs)
+        write_user_js(files.profile, browser_prefs, engine=executable)
         # ⛔ PARSED BEFORE THE BROWSER STARTS, so a proxy we cannot express
         # refuses the launch instead of leaving a process running without one.
         proxy_command = None
