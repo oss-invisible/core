@@ -327,6 +327,9 @@ def build_launch_plan(
     # Where a SOCKS5 proxy's UDP exit is measured from (`"ip:port"` IPv4 literals; None = the two public defaults).
     # Python only: nothing of it reaches the browser. (This path takes no proxy; the keyword is validated all the same.)
     udp_stun_servers: Optional[List[str]] = None,
+    # The engine's launch line WITHOUT the profile (`[binary, ...]`; the core appends `-profile <work profile>`). Used only when the core must GENERATE the security state
+    # (a changed engine and no cached generation for it); None is invisible's own launch line, `[binary, -headless, -no-remote]`.
+    engine_argv: Optional[List[str]] = None,
 ) -> LaunchPlan:
     """The single direct-launch entry point (no Playwright, no Qt).
 
@@ -390,7 +393,7 @@ def build_launch_plan(
         show_cursor=show_cursor,
     ).prefs
     pdir = Path(profile_dir)
-    write_user_js(pdir, prefs, engine=binary)
+    write_user_js(pdir, prefs, engine=binary, engine_argv=engine_argv)
     env = build_launch_env(prefs, network_declared=network_to_declare(seed))
     argv = [binary, "-no-remote", "-profile", str(pdir)]
     argv += list(extra_args or [])

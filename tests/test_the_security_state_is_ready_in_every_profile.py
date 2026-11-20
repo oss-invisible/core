@@ -351,7 +351,7 @@ def test_every_launch_copies_the_generated_directory_into_its_profile_and_writes
     assert state_files(tmp_path / "p1") == cached, "a launch of the same profile puts the state back, whole"
 
 
-def _plan_user_js(monkeypatch, tmp_path: Path) -> Path:
+def _plan_user_js(monkeypatch, tmp_path: Path, **launch_kw) -> Path:
     """`build_launch_plan`, hermetic like tests/test_launch.py; the profile it wrote."""
     import invisible_core._fpforge as _fp
     import invisible_core._geo as _geo
@@ -369,7 +369,7 @@ def _plan_user_js(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(_prefs, "translate_profile_to_prefs", lambda fp, **kw: {"zoom.stealth.screen.dpr": 1.25})
     monkeypatch.setattr(_proxy, "configure_proxy", lambda proxy, prefs: None)
     pdir = tmp_path / "plan_profile"
-    build_launch_plan(42, profile_dir=pdir, timezone="auto", locale="auto")
+    build_launch_plan(42, profile_dir=pdir, timezone="auto", locale="auto", **launch_kw)
     return pdir
 
 
@@ -377,7 +377,7 @@ class _Stop(Exception):
     pass
 
 
-def _instance_profile(monkeypatch, tmp_path: Path) -> Path:
+def _instance_profile(monkeypatch, tmp_path: Path, **launch_kw) -> Path:
     """`instance.launch` (the core's own client): the profile as it is when `connection.launch` is called, which then stops the launch."""
     from invisible_core.juggler import instance
 
@@ -389,7 +389,7 @@ def _instance_profile(monkeypatch, tmp_path: Path) -> Path:
 
     monkeypatch.setattr(connection, "launch", stop)
     with pytest.raises(_Stop):
-        instance.launch("my-firefox", prefs={"a": 1}, profile_dir=str(tmp_path / "instance_profile"))
+        instance.launch("my-firefox", prefs={"a": 1}, profile_dir=str(tmp_path / "instance_profile"), **launch_kw)
     return seen["profile"]
 
 
@@ -833,3 +833,39 @@ def test_write_user_js_passes_the_launch_line_to_the_generation(cache, service, 
 def test_write_user_js_with_no_launch_line_gives_none_to_the_seam(cache, service, engine, tmp_path):
     write_user_js(tmp_path / "p", {"a": 1}, engine="/y/bin/firefox")
     assert engine.args == ["/y/bin/firefox"] and engine.argvs == [None]
+
+
+def _fresh_data_for_an_engine_that_changed(engine, service) -> None:
+    """Fresh cached data with a generation for the old build only; the launch under test runs the new one. The transport and the recording start clean."""
+    ss.update_security_state(now=T0)
+    engine.build_id = BUILD_B
+    service.calls.clear()
+    engine.runs.clear()
+    engine.args.clear()
+    engine.argvs.clear()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("road", sorted(ROADS))
+def test_a_launch_of_a_changed_engine_generates_once_with_the_callers_launch_line_and_asks_nobody(cache, service, engine, monkeypatch, tmp_path, road):
+    """The known-bad is a public launch that does not carry `engine_argv`: with fresh data and no generation for the engine it runs, the core generates with the default line
+    `[binary, -headless, -no-remote]` instead of the caller's (the fake engine refuses any other line than the expected one)."""
+    _fresh_data_for_an_engine_that_changed(engine, service)   # first: the fake is told to expect the caller's line only after the old build was generated
+    line = _minapp_line(tmp_path, monkeypatch)
+    build, binary = ROADS[road]
+    profile = build(monkeypatch, tmp_path, engine_argv=line)
+    assert engine.argvs == [line] and engine.runs == [BUILD_B]
+    assert engine.args == [binary]
+    assert state_files(profile), "the generated state is in the profile"
+    assert service.calls == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("road", sorted(ROADS))
+def test_a_launch_with_no_launch_line_gives_none_to_the_generation(cache, service, engine, monkeypatch, tmp_path, road):
+    """The guard: without `engine_argv` the core's own line (`default_argv` of the engine) is what the generation uses; the seam is told None."""
+    _fresh_data_for_an_engine_that_changed(engine, service)
+    build, binary = ROADS[road]
+    build(monkeypatch, tmp_path)
+    assert engine.argvs == [None] and engine.runs == [BUILD_B] and engine.args == [binary]
+    assert service.calls == []
