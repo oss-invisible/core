@@ -137,6 +137,14 @@ def job_problems(spec: dict) -> list[str]:
                          ("wrapper_on_this_core.py run", "the tests are not run")):
         if needle not in text:
             out.append(what)
+    # This core is installed BEFORE the wrapper: a declared wrapper branch pins this release, which the index does not
+    # have yet, and pip must find it installed (run 44651554169: "No matching distribution found for invisible-core==67.78.0").
+    install = next((str(s.get("run", "")) for s in steps if 'pip install ".[dev]"' in str(s.get("run", ""))), "")
+    lines = [line.strip() for line in install.splitlines()]
+    first_core = next((i for i, line in enumerate(lines) if line == "python -m pip install ."), None)
+    wrapper_line = next((i for i, line in enumerate(lines) if 'pip install ".[dev]"' in line), None)
+    if first_core is None or wrapper_line is None or first_core > wrapper_line:
+        out.append("this core is not installed before the wrapper (a declared wrapper branch pins a core the index does not have yet)")
     run_step = next((s for s in steps if "wrapper_on_this_core.py run" in str(s.get("run", ""))), {})
     if run_step.get("timeout-minutes") != 12:
         out.append("the test step is not held to 12 minutes")
