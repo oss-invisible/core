@@ -8,7 +8,7 @@ import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from . import _engine_env
 from . import environment
@@ -44,7 +44,8 @@ def _pref_literal(name: str, v: Any) -> str:
                     "(a fraction is written as a string)" % (name, type(v).__name__))
 
 
-def write_user_js(profile_dir: "str | os.PathLike[str]", prefs: Dict[str, Any], *, engine: "Optional[str | os.PathLike[str]]" = None) -> Path:
+def write_user_js(profile_dir: "str | os.PathLike[str]", prefs: Dict[str, Any], *, engine: "Optional[str | os.PathLike[str]]" = None,
+                  engine_argv: Optional[Sequence[str]] = None) -> Path:
     """Write ``prefs`` as ``user_pref(...)`` lines into ``<profile_dir>/user.js``.
 
     Creates ``profile_dir`` if missing; overwrites any existing ``user.js``.
@@ -83,10 +84,10 @@ def write_user_js(profile_dir: "str | os.PathLike[str]", prefs: Dict[str, Any], 
     # is answered with no request and no thread, whatever its age (a newer state is looked for only by `fetch`, `_security_state.update_security_state`); a cold
     # cache, or an engine the cache has no generation for, generates in line; with nothing to copy and no network there is NO directory, one warning is said once, and
     # the browser starts like a retail one with a new profile (`_security_state.place_security_state`). `engine` is the binary this launch will run, when the caller
-    # chose it.
+    # chose it; `engine_argv` is its launch line without the profile (None: the invisible one, `[engine, -headless, -no-remote]`).
     from ._security_state import place_security_state
 
-    place_security_state(d, engine=engine)
+    place_security_state(d, engine=engine, engine_argv=engine_argv)
     return out
 
 

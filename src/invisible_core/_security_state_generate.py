@@ -6,7 +6,9 @@ GENERATE MODE, which imports the files through its own code, waits for the write
 ones Firefox's own code wrote, never ours.
 
 THE CONTRACT (fixed; the engine's side is written against the same text):
-  * the core launches `<engine> -headless -no-remote -profile <work profile>` on an EMPTY work profile whose `user.js` holds EXACTLY four prefs: `SECURITY_STATE_GENERATE_PREF`
+  * the core launches the CALLER'S LAUNCH LINE + `-profile <work profile>` (the line is an argv without the profile, e.g. `[<engine>, "-headless", "-no-remote"]`, or any other
+    the caller names: the core knows no engine layout of its own and appends nothing but the profile; `default_argv` is the invisible launch) on an EMPTY work profile whose
+    `user.js` holds EXACTLY four prefs: `SECURITY_STATE_GENERATE_PREF`
     = true and the absolute paths of the three inputs (`INTERMEDIATES_PREF`, `ONECRL_PREF`, `CRLITE_PREF`);
   * the engine writes NOTHING on stdout or stderr, and the core reads none of it (both go to the null device). The outcome is ONLY the exit code and the result file: exit 0 is ok;
     anything else is an error, and the result file then holds `"ok": false` and `"error": "<text>"` (an engine that exits non-zero and leaves no result file could not write
@@ -71,7 +73,7 @@ from .launch import _pref_literal
 from .process import SessionToken, find_processes, reap_session, wait_until_gone
 from .seal import EngineMismatch, read_engine_identity
 
-__all__ = ["GENERATE_TIMEOUT_S", "GenerationError", "EngineId", "Expected", "Inputs", "engine_id_of", "generate", "validate_result", "place_in_profile", "age_warning", "is_stale"]
+__all__ = ["GENERATE_TIMEOUT_S", "GenerationError", "EngineId", "Expected", "Inputs", "engine_id_of", "default_argv", "generate", "validate_result", "place_in_profile", "age_warning", "is_stale"]
 
 #: What the engine is given to import the files and exit, in seconds: an import of a few thousand records and a filter is a matter of seconds, and a hung engine is ended.
 GENERATE_TIMEOUT_S = 120
@@ -279,8 +281,13 @@ def _engine_said(code: int, profile: Path) -> str:
     return "the engine exited with %s: %s" % (code, error if error else "its %s gives no error" % (SECURITY_STATE_RESULT_NAME,))
 
 
-def _run(command: Sequence[str], work: Path, profile: Path, timeout_s: float) -> None:
-    """Runs the engine on `profile` (a directory of `work`); returns when it exited 0 and its tree is gone, raises `GenerationError` otherwise (its tree gone as well)."""
+def default_argv(binary: "str | os.PathLike[str]") -> List[str]:
+    """The launch line of the invisible engine, without the profile: `[binary, "-headless", "-no-remote"]`."""
+    return [str(binary), "-headless", "-no-remote"]
+
+
+def _run(argv: Sequence[str], work: Path, profile: Path, timeout_s: float) -> None:
+    """Runs the engine's launch line `argv` (without the profile) plus `-profile <profile>` (a directory of `work`); returns when it exited 0 and its tree is gone, raises `GenerationError` otherwise (its tree gone as well)."""
     token = SessionToken.mint()
     # The environment the core gives every engine it starts (`_engine_env.compose`): the host's `MOZ_*`, GL and toolkit families, zone and language out (`without_the_hosts`),
     # `MOZ_CRASHREPORTER_DISABLE=1` (a crash must not open a dialog nobody reads) and the display backend written on every launch. No locale is declared: a generation shows no
@@ -291,7 +298,7 @@ def _run(command: Sequence[str], work: Path, profile: Path, timeout_s: float) ->
         directory.mkdir(exist_ok=True)
         env[variable] = str(directory)
     env = token.stamp(env)
-    argv = list(command) + ["-headless", "-no-remote", "-profile", str(profile)]
+    argv = list(argv) + ["-profile", str(profile)]
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     failure: Optional[str] = None
     proc: Optional["subprocess.Popen[bytes]"] = None
@@ -353,11 +360,11 @@ def _copy_out(work: Path, out_dir: Path) -> None:
         raise
 
 
-def generate(command: Sequence[str], inputs: Inputs, engine: EngineId, out_dir: Path, *, timeout_s: float = GENERATE_TIMEOUT_S,
+def generate(argv: Sequence[str], inputs: Inputs, engine: EngineId, out_dir: Path, *, timeout_s: float = GENERATE_TIMEOUT_S,
              work_root: Optional[Path] = None) -> dict:
     """Has the engine generate the security state from `inputs`, checks its report and puts the result in `out_dir`; returns the report.
 
-    `command` is what starts the engine (`[binary]`); `engine` is what the core launched (`engine_id_of`). `out_dir` must not exist or be empty: the generation is copied into it
+    `argv` is the engine's launch line WITHOUT the profile (`default_argv(binary)`, or the caller's own); the core appends exactly `-profile <work profile>`. `engine` is what the core launched (`engine_id_of`). `out_dir` must not exist or be empty: the generation is copied into it
     whole, and only after every check has passed (the caller renames it into the cache). Whatever happens, no process of the engine's tree is alive afterwards and the work profile
     is deleted. `GenerationError` for every refusal."""
     out_dir = Path(out_dir)
@@ -369,7 +376,7 @@ def generate(command: Sequence[str], inputs: Inputs, engine: EngineId, out_dir: 
         profile = base / "profile"
         profile.mkdir()
         _write_user_js(profile, inputs)
-        _run(command, base, profile, timeout_s)
+        _run(argv, base, profile, timeout_s)
         result = _read_result(profile / SECURITY_STATE_RESULT_NAME)
         validate_result(result, inputs, engine)
         _check_directory(profile / SECURITY_STATE_DIR_NAME)

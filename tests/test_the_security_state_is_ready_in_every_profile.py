@@ -48,6 +48,7 @@ from test_the_intermediates_are_declared import Mozilla as Intermediates
 FAKE = Path(__file__).with_name("_fake_security_state_engine.py")
 #: The function the launch calls, as it is in the package: the conftest of the suite stubs it for every test that is not about it.
 REAL_ENSURE = ss.ensure_security_state
+REAL_ENGINE_FOR = ss._engine_for
 
 T0 = datetime(2026, 11, 20, 10, 0, 0, tzinfo=timezone.utc)
 T0_UTC = "2026-11-20T10:00:00Z"
@@ -116,6 +117,7 @@ class Engine:
         self.mode = "ok"
         self.runs: list = []
         self.args: list = []
+        self.argvs: list = []   # what the callers gave as `engine_argv=`
 
 
 @pytest.fixture
@@ -145,9 +147,11 @@ def service(cache, monkeypatch) -> Service:
 def engine(cache, monkeypatch) -> Engine:
     e = Engine()
 
-    def seam(given):
+    def seam(given, engine_argv=None):
         e.args.append(given)
-        return [sys.executable, "-I", str(FAKE)], gen.EngineId(version="159.0", build_id=e.build_id)
+        e.argvs.append(engine_argv)
+        argv = list(engine_argv) if engine_argv is not None else [sys.executable, "-I", str(FAKE), "-headless", "-no-remote"]
+        return argv, gen.EngineId(version="159.0", build_id=e.build_id)
 
     real_generate = ss.generate
 
@@ -769,3 +773,63 @@ def test_the_names_of_the_old_road_are_gone_and_the_new_ones_are_exported():
     assert invisible_core.update_security_state is ss.update_security_state
     assert invisible_core.update_intermediates is ss.update_security_state, "the name the wrapper's CLI imports today"
     assert "security-state" in download.STATE_DIRS and "intermediates" not in download.STATE_DIRS
+
+
+# --- the launch line is the caller's -----------------------------------------------------------------------------------------------------------------
+
+def _minapp_line(tmp_path: Path, monkeypatch) -> list:
+    """A caller's launch line of another layout than the invisible one, and the fake told to expect exactly it (plus `-profile <dir>`)."""
+    tail = ["-app", str(tmp_path / "minapp"), "-headless", "-no-remote"]
+    monkeypatch.setenv("FAKE_ENGINE_EXPECT_ARGS", json.dumps(tail))
+    return [sys.executable, "-I", str(FAKE)] + tail
+
+
+@pytest.mark.unit
+def test_the_seam_takes_the_identity_from_the_engine_when_given_else_from_the_first_word_of_the_line(cache, monkeypatch):
+    read = []
+
+    def identity(binary):
+        read.append(str(binary))
+        return gen.EngineId(version="159.0", build_id=BUILD_A)
+
+    monkeypatch.setattr(ss, "engine_id_of", identity)
+    line = ["/x/engine/firefox", "-app", "/x/engine/minapp", "-headless", "-no-remote"]
+    assert REAL_ENGINE_FOR(None, line) == (line, gen.EngineId("159.0", BUILD_A))
+    assert read == ["/x/engine/firefox"]
+    read.clear()
+    assert REAL_ENGINE_FOR("/y/bin/firefox", line) == (line, gen.EngineId("159.0", BUILD_A))
+    assert read == ["/y/bin/firefox"]
+    read.clear()
+    assert REAL_ENGINE_FOR("/y/bin/firefox") == (["/y/bin/firefox", "-headless", "-no-remote"], gen.EngineId("159.0", BUILD_A))
+    assert read == ["/y/bin/firefox"]
+
+
+@pytest.mark.integration
+def test_a_fetch_generates_with_the_callers_launch_line(cache, service, engine, monkeypatch, tmp_path):
+    line = _minapp_line(tmp_path, monkeypatch)
+    path, changed = ss.update_security_state(engine_argv=line, now=T0)
+    assert changed is True and path == ready_of(cache, "1000-1100-1200")
+    assert engine.argvs == [line] and engine.runs == [BUILD_A]
+
+
+@pytest.mark.integration
+def test_a_launch_generates_in_line_with_the_callers_launch_line(cache, service, engine, monkeypatch, tmp_path):
+    line = _minapp_line(tmp_path, monkeypatch)
+    ready = ss.ensure_security_state(engine_argv=line, now=T0)
+    assert ready is not None and ready.path == ready_of(cache, "1000-1100-1200")
+    assert engine.argvs == [line] and engine.runs == [BUILD_A]
+
+
+@pytest.mark.integration
+def test_write_user_js_passes_the_launch_line_to_the_generation(cache, service, engine, monkeypatch, tmp_path):
+    line = _minapp_line(tmp_path, monkeypatch)
+    profile = tmp_path / "p"
+    write_user_js(profile, {"a": 1}, engine_argv=line)
+    assert engine.argvs == [line] and engine.runs == [BUILD_A]
+    assert sorted(state_files(profile)) == sorted(["data.safe.bin", "crlite.filter", "20261112-0-default.filter.delta"])
+
+
+@pytest.mark.integration
+def test_write_user_js_with_no_launch_line_gives_none_to_the_seam(cache, service, engine, tmp_path):
+    write_user_js(tmp_path / "p", {"a": 1}, engine="/y/bin/firefox")
+    assert engine.args == ["/y/bin/firefox"] and engine.argvs == [None]

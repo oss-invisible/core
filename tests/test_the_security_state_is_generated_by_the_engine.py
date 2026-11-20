@@ -68,12 +68,12 @@ def run(tmp_path, monkeypatch):
     work_root.mkdir()
     out_dir = tmp_path / "out"
 
-    def go(mode: str = "ok", **kw):
+    def go(mode: str = "ok", argv=None, **kw):
         monkeypatch.setenv("FAKE_ENGINE_MODE", mode)
         monkeypatch.setenv("FAKE_ENGINE_VERSION", ENGINE.version)
         monkeypatch.setenv("FAKE_ENGINE_BUILD_ID", ENGINE.build_id)
         kw.setdefault("work_root", work_root)
-        return gen.generate([sys.executable, "-I", str(FAKE)], inputs, ENGINE, out_dir, **kw)
+        return gen.generate([sys.executable, "-I", str(FAKE)] + ["-headless", "-no-remote"] if argv is None else argv, inputs, ENGINE, out_dir, **kw)
 
     go.inputs, go.out_dir, go.work_root = inputs, out_dir, work_root
     return go
@@ -493,3 +493,34 @@ def test_ten_days_exactly_is_a_warning_that_says_the_filters_are_left_out():
 def test_a_date_that_cannot_be_read_is_a_warning(garbage):
     text = gen.age_warning(garbage, NOW)
     assert text and "age is unknown" in text and "left out" in text and "invisible-playwright fetch" in text
+
+
+# --- the launch line is the caller's -----------------------------------------------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_the_default_launch_line_is_the_invisible_one(tmp_path):
+    assert gen.default_argv(tmp_path / "engine" / "firefox") == [str(tmp_path / "engine" / "firefox"), "-headless", "-no-remote"]
+
+
+@pytest.mark.integration
+def test_with_no_launch_line_the_engine_gets_exactly_headless_no_remote_and_the_profile(run, monkeypatch):
+    """The fake expects, with no word said, exactly `-headless -no-remote -profile <dir>`: the default of the core is today's invisible launch."""
+    monkeypatch.delenv("FAKE_ENGINE_EXPECT_ARGS", raising=False)
+    assert run()["ok"] is True
+
+
+@pytest.mark.integration
+def test_the_callers_launch_line_reaches_the_engine_exactly_plus_the_profile(run, monkeypatch, tmp_path):
+    """The known-bad is a core that appends `-headless -no-remote` of its own: the engine would get them twice, or in a layout the caller did not name."""
+    minapp = str(tmp_path / "minapp")
+    tail = ["-app", minapp, "-headless", "-no-remote"]
+    monkeypatch.setenv("FAKE_ENGINE_EXPECT_ARGS", json.dumps(tail))
+    assert run(argv=[sys.executable, "-I", str(FAKE)] + tail)["ok"] is True
+
+
+@pytest.mark.integration
+def test_a_launch_line_other_than_the_expected_is_refused_by_the_engine(run, monkeypatch, tmp_path):
+    monkeypatch.setenv("FAKE_ENGINE_EXPECT_ARGS", json.dumps(["-app", str(tmp_path / "minapp"), "-headless", "-no-remote"]))
+    with pytest.raises(gen.GenerationError, match="arguments are"):
+        run(argv=[sys.executable, "-I", str(FAKE), "-headless", "-no-remote"])
+    assert not run.out_dir.exists() or list(run.out_dir.iterdir()) == []

@@ -58,6 +58,7 @@ from ._security_state_generate import (
     GenerationError,
     Inputs,
     age_warning,
+    default_argv,
     engine_id_of,
     generate,
     is_stale,
@@ -124,27 +125,34 @@ class _Version(NamedTuple):
 
 @dataclass
 class _Engine:
-    """The engine a generation is tied to. `command` is None until a generation needs it: the sealed engine is only resolved (downloaded, if need be) then."""
+    """The engine a generation is tied to. `argv` is its launch line without the profile, None until a generation needs it: the sealed engine is only resolved (downloaded, if need be) then."""
 
-    command: Optional[List[str]]
+    argv: Optional[List[str]]
     id: EngineId
 
     def resolved(self) -> Tuple[List[str], EngineId]:
-        if self.command is not None:
-            return self.command, self.id
+        if self.argv is not None:
+            return self.argv, self.id
         binary = download.ensure_binary()
         real = engine_id_of(binary)
         if real.build_id != self.id.build_id:
             raise GenerationError("the sealed engine's build id is %r, the engine at %s says %r" % (self.id.build_id, binary, real.build_id))
-        self.command, self.id = [str(binary)], real
-        return self.command, real
+        self.argv, self.id = default_argv(binary), real
+        return self.argv, real
 
 
-def _engine_for(engine: "Optional[str | os.PathLike[str]]") -> Tuple[Optional[List[str]], EngineId]:
-    """THE SEAM to the engine: `(command, id)`. A given engine is read for its identity (`application.ini`) and run as `[engine]`. With none, the sealed engine: its build id is
-    the seal's for this platform (no file is read, no download made) and the command is None until a generation needs the binary. A test replaces this function."""
+def _engine_for(engine: "Optional[str | os.PathLike[str]]", engine_argv: Optional[Sequence[str]] = None) -> Tuple[Optional[List[str]], EngineId]:
+    """THE SEAM to the engine: `(argv, id)`, the launch line without the profile and the identity a generation is tied to.
+    `engine_argv` given -> that line as it is (the core appends `-profile <work profile>` and nothing else), the identity read (`application.ini`) from `engine` when given, else
+    from `engine_argv[0]`. Only `engine` given -> its identity and `default_argv(engine)`. Neither -> the sealed engine: its build id is the seal's for this platform (no file is
+    read, no download made) and the argv is None until a generation needs the binary (`default_argv`). A test replaces this function."""
+    if engine_argv is not None:
+        argv = [str(a) for a in engine_argv]
+        if not argv:
+            raise GenerationError("the engine's launch line is empty")
+        return argv, engine_id_of(engine if engine is not None else argv[0])
     if engine is not None:
-        return [str(engine)], engine_id_of(engine)
+        return default_argv(engine), engine_id_of(engine)
     seal = active_seal()
     asset = seal.asset_for(sys.platform, platform.machine())
     if not asset.build_id:
@@ -152,9 +160,9 @@ def _engine_for(engine: "Optional[str | os.PathLike[str]]") -> Tuple[Optional[Li
     return None, EngineId(version=seal.upstream_version, build_id=asset.build_id)
 
 
-def _the_engine(engine) -> _Engine:
-    command, eid = _engine_for(engine)
-    return _Engine(command, eid)
+def _the_engine(engine, engine_argv: Optional[Sequence[str]] = None) -> _Engine:
+    argv, eid = _engine_for(engine, engine_argv)
+    return _Engine(argv, eid)
 
 
 def _generated_name(eid: EngineId) -> str:
@@ -310,8 +318,8 @@ def _inputs_in(directory: Path) -> Inputs:
 
 
 def _generate_into(out_dir: Path, data_dir: Path, eng: _Engine) -> None:
-    command, eid = eng.resolved()
-    generate(command, _inputs_in(data_dir), eid, out_dir)
+    argv, eid = eng.resolved()
+    generate(argv, _inputs_in(data_dir), eid, out_dir)
 
 
 def _ensure_generated(version: Path, eng: _Engine, now: datetime) -> Path:
@@ -381,9 +389,13 @@ def _build_version(root: Path, previous: Optional[_Version], feed: Dict[str, int
 
 # --- the user's `fetch` ---------------------------------------------------------------------------------------------------------------------------------
 
-def update_security_state(*, engine: "Optional[str | os.PathLike[str]]" = None, now: Optional[datetime] = None) -> Tuple[Optional[Path], bool]:
+def update_security_state(*, engine: "Optional[str | os.PathLike[str]]" = None, engine_argv: Optional[Sequence[str]] = None,
+                          now: Optional[datetime] = None) -> Tuple[Optional[Path], bool]:
     """Ask whether the bucket has anything newer than the cache's newest version and, if so, download it, verify it, generate it for the engine and put the version in place.
     `(path, changed)`: the ready `generated-<build_id>` directory (None when there is none) and whether this call put a new DATA version in the cache.
+
+    `engine_argv` is the caller's launch line of the engine without the profile (the core appends `-profile <work profile>`); None is `default_argv` of `engine` or of the sealed
+    engine. The identity a generation is tied to is read from `engine` when given, else from `engine_argv[0]`.
 
     Called by `invisible-playwright fetch`, so it asks the changes feed EVERY time and downloads only what is newer; with nothing newer it only generates for the engine when
     the newest version has no generation for it (no network). One process of the machine at a time. `STEALTHFOX_SECURITY_STATE` set -> nothing is asked: `(that directory,
@@ -395,7 +407,7 @@ def update_security_state(*, engine: "Optional[str | os.PathLike[str]]" = None, 
     root = _root()
     eng: Optional[_Engine] = None
     try:
-        eng = _the_engine(engine)
+        eng = _the_engine(engine, engine_argv)
         moment = _now() if now is None else now
         with _asset.machine_lock(root, _asset.LOCK_WAIT_S):
             feed = _latest(download.DOWNLOAD_ATTEMPTS)
@@ -443,12 +455,12 @@ def _make_ready(root: Path, eng: _Engine, now: datetime) -> Ready:
     return made
 
 
-def _ensure(engine, now: datetime) -> Optional[Ready]:
+def _ensure(engine, engine_argv, now: datetime) -> Optional[Ready]:
     override = os.environ.get(environment.SECURITY_STATE)
     if override:
         return _override_ready(override)
     try:
-        eng = _the_engine(engine)
+        eng = _the_engine(engine, engine_argv)
         root = _root()
         return _asset.ensure_once(
             _SLOT,
@@ -467,8 +479,9 @@ def _ensure(engine, now: datetime) -> Optional[Ready]:
         return None
 
 
-def ensure_security_state(*, engine: "Optional[str | os.PathLike[str]]" = None, now: Optional[datetime] = None) -> Optional[Ready]:
-    """The ready security state of this engine, or None. `now` is the moment the ten-day rule is judged at; None is the real clock, and only here.
+def ensure_security_state(*, engine: "Optional[str | os.PathLike[str]]" = None, engine_argv: Optional[Sequence[str]] = None,
+                          now: Optional[datetime] = None) -> Optional[Ready]:
+    """The ready security state of this engine, or None. `engine_argv` is the caller's launch line without the profile (see `update_security_state`). `now` is the moment the ten-day rule is judged at; None is the real clock, and only here.
 
     Resolution order:
       1. ``STEALTHFOX_SECURITY_STATE`` -> that directory (user-supplied / CI), as `Ready(dir, None)`; one that does not hold `securitystate-result.json` is an error.
@@ -477,7 +490,7 @@ def ensure_security_state(*, engine: "Optional[str | os.PathLike[str]]" = None, 
          never generated from: a warning that says to run `invisible-playwright fetch`, and None.
       4. A cold cache -> downloaded and generated once, in line (the callers of one process share it, other processes wait for the machine lock and read what it left).
       5. Anything that fails -> a warning on stderr once per process, and None."""
-    return _ensure(engine, _now() if now is None else now)
+    return _ensure(engine, engine_argv, _now() if now is None else now)
 
 
 def _age_warn_once(ready: Ready, now: datetime) -> None:
@@ -491,8 +504,11 @@ def _age_warn_once(ready: Ready, now: datetime) -> None:
     print(text, file=sys.stderr, flush=True)
 
 
-def place_security_state(profile_dir: "str | os.PathLike[str]", *, engine: "Optional[str | os.PathLike[str]]" = None, now: Optional[datetime] = None) -> bool:
+def place_security_state(profile_dir: "str | os.PathLike[str]", *, engine: "Optional[str | os.PathLike[str]]" = None, engine_argv: Optional[Sequence[str]] = None,
+                         now: Optional[datetime] = None) -> bool:
     """What a launch calls: puts a COPY of the ready `security_state/` in `profile_dir`; True when something was copied.
+
+    `engine_argv` is the caller's launch line of the engine without the profile (None: the invisible launch).
 
     `ensure_security_state` (looked up in this module's globals, so a test that stubs it stubs the launch) and `place_in_profile` (a copy, never a link: the engine rewrites the
     files in place). When the data is STALE (`is_stale` at `now`: ten days or more, or an `updated_utc` nobody can read) the copy leaves out `crlite.filter` and the `*.delta` files
@@ -500,7 +516,7 @@ def place_security_state(profile_dir: "str | os.PathLike[str]", *, engine: "Opti
     warning. With nothing ready, or nothing to copy (a ready directory with no data), the profile is not touched. A copy that fails is removed whole and said once: half a
     `cert_storage` is worse than none. `now` is the clock of the decision; None is the real clock, and only here."""
     moment = _now() if now is None else now
-    ready = ensure_security_state(engine=engine, now=moment)
+    ready = ensure_security_state(engine=engine, engine_argv=engine_argv, now=moment)
     if ready is None:
         return False
     stale = ready.updated_utc is not None and is_stale(ready.updated_utc, moment)

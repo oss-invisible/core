@@ -1,8 +1,8 @@
-"""A stand-in for the engine's security-state GENERATE MODE, a standalone script: `python -I _fake_security_state_engine.py -headless -no-remote -profile <dir>`.
+"""A stand-in for the engine's security-state GENERATE MODE, a standalone script: `python -I _fake_security_state_engine.py <the caller's launch line> -profile <dir>`.
 
 It respects the contract of `invisible_core._security_state_generate` exactly. It PRINTS NOTHING: the outcome is the exit code and `securitystate-result.json` (with `"ok": false` and
-an `"error"` text on a failure). It refuses (exit 2, the result written when the profile directory exists) whatever the core must not do: other arguments than the three of the
-contract, a work profile that holds anything but `user.js`, a `user.js` that is not exactly the four prefs (generate = true, three absolute paths of files that exist), and a
+an `"error"` text on a failure). It refuses (exit 2, the result written when the profile directory exists) whatever the core must not do: other arguments than EXACTLY the expected launch line
+(`FAKE_ENGINE_EXPECT_ARGS`, a JSON list of the arguments after the script; unset: `["-headless", "-no-remote"]`) followed by `-profile <dir>`, a work profile that holds anything but `user.js`, a `user.js` that is not exactly the four prefs (generate = true, three absolute paths of files that exist), and a
 per-user variable (`XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `APPDATA`, `LOCALAPPDATA`) that is not set, not an absolute path, not an existing directory, not inside the parent of
 the profile directory, or inside the profile itself.
 
@@ -89,11 +89,14 @@ def sha256(data):
 
 def main():
     args = sys.argv[1:]
-    if len(args) != 4 or args[:3] != ["-headless", "-no-remote", "-profile"]:
-        refuse("arguments are %r, the contract is -headless -no-remote -profile <dir>" % (args,))
+    expected = json.loads(os.environ.get("FAKE_ENGINE_EXPECT_ARGS", '["-headless", "-no-remote"]'))
     global PROFILE
-    profile = args[3]
-    PROFILE = profile
+    # The profile is the last argument, so that a refusal can still leave its result there.
+    if len(args) >= 2 and args[-2] == "-profile":
+        PROFILE = args[-1]
+    if len(args) != len(expected) + 2 or args[:-2] != expected or args[-2] != "-profile":
+        refuse("arguments are %r, the contract is exactly %r + -profile <dir>" % (args, expected))
+    profile = args[-1]
     if not os.path.isabs(profile) or not os.path.isdir(profile):
         refuse("the profile %r is not an existing absolute directory" % profile)
     if sorted(os.listdir(profile)) != ["user.js"]:
