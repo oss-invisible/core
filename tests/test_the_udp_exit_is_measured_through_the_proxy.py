@@ -323,7 +323,7 @@ def test_the_launch_geo_step_does_not_wait_for_the_measurement_after_the_tcp_dis
     from invisible_core import prepare_session_geo
 
     def slow(proxy=None, **kw):
-        time.sleep(0.8)
+        time.sleep(0.8 + 0.6)       # 0.6 s stands for a machine under load: the two still run side by side
         return EXIT
 
     monkeypatch.setattr(_geo, "discover_egress_ip", slow)
