@@ -687,8 +687,16 @@ class Actions:
     # ── waiting ─────────────────────────────────────────────────────────────
     def wait_for_selector(self, selector: str, *, state: str = "visible",
                           timeout: Optional[float] = 30.0, frame_id: Optional[str] = None,
-                          strict: bool = False):
+                          strict: bool = False, root: Optional[str] = None):
         """Waits for a selector to reach a state, and returns its handle.
+
+        `root` is the objectId of an element in this frame's utility world: the
+        selector is then looked for INSIDE it, as Playwright's
+        `ElementHandle.waitForSelector` does (`Frame.waitForSelector` with a
+        `scope`). A root that is not connected fails at once, in every state,
+        with Playwright's `Element is not attached to the DOM`
+        (`EvaluationError`). Without it the wait is the one it always was,
+        against the document.
 
         ⛔ THE HANDLE IS NOT DISPOSED HERE, and that is deliberate: the caller
         is about to use it. `_retry` disposes what it resolves on every turn
@@ -708,7 +716,11 @@ class Actions:
         deadline = Deadline(timeout)
         reason = "not tried yet"
         while True:
-            element = self.inj.query_selector(frame, selector, strict=strict)
+            if root is None:
+                element = self.inj.query_selector(frame, selector, strict=strict)
+            else:
+                element = self.inj.query_selector(frame, selector, strict=strict,
+                                                  root=root)
             if state == "detached":
                 if not element:
                     return None

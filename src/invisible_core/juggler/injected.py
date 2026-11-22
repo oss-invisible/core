@@ -41,6 +41,7 @@ Changing one here without changing it there breaks the hookup silently.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import threading
@@ -121,6 +122,29 @@ class ContextDestroyed(RuntimeError):
 #: waiting on a promise when its context was destroyed.
 _CONTEXT_GONE = ("Failed to find execution context with id",
                  "Execution context was destroyed!")
+
+#: Playwright's text for a scope that left the document (`throwElementIsNotAttached`
+#: and `waitForSelector`'s own check in the driver bundle).
+NOT_ATTACHED = "Element is not attached to the DOM"
+
+#: What every call that looks inside a root runs first: the root is judged
+#: before anything is resolved against it, on every turn, in the same command
+#: as the read, so no navigation or removal can fall between the two.
+_ROOT_CHECK = (" if (!root.isConnected) throw new Error(%s);" % json.dumps(NOT_ATTACHED))
+
+
+@contextlib.contextmanager
+def _root_not_attached():
+    """The page's throw for a root that is not connected, as the bare
+    Playwright text: the engine's `exceptionDetails` carries the page's own
+    prefix and stack, and nothing of that is the caller's to read."""
+    try:
+        yield
+    except EvaluationError as failure:
+        if NOT_ATTACHED in str(failure):
+            raise EvaluationError(NOT_ATTACHED) from None
+        raise
+
 
 def js_truthy(remote: dict) -> bool:
     """JavaScript's ToBoolean of a value the engine returned BY REFERENCE.
@@ -596,21 +620,47 @@ class InjectedScript:
 
     # ── the little needed on top ────────────────────────────────────────────
     def query_selector(self, frame_id: str, selector: str,
-                       *, strict: bool = False) -> Optional[str]:
-        """The objectId of the first matching element, or None."""
-        return self.call(
-            frame_id,
-            "(injected, sel, strict) => {"
-            "  const p = injected.parseSelector(sel);"
-            "  return injected.querySelector(p, document, strict) || null; }",
-            selector, strict, by_value=False)
+                       *, strict: bool = False,
+                       root: Optional[str] = None) -> Optional[str]:
+        """The objectId of the first matching element, or None.
 
-    def count(self, frame_id: str, selector: str) -> int:
-        return self.call(
-            frame_id,
-            "(injected, sel) => injected.querySelectorAll("
-            "injected.parseSelector(sel), document).length",
-            selector)
+        `root` is the objectId of an element of this frame's utility world: the
+        selector is then looked for INSIDE it, as Playwright's `scope` does
+        (`ElementHandle.waitForSelector`), and a root that is not connected
+        fails with Playwright's own text, `Element is not attached to the DOM`
+        (`EvaluationError`), before anything is resolved."""
+        if root is None:
+            return self.call(
+                frame_id,
+                "(injected, sel, strict) => {"
+                "  const p = injected.parseSelector(sel);"
+                "  return injected.querySelector(p, document, strict) || null; }",
+                selector, strict, by_value=False)
+        with _root_not_attached():
+            return self.call(
+                frame_id,
+                "(injected, sel, strict, root) => {"
+                + _ROOT_CHECK +
+                "  const p = injected.parseSelector(sel);"
+                "  return injected.querySelector(p, root, strict) || null; }",
+                selector, strict, {"objectId": root}, by_value=False)
+
+    def count(self, frame_id: str, selector: str, *,
+              root: Optional[str] = None) -> int:
+        if root is None:
+            return self.call(
+                frame_id,
+                "(injected, sel) => injected.querySelectorAll("
+                "injected.parseSelector(sel), document).length",
+                selector)
+        with _root_not_attached():
+            return self.call(
+                frame_id,
+                "(injected, sel, root) => {"
+                + _ROOT_CHECK +
+                "  return injected.querySelectorAll("
+                "injected.parseSelector(sel), root).length; }",
+                selector, {"objectId": root})
 
     def evaluate_in_caller(self, frame_id: str, expression: str, *,
                            by_value: bool = True, timeout: Optional[float] = 30.0,
@@ -686,22 +736,35 @@ class InjectedScript:
             self.release(context, remote["objectId"])
         return None
 
-    def query_selector_all(self, frame_id: str, selector: str) -> list:
+    def query_selector_all(self, frame_id: str, selector: str, *,
+                           root: Optional[str] = None) -> list:
         """Every match, as a list of objectIds the caller must dispose.
 
         ⛔ IT RETURNS HANDLES, AND EACH ONE HOLDS A DOM NODE ALIVE. A page with
         a thousand matches leaves a thousand nodes uncollectable until they are
         disposed, which is a leak that grows with the page and not with the
         code. The caller owns them; there is no scope here that could.
+
+        `root` is as in `query_selector`: the matches inside that element.
         """
-        count = self.count(frame_id, selector)
+        count = self.count(frame_id, selector, root=root)
         ids = []
         for index in range(count):
-            object_id = self.call(
-                frame_id,
-                "(injected, sel, i) => injected.querySelectorAll("
-                "injected.parseSelector(sel), document)[i]",
-                selector, index, by_value=False)
+            if root is None:
+                object_id = self.call(
+                    frame_id,
+                    "(injected, sel, i) => injected.querySelectorAll("
+                    "injected.parseSelector(sel), document)[i]",
+                    selector, index, by_value=False)
+            else:
+                with _root_not_attached():
+                    object_id = self.call(
+                        frame_id,
+                        "(injected, sel, i, root) => {"
+                        + _ROOT_CHECK +
+                        "  return injected.querySelectorAll("
+                        "injected.parseSelector(sel), root)[i]; }",
+                        selector, index, {"objectId": root}, by_value=False)
             if object_id:
                 ids.append(object_id)
         return ids
