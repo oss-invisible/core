@@ -653,9 +653,20 @@ def test_an_engine_that_has_been_reaped_does_not_name_a_process_that_reuses_its_
     assert tree.members() == []
 
 
+#: A process that says its pid and stays until its stdin closes (nothing in it counts a time).
+_HOLD = "import os, sys; print(os.getpid(), flush=True); sys.stdin.read()"
+
+#: A process that starts a child of its own, waits until the child has said its pid, says both and stays: the tree it makes is
+#: more than the process the test created, and it is whole before the test is told anything.
+_HOLD_WITH_CHILD = ("import os, subprocess, sys; "
+                    "k = subprocess.Popen([sys.executable, '-c', %r], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True); "
+                    "print(os.getpid(), k.pid, k.stdout.readline().strip(), flush=True); sys.stdin.read()" % _HOLD)
+
+
 @pytest.mark.unit
 @pytest.mark.skipif(not WINDOWS, reason="the job object is Windows")
-def test_a_job_lists_and_ends_its_own_tree_and_only_it():
+@pytest.mark.parametrize("program", [_HOLD, _HOLD_WITH_CHILD], ids=["alone", "with_a_child"])
+def test_a_job_lists_and_ends_its_own_tree_and_only_it(program):
     """`EngineJob.pids` lists what is in the job by its own account (the job of another launch holds its own), `terminate` ends all of it."""
     import ctypes
     from ctypes import wintypes
@@ -667,11 +678,13 @@ def test_a_job_lists_and_ends_its_own_tree_and_only_it():
     procs = []
     try:
         for job in (a, b):
-            proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], creationflags=0x4)
+            proc = subprocess.Popen([sys.executable, "-c", program], creationflags=0x4, stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, text=True)
             procs.append(proc)
             assert k.AssignProcessToJobObject(job.handle, int(proc._handle))
             import psutil
             psutil.Process(proc.pid).resume()
+            proc.stdout.readline()                    # it runs, and its tree is whole
         assert a.pids() == [procs[0].pid] and b.pids() == [procs[1].pid]
         a.terminate()
         assert a.wait_empty(time.monotonic() + 10) is True
@@ -685,6 +698,8 @@ def test_a_job_lists_and_ends_its_own_tree_and_only_it():
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            proc.stdin.close()
+            proc.stdout.close()
 
 
 @pytest.mark.skipif(WINDOWS, reason="process groups are POSIX")
