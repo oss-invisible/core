@@ -142,7 +142,8 @@ shipped in the wheel; the generated JSON is.
 ## Adding or refreshing a value
 
 1. Take the capture on the host the registry names (the page and a Firefox, nothing
-   else) and import it.
+   else) and import it. A `github-runner` capture is taken by a workflow:
+   [retail-runner-capture.md](retail-runner-capture.md).
 2. Change or add the generator, run it, and commit the table with the capture.
 3. Put the entry in `pinned.json` with the new `items_sha256`.
 

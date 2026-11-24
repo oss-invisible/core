@@ -41,7 +41,9 @@ def main(argv=None) -> int:
                     help="when RAW is a file whose item keys the archive already rewrote: the sha256 of the file before it")
     ap.add_argument("--keys-rewritten-in-raw", type=int, default=0,
                     help="how many occurrences the archive rewrote in RAW (counted in meta.items.renamed_keys)")
-    ap.add_argument("--page", type=Path, default=cf.REPO / PAGE_RELATIVE)
+    ap.add_argument("--page-path", default=PAGE_RELATIVE,
+                    help="the page's path in this repository (default: host-gate-1; a runner capture is host-gate-2)")
+    ap.add_argument("--page", type=Path, default=None, help="the page file (default: --page-path in this repository)")
     ap.add_argument("--served-page", type=Path, default=None,
                     help="the page file the capture was actually served, when the repository copy differs from it "
                          "only by --rename-key")
@@ -50,6 +52,7 @@ def main(argv=None) -> int:
                          "studied system out of this repository. Repeatable.")
     args = ap.parse_args(argv)
 
+    page_file = args.page or cf.REPO / args.page_path
     raw_bytes = args.raw.read_bytes()
     raw = json.loads(raw_bytes)
     if raw.get("format") != "host-gate/1":
@@ -77,7 +80,7 @@ def main(argv=None) -> int:
         "dpr": raw["meta"]["devicePixelRatio"],
         "dpr_asked": float(args.dpr_label),
         "date": args.date,
-        "page": {"path": PAGE_RELATIVE, "sha256": cf.sha256_file(args.page),
+        "page": {"path": args.page_path, "sha256": cf.sha256_file(page_file),
                  "served_sha256": cf.sha256_file(args.served_page) if args.served_page else None},
         "user_agent": raw["meta"].get("userAgent"),
         "items": {"count": len(items), "images": n_images, "renamed_keys": n_renamed + args.keys_rewritten_in_raw,
@@ -94,7 +97,7 @@ def main(argv=None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     (out / cf.ITEMS_NAME).write_bytes(items_bytes)
     (out / cf.META_NAME).write_bytes(cf.dumps_meta(meta))
-    print(f"{out.relative_to(cf.REPO).as_posix()}  items.json {len(items_bytes)} bytes  "
+    print(f"{(out.relative_to(cf.REPO) if out.is_relative_to(cf.REPO) else out).as_posix()}  items.json {len(items_bytes)} bytes  "
           f"sha256 {meta['items']['sha256']}  ({len(items)} items, {n_images} images)")
     return 0
 
