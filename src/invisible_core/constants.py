@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+from ._retail import table as _retail_table
 from ._version import CORE_REVISION, __version__ as PKG_VERSION
 from .seal import active_seal, normalize_arch
 
@@ -40,26 +41,30 @@ SOURCE_COMMIT: str = _SEAL.source_commit
 
 BINARY_BASENAME: str = f"firefox-{FIREFOX_UPSTREAM_VERSION}-stealth"
 
+# The navigator's identity strings are what a page of retail Firefox for Windows
+# answers, generated from a dated capture (data/retail/navigator.json, see
+# docs/retail-captures.md); the only thing this module adds is the version, which is
+# the sealed engine's, never the capture's.
+_NAVIGATOR = _retail_table("navigator")
+
 # Spoofed User-Agent. Firefox puts only MAJOR.MINOR in the UA (a real 150.0.1
 # build reports "Firefox/150.0"), so the truncation is part of the form.
 UA_VERSION: str = ".".join(FIREFOX_UPSTREAM_VERSION.split(".")[:2])
-USER_AGENT: str = (
-    f"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:{UA_VERSION}) "
-    f"Gecko/20100101 Firefox/{UA_VERSION}"
-)
+USER_AGENT: str = _NAVIGATOR["user_agent_template"].format(version=UA_VERSION)
 
-# The other two halves of the same claim. They live here, beside the
+# The other halves of the same claim. They live here, beside the
 # User-Agent they have to agree with, because they used to be written out
 # twice: once in prefs._NAVIGATOR_OVERRIDES and once in the sampler's
 # _LOCKED, with nothing tying the two together. USER_AGENT was already
-# centralised; these were not, so they were the pair that could drift.
+# centralised; these were not, so they were the ones that could drift.
 #
 # The drift is not hypothetical. The same shape was found and fixed on
 # 2026-08-09 for max_touch_points, where a stale second copy silently won
 # over the constant that was supposed to own the value, and it was invisible
 # because both copies said 0.
-PLATFORM_OVERRIDE: str = "Win32"
-OSCPU_OVERRIDE: str = "Windows NT 10.0; Win64; x64"
+PLATFORM_OVERRIDE: str = _NAVIGATOR["platform"]
+OSCPU_OVERRIDE: str = _NAVIGATOR["oscpu"]
+APPVERSION_OVERRIDE: str = _NAVIGATOR["app_version"]
 
 # Height of the Windows taskbar in CSS pixels at 100% DPI, i.e. how much
 # shorter screen.availHeight is than screen.height. It lives here, in the

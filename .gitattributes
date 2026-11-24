@@ -20,3 +20,9 @@ PUBLISHED.json text eol=lf
 # with CRLF on Windows, so a development install would serve different bytes
 # from the wheel. No conversion, ever: they are data, not text to edit.
 src/invisible_core/branding/** -text
+
+# Retail captures and the tables generated from them are compared by sha256 and
+# byte for byte (tests/test_pinned_tables_are_generated.py), on Linux and on a
+# Windows checkout with autocrlf alike. No conversion, ever.
+captures/** -text
+src/invisible_core/data/retail/** -text

@@ -1,0 +1,19 @@
+{
+  "_generated": {
+    "generator": "scripts/retail/gen_tables.py:media_encode",
+    "captures": [
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr2"
+    ],
+    "edit": "never by hand"
+  },
+  "encode_support": [
+    "video/avc|sw",
+    "video/vp8|sw",
+    "video/vp9|sw",
+    "video/av1|sw"
+  ]
+}

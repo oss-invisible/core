@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 import invisible_core
+import invisible_core._retail
 from _engine_source import EngineSource
 from invisible_core.prefs import _apply_codecs
 
@@ -28,21 +29,11 @@ pytestmark = pytest.mark.unit
 _SOURCE = EngineSource.pinned()
 GPU_POOL = Path(invisible_core.__file__).parent / "_fpforge" / "data" / "webgl_gpu_pool.json"
 
-#: Retail Firefox 159 for Windows, headed, 2026-10-31: navigator.gpu.requestAdapter()
-#: features, without "core-features-and-limits", which Firefox adds itself.
-RETAIL_FEATURES = [
-    "bgra8unorm-storage", "depth-clip-control", "depth32float-stencil8", "dual-source-blending",
-    "float32-blendable", "float32-filterable", "indirect-first-instance", "rg11b10ufloat-renderable",
-    "shader-f16", "texture-compression-bc", "texture-compression-bc-sliced-3d", "timestamp-query",
-]
-
-#: The limits the Linux build answered differently from retail on 2026-10-31.
-RETAIL_DIFFERED_ON_LINUX = {
-    "maxStorageBufferBindingSize": 2147483644, "minUniformBufferOffsetAlignment": 256,
-    "maxBindingsPerBindGroup": 4294967295, "maxDynamicUniformBuffersPerPipelineLayout": 8,
-    "maxTextureDimension3D": 2048, "maxComputeWorkgroupSizeZ": 64,
-    "maxDynamicStorageBuffersPerPipelineLayout": 4, "maxVertexAttributes": 30,
-}
+#: The retail values live once, in the file the core reads (generated from the retail 159
+#: capture by scripts/retail/gen_tables.py): this test holds no copy of them.
+RETAIL = invisible_core._retail.table("webgpu")
+RETAIL_FEATURES = RETAIL["features"]
+RETAIL_LIMITS = {name: value for name, value in RETAIL["limits"]}
 
 
 def prefs_for(renderer):
@@ -72,8 +63,10 @@ def test_every_windows_persona_declares_the_adapter_its_gpu_has(renderer):
 
 
 def test_the_limits_are_retail_where_linux_differed():
+    # Linux answered 14 of the 35 differently on 2026-10-31 (maxStorageBufferBindingSize 134217728
+    # against 2147483644, ...): every limit, not a copied selection, is the retail's.
     got = limits(prefs_for("ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0, D3D11)"))
-    assert {k: got[k] for k in RETAIL_DIFFERED_ON_LINUX} == RETAIL_DIFFERED_ON_LINUX
+    assert got == RETAIL_LIMITS
 
 
 def test_no_feature_is_one_retail_windows_does_not_report():

@@ -1,0 +1,17 @@
+{
+  "_generated": {
+    "generator": "scripts/retail/gen_tables.py:navigator",
+    "captures": [
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr2"
+    ],
+    "edit": "never by hand"
+  },
+  "user_agent_template": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:{version}) Gecko/20100101 Firefox/{version}",
+  "platform": "Win32",
+  "oscpu": "Windows NT 10.0; Win64; x64",
+  "app_version": "5.0 (Windows)"
+}
