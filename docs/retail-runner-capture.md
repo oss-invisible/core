@@ -93,10 +93,13 @@ python scripts/retail/check_runner_capture.py captures/firefox-159.0/github-runn
 ```
 
 For every `generated` entry of `captures/pinned.json` it runs the generator as if this capture were each of its
-sources and compares with the committed table: `regenerates` (the committed bytes), `differs` (the keys that differ) or
-`cannot` (the generator refuses it). An entry whose `host_needed` names the `github-runner` (R01, the navigator) is
-runner-capturable: the check is red when one is not regenerated. The tables that need Windows 11, a GPU or another
-display scale (R19 encode, R22) are reported and never make it red. The workflow runs this as its last step, and
+sources and compares with the committed table: `regenerates` (the committed bytes), `differs` (the keys that differ),
+`cannot` (the generator refuses it, and says why in words: an item the capture does not have, or one of another shape,
+such as the WebGL lists of a host with no WebGL context) or `error` (the generator raised an exception it does not
+know: a bug, never a statement about the capture). An entry whose `host_needed` names the `github-runner` (R01, the
+navigator; R32, R36 and R37) is runner-capturable: the check is red when one is not regenerated. The tables that need
+Windows 11, a GPU or another display scale (R19 encode, R22, R23) are reported and never make it red, except for an
+`error`, which is red for every table. The workflow runs this as its last step, and
 `tests/test_a_runner_capture_regenerates_the_runner_tables.py` runs it on every runner capture committed under
 `captures/`.
 

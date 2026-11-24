@@ -12,6 +12,9 @@ Held here:
   * the checker says `regenerates` for a capture that gives the committed bytes and `differs` or `cannot` for one
     that does not, is red (exit 1) when a runner-capturable table is not regenerated, and never red for a table
     that needs another host;
+  * a capture with no WebGL context (a runner has no GPU, its page answers with a word) is `cannot` with a
+    sentence that says so, never an exception text; a generator that raises something it does not know is
+    `error`, which is red for every table; R36 (the en-US voices) is runner-capturable;
   * the gate: every runner capture committed under captures/ regenerates the runner-capturable tables.
 """
 from __future__ import annotations
@@ -175,6 +178,66 @@ def test_a_table_that_needs_another_host_never_makes_the_check_red(tmp_path):
     assert check.main([str(target)]) == 0
 
 
+def _webgl_shape(items, webgl1, webgl2):
+    items["surface.webgl1"], items["surface.webgl2"] = webgl1, webgl2
+
+
+def test_a_capture_with_no_webgl2_context_says_why_in_words(tmp_path, capsys):
+    """The runner's shape: WebGL 1 answers (software), WebGL 2 is the word `no webgl2`."""
+    target = _with_navigator(tmp_path, lambda items: _webgl_shape(items, items["surface.webgl1"], "no webgl2"))
+    row = _by_id(check.check(target))["R23.pool"]
+    assert row["status"] == "cannot"
+    assert row["detail"] == "the capture has no WebGL2 extension list (no WebGL2 context on this host)"
+    assert check.main([str(target)]) == 0, "R23.pool needs another host: a refusal is not red"
+    out = capsys.readouterr().out
+    assert "CANT R23.pool" in out and "no WebGL2 context on this host" in out
+    assert "Error" not in out and "indices" not in out
+
+
+def test_a_capture_with_no_webgl_at_all_names_both(tmp_path):
+    target = _with_navigator(tmp_path, lambda items: _webgl_shape(items, "no webgl", "no webgl2"))
+    row = _by_id(check.check(target))["R23.pool"]
+    assert (row["status"], row["detail"]) == (
+        "cannot", "the capture has no WebGL1 and WebGL2 extension list (no WebGL1 and WebGL2 context on this host)")
+
+
+def test_a_context_that_lists_no_extensions_is_the_same_refusal(tmp_path):
+    target = _with_navigator(tmp_path, lambda items: _webgl_shape(items, {"extensions": None}, items["surface.webgl2"]))
+    row = _by_id(check.check(target))["R23.pool"]
+    assert row["status"] == "cannot" and row["detail"].startswith("the capture has no WebGL1 extension list")
+
+
+def test_a_generator_that_raises_is_an_error_and_red_for_every_table(tmp_path, monkeypatch, capsys):
+    """A bug of a generator must not hide as `cannot`: R22 needs another host, and is still red."""
+    def broken(_sources):
+        raise RuntimeError("a bug")
+
+    fn, out, sources = check.gen.GENERATORS["webgpu"]
+    monkeypatch.setitem(check.gen.GENERATORS, "webgpu", (broken, out, sources))
+    target = _with_navigator(tmp_path, lambda items: None)
+    row = _by_id(check.check(target))["R22"]
+    assert row["status"] == "error" and row["runner_capturable"] is False
+    assert row["detail"] == "unexpected RuntimeError in the generator: a bug"
+    assert [r["id"] for r in check.failed(check.check(target))] == ["R22"]
+    assert check.main([str(target)]) == 1
+    captured = capsys.readouterr()
+    assert "ERR  R22" in captured.out and "RED: R22 (error)" in captured.err
+
+
+def test_the_en_us_voices_are_runner_capturable(made):
+    registry = json.loads((ROOT / "captures" / "pinned.json").read_text(encoding="utf-8"))
+    r36 = next(e for e in registry["entries"] if e["id"] == "R36")
+    assert check.runner_capturable(r36) and "github-runner" in r36["host_needed"]
+    assert _by_id(check.check(made))["R36"]["status"] == "regenerates"
+    broken = made.parent / "voices-differ"
+    shutil.copytree(made, broken)
+    items = cf.load_items(broken)
+    items["surface.voices"][0][0] = "Microsoft Someone Else - English (United States)"
+    (broken / "items.json").write_bytes(cf.dumps_items(items))
+    assert _by_id(check.check(broken))["R36"]["status"] == "differs"
+    assert [r["id"] for r in check.failed(check.check(broken))] == ["R36"]
+
+
 def test_the_checker_leaves_the_generators_as_it_found_them(made):
     before = cf.capture_dir
     check.check(made)
@@ -200,7 +263,7 @@ def test_only_tables_that_name_the_runner_are_runner_capturable():
     generated = [e for e in registry["entries"] if e["status"] == "generated"]
     capturable = {e["id"] for e in generated if check.runner_capturable(e)}
     assert capturable == {e["id"] for e in generated if "github-runner" in e["host_needed"]}
-    assert "R01" in capturable and not capturable & {"R19.encode", "R22"}
+    assert {"R01", "R36"} <= capturable and not capturable & {"R19.encode", "R22"}
 
 
 # --------------------------------------------------------------------------- the gate

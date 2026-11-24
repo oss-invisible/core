@@ -977,8 +977,8 @@
           "items_sha256": "b114e88c9bbac057e1cf5d66fc533a36b68e4ed9119c570c8f0299c9b6bf4544"
         }
       ],
-      "host_needed": "Windows 11 desktop (the SAPI voices are the OS language packs; a GitHub runner lists none or other voices)",
-      "note": "the public capture keeps the en-US rows only (capture_format.ROW_KEEP): the other voices are the capture host's own language packs"
+      "host_needed": "github-runner (runner-page: the runner lists exactly the five en-US voices of this table) or Windows 11 desktop",
+      "note": "the public capture keeps the en-US rows only (capture_format.ROW_KEEP): the other voices are the capture host's own language packs. The runner capture of 2026-11-24 (workflow run 45499453030) lists five voices, all en-US, and each row (name, language, local service, default, in the same order) equals the matching row of the Windows 11 capture, so it regenerates this table byte for byte; the voices of a runner image are its language packs, so an image whose en-US voices change makes the check red"
     },
     {
       "id": "R36.it",
