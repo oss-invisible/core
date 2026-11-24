@@ -198,8 +198,9 @@ def test_the_json_form_names_the_capture_and_every_table(made, capsys):
 def test_only_tables_that_name_the_runner_are_runner_capturable():
     registry = json.loads((ROOT / "captures" / "pinned.json").read_text(encoding="utf-8"))
     generated = [e for e in registry["entries"] if e["status"] == "generated"]
-    capturable = sorted(e["id"] for e in generated if check.runner_capturable(e))
-    assert capturable == ["R01"], f"the runner-capturable generated tables are {capturable}"
+    capturable = {e["id"] for e in generated if check.runner_capturable(e)}
+    assert capturable == {e["id"] for e in generated if "github-runner" in e["host_needed"]}
+    assert "R01" in capturable and not capturable & {"R19.encode", "R22"}
 
 
 # --------------------------------------------------------------------------- the gate
