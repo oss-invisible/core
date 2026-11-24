@@ -64,6 +64,7 @@ from __future__ import annotations
 import sys
 from typing import Dict, List, Optional
 
+from . import _retail
 from ._floats import exact_sum
 
 # Vendor-independent ext lists (native order, Arc host capture). Identical for every persona
@@ -103,6 +104,21 @@ _ENABLED = True
 _POOL_PATH = __import__("pathlib").Path(__file__).parent / "_fpforge" / "data" / "webgl_gpu_pool.json"
 
 
+def _with_retail_extensions(prefs: Dict, lists: Dict) -> Dict:
+    """The persona's prefs with the two extension lists the retail captures give (R23 of
+    captures/pinned.json, `data/retail/webgl_extensions.json`), put where the pool file used
+    to carry them, after the vendor. The file holds no list: one pair serves every Windows persona."""
+    if "zoom.stealth.webgl.extensions" in prefs or "zoom.stealth.webgl2.extensions" in prefs:
+        raise ValueError("the pool file carries an extension list: it belongs to data/retail/webgl_extensions.json")
+    out: Dict = {}
+    for key, value in prefs.items():
+        out[key] = value
+        if key == "zoom.stealth.webgl.vendor":
+            out["zoom.stealth.webgl.extensions"] = ",".join(lists["webgl1"])
+            out["zoom.stealth.webgl2.extensions"] = ",".join(lists["webgl2"])
+    return out
+
+
 def _gpu_pool() -> List[Dict]:
     """Load the Windows GPU pool (we always claim Windows), from the file on EVERY call: nothing is kept. Each entry:
     {key, renderer (input form), vendor, gpu_class (via classify_gpu), prefs (full
@@ -111,8 +127,9 @@ def _gpu_pool() -> List[Dict]:
     from ._fpforge._sampler import classify_gpu  # lazy import → no module cycle
     raw = json.loads(_POOL_PATH.read_text(encoding="utf-8"))
     pool: List[Dict] = []
+    lists = _retail.table("webgl_extensions")
     for e in raw.get("win", []):
-        prefs = e["prefs"]
+        prefs = _with_retail_extensions(e["prefs"], lists)
         rend_in = prefs["zoom.stealth.webgl.renderer"]
         cls = classify_gpu({"renderer": rend_in,
                             "vendor": prefs.get("zoom.stealth.webgl.vendor", "")})

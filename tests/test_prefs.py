@@ -704,29 +704,27 @@ def test_the_storage_quota_is_a_value_firefox_can_actually_report():
     that is merely rare - which is the property that let this defect last as
     long as it did in the first place.
     """
-    import json
-    import pathlib
+    from invisible_core import _retail
+    from invisible_core._fpforge import _sampler
 
-    table_path = (pathlib.Path(__file__).resolve().parents[1]
-                  / "src" / "invisible_core" / "_fpforge" / "data"
-                  / "cpt_storage_given_class_tier.json")
-    data = json.loads(table_path.read_text(encoding="utf-8"))
+    # The cap is the retail table's (generated from the captures, R37), given to every cell.
+    cap = _retail.table("storage_quota")
     bad = {}
-    for key, rows in data["table"].items():
+    for key, rows in _sampler._CPT_STORAGE.items():
         for row in rows:
-            if row["value"] != 10240:
+            if row["value"] != cap["quota_mb"]:
                 bad.setdefault(key, []).append(row["value"])
     assert not bad, (
         "these CPT entries hold a quota Firefox cannot report - the cap is "
-        f"10 GiB = 10240 MB: {bad}")
+        f"{cap['quota_mb']} MB: {bad}")
 
     # And the sampled path on top, because a correct table reached through a
     # broken translation is still the wrong number on the wire.
     for seed in (1, 42, 1234, 99999):
         prefs = translate_profile_to_prefs(generate_profile(seed), timezone="America/New_York")
         mb = prefs["zoom.stealth.storage.quota_mb"]
-        assert mb == 10240, seed
-        assert mb * 1024 * 1024 == 10737418240, seed
+        assert mb == cap["quota_mb"], seed
+        assert mb * 1024 * 1024 == cap["quota_bytes"], seed
 
     # Still a field and still pinnable: on a genuinely small disk the real rule
     # is disk/10, and that persona has to remain expressible.

@@ -37,6 +37,10 @@ def main(argv=None) -> int:
     ap.add_argument("--installer-sha256", default=None)
     ap.add_argument("--gpu-family", default=None, help="the GPU as a family (e.g. 'Intel integrated'), never the exact string")
     ap.add_argument("--os-build", default=None, help="OS build as recorded; omitted when the capture did not record it")
+    ap.add_argument("--raw-sha256-before-rewrite", default=None,
+                    help="when RAW is a file whose item keys the archive already rewrote: the sha256 of the file before it")
+    ap.add_argument("--keys-rewritten-in-raw", type=int, default=0,
+                    help="how many occurrences the archive rewrote in RAW (counted in meta.items.renamed_keys)")
     ap.add_argument("--page", type=Path, default=cf.REPO / PAGE_RELATIVE)
     ap.add_argument("--served-page", type=Path, default=None,
                     help="the page file the capture was actually served, when the repository copy differs from it "
@@ -54,6 +58,7 @@ def main(argv=None) -> int:
     items, n_images = cf.hash_images(raw["items"])
     renames = dict(r.split("=", 1) for r in args.rename_key)
     items, n_renamed = cf.rename_keys(items, renames)
+    dropped_rows = cf.drop_rows(items)  # the rows of a kept list that are the capture host's own
     redacted = cf.redact(items)  # the public rule: only what a reader needs survives
     items_bytes = cf.dumps_items(items)
 
@@ -75,12 +80,16 @@ def main(argv=None) -> int:
         "page": {"path": PAGE_RELATIVE, "sha256": cf.sha256_file(args.page),
                  "served_sha256": cf.sha256_file(args.served_page) if args.served_page else None},
         "user_agent": raw["meta"].get("userAgent"),
-        "items": {"count": len(items), "images": n_images, "renamed_keys": n_renamed, "redacted": len(redacted),
+        "items": {"count": len(items), "images": n_images, "renamed_keys": n_renamed + args.keys_rewritten_in_raw,
+                  "redacted": len(redacted),
                   "sha256": cf.sha256_bytes(items_bytes)},
         "redacted": redacted,
+        "dropped_rows": dropped_rows,
         "noise_keys": sorted(raw.get("noise", {})),
         "raw": {"sha256": cf.sha256_bytes(raw_bytes), "size": len(raw_bytes), "kept": args.raw_kept},
     }
+    if args.raw_sha256_before_rewrite:
+        meta["raw"]["sha256_before_rewrite"] = args.raw_sha256_before_rewrite
     out = cf.CAPTURES / f"firefox-{args.firefox_version}" / args.host / f"{args.date}-dpr{args.dpr_label}"
     out.mkdir(parents=True, exist_ok=True)
     (out / cf.ITEMS_NAME).write_bytes(items_bytes)

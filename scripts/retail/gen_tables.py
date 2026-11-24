@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List
@@ -108,12 +109,78 @@ def media_encode(sources: List[str]) -> bytes:
     return _dumps("media_encode", sources, {"encode_support": rows})
 
 
+def webgl_extensions(sources: List[str]) -> bytes:
+    """R23 (the lists of the pool). The WebGL 1 and WebGL 2 extension names retail Firefox on
+    Windows answers, in the order its engine returns them: the same at every display scale. The core
+    gives the one pair to every Windows persona (ANGLE's D3D11 set is the same whatever the vendor)."""
+    caps = {s: cf.load_items(cf.capture_dir(s)) for s in sources}
+    return _dumps("webgl_extensions", sources, {
+        "webgl1": _same("webgl1.extensions", {s: c["surface.webgl1"]["extensions"] for s, c in caps.items()}),
+        "webgl2": _same("webgl2.extensions", {s: c["surface.webgl2"]["extensions"] for s, c in caps.items()}),
+    })
+
+
+#: The system fonts a page reads with `font: caption` and the like; they carry one size and one family.
+_SHELL_FONTS = ("caption", "icon", "menu", "message-box", "small-caption", "status-bar")
+
+
+def _css_unescape(ident: str) -> str:
+    """A CSS identifier as getComputedStyle serialises it, back to its text: a backslash, hex digits and
+    one optional space are the character with that code point."""
+    return re.sub(r"\\([0-9a-fA-F]{1,6})[ \t\n]?", lambda m: chr(int(m.group(1), 16)), ident)
+
+
+def system_fonts(sources: List[str]) -> bytes:
+    """R32 (four of its values). The shell font family and size, the family of the form controls and
+    the default monospace size, as a page of retail Windows Firefox reads them."""
+    caps = {s: cf.load_items(cf.capture_dir(s)) for s in sources}
+    shell = _same("systemFonts", {f"{s}|{k}": c["surface.systemFonts"][k][:2]
+                                  for s, c in caps.items() for k in _SHELL_FONTS})
+    size = shell[1]
+    if not size.endswith("px"):
+        raise SystemExit(f"system font size {size!r} is not in px")
+    return _dumps("system_fonts", sources, {
+        "ui_family": shell[0],
+        "ui_size": size[:-2],
+        "dialog_family": _css_unescape(_same("input font-family", {s: c["surface.computedStyle.input"]["font-family"]
+                                                                   for s, c in caps.items()})),
+        "monospace_size": int(_same("textarea font-size", {s: c["surface.computedStyle.textarea"]["font-size"]
+                                                           for s, c in caps.items()}).removesuffix("px")),
+    })
+
+
+def voices(sources: List[str]) -> bytes:
+    """R36 (the en-US set). What `speechSynthesis.getVoices()` lists on retail Windows with the en-US
+    voices, in its order, as `name|lang|default|local` (the form the engine parses). The public capture
+    keeps the en-US rows only (capture_format.ROW_KEEP); another language is not this table's."""
+    rows = _same("voices", {s: cf.load_items(cf.capture_dir(s))["surface.voices"] for s in sources})
+    out = []
+    for name, lang, local, default, _uri in rows:
+        if lang != "en-US":
+            raise SystemExit(f"voice {name!r} is {lang!r}: the capture must hold the en-US rows only")
+        out.append(f"{name}|{lang}|{int(default)}|{int(local)}")
+    return _dumps("voices", sources, {"voices": out})
+
+
+def storage_quota(sources: List[str]) -> bytes:
+    """R37. `navigator.storage.estimate().quota` of a retail Firefox on a disk of 100 GiB or more: the
+    group cap, a constant of Firefox. Megabytes, the unit of the sampler's table."""
+    quota = _same("storage quota", {s: cf.load_items(cf.capture_dir(s))["surface.storage"]["quota"] for s in sources})
+    if quota % (1 << 20):
+        raise SystemExit(f"quota {quota} is not a whole number of megabytes")
+    return _dumps("storage_quota", sources, {"quota_bytes": quota, "quota_mb": quota >> 20})
+
+
 #: The items of a capture each generator reads. Nothing else of a capture is needed by code; an item that
 #: is neither here nor cited by a by-hand entry is replaced by the importer (capture_format.KEEP).
 READS: Dict[str, List[str]] = {
     "navigator": ["surface.navigator"],
     "webgpu": ["surface.webgpu"],
     "media_encode": ["surface.media.capabilities"],
+    "webgl_extensions": ["surface.webgl1", "surface.webgl2"],
+    "system_fonts": ["surface.systemFonts", "surface.computedStyle.input", "surface.computedStyle.textarea"],
+    "voices": ["surface.voices"],
+    "storage_quota": ["surface.storage"],
 }
 
 #: name -> (function, output file under DATA_DIR, source captures)
@@ -121,6 +188,10 @@ GENERATORS: Dict[str, Any] = {
     "navigator": (navigator, "navigator.json", FF159_WIN11),
     "webgpu": (webgpu, "webgpu.json", FF159_WIN11),
     "media_encode": (media_encode, "media_encode.json", FF159_WIN11),
+    "webgl_extensions": (webgl_extensions, "webgl_extensions.json", FF159_WIN11),
+    "system_fonts": (system_fonts, "system_fonts.json", FF159_WIN11),
+    "voices": (voices, "voices.json", FF159_WIN11),
+    "storage_quota": (storage_quota, "storage_quota.json", FF159_WIN11),
 }
 
 

@@ -102,7 +102,14 @@ KEEP = (
     ("surface.navigator",),
     ("surface.webgpu",),
     ("surface.media.capabilities",),
-    # by-hand entries (R10, R20, R23, R26, R38)
+    # generators: WebGL extension lists (R23 pool, from surface.webgl1/2 below), system fonts (R32), the
+    # en-US voices (R36, rows filtered by ROW_KEEP) and the storage quota (R37)
+    ("surface.systemFonts",),
+    ("surface.computedStyle.textarea",),
+    ("surface.voices",),
+    ("surface.storage",),
+    # by-hand entries (R10, R20, R23, R24, R26, R31, R38)
+    ("surface.systemColors",),
     ("surface.webgl1",), ("surface.webgl2",),
     ("control.webgl1",), ("control.webgl2",),
     ("surface.mq",),
@@ -119,6 +126,10 @@ DROP = (
     ("surface.webgl[12]", "parameters", "VENDOR"),
     ("surface.webgl[12]", "extension_parameters", "WEBGL_debug_renderer_info"),
 )
+#: A kept list whose ROWS are host values in part: only the rows whose column `col` is `value` survive,
+#: the others are removed (not replaced, so their number is not left behind). The speechSynthesis voices
+#: are the language packs the capture host has installed: only the en-US rows are the table's (R36).
+ROW_KEEP = {"surface.voices": (1, "en-US")}
 PLACEHOLDER = "<redacted: capture host>"
 PATH_SEP = "|"
 
@@ -169,6 +180,22 @@ def redact(items: Dict[str, Any]) -> list:
     for key in list(items):
         visit(items, key, (key,))
     return sorted(done)
+
+
+def drop_rows(items: Dict[str, Any]) -> Dict[str, str]:
+    """Apply ROW_KEEP to `items` IN PLACE; return {item key: the rule applied}, for meta.json `dropped_rows`."""
+    done: Dict[str, str] = {}
+    for key, (col, value) in ROW_KEEP.items():
+        if isinstance(items.get(key), list):
+            items[key] = [row for row in items[key] if row[col] == value]
+            done[key] = f"rows whose column {col} is not {value!r}"
+    return done
+
+
+def row_leaks(items: Dict[str, Any]) -> list:
+    """Item keys that still hold a row ROW_KEEP removes: must be empty."""
+    return sorted(k for k, (col, value) in ROW_KEEP.items()
+                  if isinstance(items.get(k), list) and any(row[col] != value for row in items[k]))
 
 
 def survivors(items: Any, path=()) -> list:

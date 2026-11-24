@@ -59,8 +59,9 @@ bytes are checked on Linux and on a Windows checkout.
 | `page` | `{path, sha256, served_sha256}`: the page in this repository, and the file that was actually served when they differ (see below) |
 | `items` | `{count, images, renamed_keys, redacted, sha256}`: `sha256` is the digest of `items.json` |
 | `redacted` | every key (path inside an item, joined by a vertical bar) replaced by `<redacted: capture host>` by the rule below |
+| `dropped_rows` | for a kept list whose rows are the host's own (`capture_format.ROW_KEEP`), the item and the rule: the rows outside it are removed, not replaced, so their number is not left behind |
 | `noise_keys` | the names of the values that vary between two launches of the same build (a random PNG chunk, timings); their values are not kept |
-| `raw` | `{sha256, size, kept}`: the digest of the full raw capture and where it is kept |
+| `raw` | `{sha256, size, kept}`: the digest of the full raw capture and where it is kept; `sha256_before_rewrite` when the archive rewrote item keys in the file after the page returned it |
 
 ### What a public capture keeps
 
@@ -71,7 +72,9 @@ is a constant of Firefox itself (ICU's `supported_*` lists). Everything else, am
 zone, the UTC offsets and local date strings, the voices, the core count, the screen and window
 sizes, the installed fonts, the canvas and text measurements and the GPU strings, is replaced by
 `<redacted: capture host>`, by the rule `capture_format.KEEP` / `DROP`, and listed in
-`meta.json`. A table or an entry that needs another item adds it to `KEEP` in the same commit, with
+`meta.json`. A kept list whose rows are partly the host's own keeps the rows a table needs and drops
+the others (`capture_format.ROW_KEEP`: of the speechSynthesis voices, the en-US rows), and `meta.json` says
+it in `dropped_rows`. A table or an entry that needs another item adds it to `KEEP` in the same commit, with
 a re-import. The raw capture, which has everything, stays in the private archive named in
 `meta.raw.kept`. `tests/test_pinned_tables_are_generated.py` asserts that no value outside the rule
 survives and that every item a reader needs does.
@@ -88,7 +91,9 @@ python scripts/retail/import_host_gate.py RAW.json --firefox-version 159.0 \
     --raw-kept "<where the full raw file is kept>" [--build-id ...] [--os-build ...]
 ```
 
-It prints the sha256 of the new `items.json`. A capture is never edited by hand.
+It prints the sha256 of the new `items.json`. A capture is never edited by hand. When the archive already
+rewrote item keys in the raw file, `--raw-sha256-before-rewrite` and `--keys-rewritten-in-raw` carry what the
+archive's own `meta.json` says about that rewrite into this `meta.json`.
 
 ## The registry: captures/pinned.json
 
@@ -100,7 +105,7 @@ pinned to the retail (R01 to R50); a row with two tables has two entries. `statu
 | `generated` | `generator` regenerates `output` from `sources` (capture directories with the sha256 of their `items.json`). The committed bytes are what it writes |
 | `by-hand` | the value is typed in the code. `measurement` names the capture file that bears on it (with `covers` and `differs`), or says it is missing and what evidence exists; `host_needed` names the host a new capture needs; `capture_plan` says when a GitHub runner could capture it |
 | `none-page` | no page can read it. `produced_today` says how: a script, a test, or by hand |
-| `pending` | a table of `_fpforge/`, handled by the second piece |
+| `pending` | a table not yet classified; none is left |
 | `elsewhere` | written in another repository (`repo`) |
 
 A table is `generated` only when regenerating it from the capture gives exactly the
@@ -119,13 +124,18 @@ the module that needs it loads through `invisible_core._retail.table(name)`:
 | R01 navigator identity | `navigator.json` | `constants.py` (UA template, platform, oscpu, appVersion) |
 | R19 encode support | `media_encode.json` | `prefs._WIN_ENCODE_SUPPORT` |
 | R22 WebGPU features and limits | `webgpu.json` | `prefs._WIN_WEBGPU_FEATURES`, `prefs._WIN_WEBGPU_LIMITS`, and the WebGPU test |
+| R23 WebGL extension lists | `webgl_extensions.json` | `_webgl_personas._gpu_pool` (every Windows persona), and the extensions test |
+| R32 system fonts (shell font, form-control font, monospace size) | `system_fonts.json` | `_fpforge/profile.py` (`FONT_UI_*`, `FONT_DIALOG_FAMILY`, `FONT_MONOSPACE_SIZE`) |
+| R36 en-US voices | `voices.json` | `_fpforge/profile.py` (`VOICES`, and the en-US rows of `VOICES_IT`) |
+| R37 storage quota | `storage_quota.json` | `_fpforge/_sampler.py` (every cell of the storage table) |
 
 ```
 python scripts/retail/gen_tables.py            write every table
 python scripts/retail/gen_tables.py --check    fail when a committed table is not what the captures give
 ```
 
-A generator holds no retail value: it chooses an order and a spelling. When two
+A generator holds no retail value: it chooses an order and a spelling (it unescapes a CSS identifier, it
+turns bytes into megabytes). When two
 captures disagree it fails instead of choosing. `scripts/` and `captures/` are not
 shipped in the wheel; the generated JSON is.
 

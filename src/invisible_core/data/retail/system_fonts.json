@@ -1,0 +1,17 @@
+{
+  "_generated": {
+    "generator": "scripts/retail/gen_tables.py:system_fonts",
+    "captures": [
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr2"
+    ],
+    "edit": "never by hand"
+  },
+  "ui_family": "Segoe UI",
+  "ui_size": "12",
+  "dialog_family": "MS Shell Dlg 2",
+  "monospace_size": 13
+}
