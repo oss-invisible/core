@@ -1,0 +1,102 @@
+name: retail-capture
+
+# One capture run of the official retail Firefox on a GitHub Windows runner (rule port-05,
+# docs/retail-runner-capture.md). It runs when a pull request or a push to main changes
+# captures/REQUEST.json, the file that says which version to capture, and never by hand or on a
+# schedule. One job, one browser, one runner: the account runs at most 20 jobs at once.
+#
+# Same trigger shape as ci.yml (tests/test_ci_runs_once_per_commit.py): pull requests through
+# `pull_request`, `push` only for main, a new push to a pull request replaces the run it supersedes.
+on:
+  push:
+    branches: [main]
+    paths: [captures/REQUEST.json]
+  pull_request:
+    paths: [captures/REQUEST.json]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  capture:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    # The profile of the browser is made in TEMP: on D:, like every Windows job that launches a browser
+    # (tests/test_ci_windows_temp_is_on_d.py).
+    env:
+      TEMP: 'D:\a\_temp'
+      TMP: 'D:\a\_temp'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: read captures/REQUEST.json
+        id: request
+        shell: bash
+        run: python scripts/retail/capture_request.py | tee -a "$GITHUB_OUTPUT"
+
+      # The official installer of the requested version, from archive.mozilla.org: its sha256 is checked
+      # against SHA256SUMS of that release, SHA256SUMS.asc is verified with the release signing key
+      # committed in captures/runner/ (its fingerprint is checked against the one committed beside it),
+      # and the installer is extracted with 7z. Nothing is installed.
+      - name: fetch, verify and extract the official build
+        shell: bash
+        run: python scripts/retail/firefox_build.py fetch --version "${{ steps.request.outputs.firefox_version }}" --work "$RUNNER_TEMP/ff"
+
+      # firefox.exe -no-remote -profile <empty directory> http://127.0.0.1:<port>/?dpr1 : a profile with no
+      # preference, no policy, no automation. The run ends when the page posts its result; every process of
+      # the install folder is then ended and counted.
+      - name: capture
+        shell: bash
+        run: python scripts/retail/run_retail_capture.py --install "$RUNNER_TEMP/ff/extracted/core" --out "$RUNNER_TEMP/ff/raw" --dpr ${{ steps.request.outputs.dpr }}
+
+      - name: make the capture directory
+        id: made
+        shell: bash
+        run: |
+          set -eu
+          for label in ${{ steps.request.outputs.dpr }}; do
+            python scripts/retail/make_runner_capture.py \
+              --raw "$RUNNER_TEMP/ff/raw/dpr${label}.json" \
+              --build "$RUNNER_TEMP/ff/build.json" \
+              --wire "$RUNNER_TEMP/ff/raw/wire.json" \
+              --date "$(date -u +%F)" --dpr-label "$label" \
+              --raw-kept "the workflow artifact retail-capture-${{ steps.request.outputs.firefox_version }} of run ${{ github.run_id }} of ${{ github.repository }}" \
+              | tee -a "$RUNNER_TEMP/ff/made.txt"
+          done
+          grep '^capture_dir=' "$RUNNER_TEMP/ff/made.txt" | head -n1 >> "$GITHUB_OUTPUT"
+
+      # Red when a table of the registry that a runner can capture is not what this capture regenerates.
+      - name: which tables this capture regenerates
+        shell: bash
+        run: python scripts/retail/check_runner_capture.py "${{ steps.made.outputs.capture_dir }}"
+
+      # The artifact is the raw capture: the page's full result, what the server recorded, the capture
+      # directory (public rule applied, laid out as under captures/, ready for a pull request) and the
+      # screen when the run timed out. It is kept even when a step above is red.
+      - name: gather the artifact
+        if: always()
+        shell: bash
+        run: |
+          set -eu
+          out="$RUNNER_TEMP/artifact"
+          mkdir -p "$out"
+          if [ -d "$RUNNER_TEMP/ff/raw" ]; then cp -r "$RUNNER_TEMP/ff/raw" "$out/raw"; fi
+          if [ -f "$RUNNER_TEMP/ff/build.json" ]; then cp "$RUNNER_TEMP/ff/build.json" "$out/build.json"; fi
+          if [ -d "captures/firefox-${{ steps.request.outputs.firefox_version }}/github-runner" ]; then
+            mkdir -p "$out/captures/firefox-${{ steps.request.outputs.firefox_version }}"
+            cp -r "captures/firefox-${{ steps.request.outputs.firefox_version }}/github-runner" "$out/captures/firefox-${{ steps.request.outputs.firefox_version }}/"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retail-capture-${{ steps.request.outputs.firefox_version }}
+          path: ${{ runner.temp }}/artifact
+          if-no-files-found: warn
+          retention-days: 90
