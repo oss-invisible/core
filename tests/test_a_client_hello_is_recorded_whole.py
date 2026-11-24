@@ -112,7 +112,7 @@ def _hello_from_a_real_client(port: int, name: str = "localhost") -> None:
     context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
     context.set_alpn_protocols(["h2", "http/1.1"])
     with socket.create_connection(("127.0.0.1", port), timeout=10) as raw:
-        with pytest.raises(ssl.SSLError):  # the server answers a fatal alert: the handshake fails
+        with pytest.raises((ssl.SSLError, ConnectionError)):  # the server answers a fatal alert and closes: the handshake fails
             context.wrap_socket(raw, server_hostname=name)
 
 

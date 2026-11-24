@@ -15,8 +15,8 @@ real socket:
 from __future__ import annotations
 
 import json
+import re
 import socket
-import time
 
 import pytest
 
@@ -36,17 +36,31 @@ def running(tmp_path):
 
 
 def _talk(port: int, raw: bytes, expect_responses: int = 1) -> bytes:
-    """Send raw bytes, read until `expect_responses` complete responses came back."""
+    """Send raw bytes and return the bytes of `expect_responses` COMPLETE responses (head and the
+    Content-Length bytes of the body of each), or everything that came before the server closed.
+    The reply is framed, never guessed from what one read happened to return: a TCP stream
+    hands a 33 KB body over in as many pieces as the kernel likes."""
     got = b""
+    end = 0  # where the response being read starts
     with socket.create_connection(("127.0.0.1", port), timeout=10) as s:
         s.sendall(raw)
-        deadline = time.monotonic() + 10
-        while got.count(b"HTTP/1.1 ") < expect_responses and time.monotonic() < deadline:
+
+        def more() -> bool:
+            nonlocal got
             chunk = s.recv(1 << 20)
-            if not chunk:
-                break
             got += chunk
-            time.sleep(0.01)
+            return bool(chunk)
+
+        for _ in range(expect_responses):
+            while b"\r\n\r\n" not in got[end:]:
+                if not more():
+                    return got
+            head_end = got.index(b"\r\n\r\n", end) + 4
+            match = re.search(rb"(?i)^content-length: *(\d+)", got[end:head_end], re.MULTILINE)
+            end = head_end + (int(match.group(1)) if match else 0)
+            while len(got) < end:
+                if not more():
+                    return got
     return got
 
 
