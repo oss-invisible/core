@@ -233,6 +233,51 @@ jobs:
           print(f"{passed} cases ran")
           PY
 
+  # THE RETAIL TABLES SHIP IN THE WHEEL. The tables a capture of retail Firefox decides are JSON files in the
+  # package (captures/pinned.json, docs/retail-captures.md); every other test imports the package from the source
+  # tree, where they are always there. `tests/test_the_wheel_carries_the_retail_tables_e2e.py` builds this checkout's
+  # wheel, looks inside it, installs it into a directory of its own and imports it from there. It needs the build
+  # backend, which the suite's own legs do not install (and which would turn on the release-gate tests there).
+  wheel-carries-the-tables:
+    runs-on: ${{ matrix.os }}
+    # TEMP and TMP on D:\a\_temp (the runner's temp folder): the Firefox profiles land in TEMP and on C: they saturate the disk (queue up to 144,
+    # latencies up to 4 s, parent main thread still 40-60 s). On the job, not in a step: `runner.temp` is not readable in a job's `env`.
+    env:
+      TEMP: ${{ startsWith(matrix.os, 'windows') && 'D:\a\_temp' || '/tmp' }}
+      TMP: ${{ startsWith(matrix.os, 'windows') && 'D:\a\_temp' || '/tmp' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" hatchling
+      - name: the wheel, built, opened and installed
+        shell: bash
+        run: |
+          set -o pipefail   # or tee would swallow pytest's exit code
+          python -m pytest tests/test_the_wheel_carries_the_retail_tables_e2e.py -m e2e \
+            -o addopts="" -v -rs | tee wheel-report.txt
+      # Both cases or nothing: a run in which one of them skipped is the half that went unasked.
+      - name: Refuse a run in which the two cases did not both run
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          text = pathlib.Path("wheel-report.txt").read_text(encoding="utf-8", errors="ignore")
+          m = re.search(r"(\d+) passed", text)
+          passed = int(m.group(1)) if m else 0
+          if passed < 2:
+              print(f"only {passed} of the 2 cases ran (the wheel's contents, the installed import)", file=sys.stderr)
+              sys.exit(1)
+          print(f"{passed} cases ran")
+          PY
+
   # THE ENGINE IS BORN INSIDE THE PROCESS'S JOB OBJECT (Windows). The spawn creates
   # it suspended, assigns it and resumes it, so its whole tree, late children
   # included, is in the job by construction and dies with the launching process:
@@ -741,7 +786,7 @@ jobs:
 
   gate:
     needs: [noreply-identity, tests, msix-host, arm64-host, branding-is-retail, repair-through-the-installer,
-            default-selection-stays-inside, default-selection-stays-inside-windows,
+            wheel-carries-the-tables, default-selection-stays-inside, default-selection-stays-inside-windows,
             wrapper-job-needed, wrapper-on-this-core]
     if: always()
     runs-on: ubuntu-latest
@@ -758,6 +803,7 @@ jobs:
           echo "arm64-host: ${{ needs.arm64-host.result }}"
           echo "branding-is-retail: ${{ needs.branding-is-retail.result }}"
           echo "repair-through-the-installer: ${{ needs.repair-through-the-installer.result }}"
+          echo "wheel-carries-the-tables: ${{ needs.wheel-carries-the-tables.result }}"
           echo "default-selection-stays-inside: ${{ needs.default-selection-stays-inside.result }}"
           echo "default-selection-stays-inside-windows: ${{ needs.default-selection-stays-inside-windows.result }}"
           echo "wrapper-job-needed: ${{ needs.wrapper-job-needed.result }}"
@@ -768,6 +814,7 @@ jobs:
           test "${{ needs.arm64-host.result }}" = "success"
           test "${{ needs.branding-is-retail.result }}" = "success"
           test "${{ needs.repair-through-the-installer.result }}" = "success"
+          test "${{ needs.wheel-carries-the-tables.result }}" = "success"
           test "${{ needs.default-selection-stays-inside.result }}" = "success"
           test "${{ needs.default-selection-stays-inside-windows.result }}" = "success"
           # The decision itself must have been made: without it the job below would

@@ -1,0 +1,1134 @@
+{
+  "format": "pinned-tables/1",
+  "about": "One entry per value of the core that is pinned to retail Firefox (or Windows). See docs/retail-captures.md.",
+  "statuses": {
+    "generated": "a script regenerates the table from the captures named in `sources`; the committed bytes are what it writes",
+    "by-hand": "typed in the code; `measurement` names the capture file that bears on it (or says it is missing); `host_needed` names the host a new capture needs",
+    "none-page": "no page can read it; `produced_today` says how it is produced",
+    "pending": "to be handled by the second piece (the _fpforge tables)",
+    "elsewhere": "written in another repository"
+  },
+  "entries": [
+    {
+      "id": "R01",
+      "m5": "R01",
+      "repos": [
+        "core"
+      ],
+      "what": "Navigator identity strings: User-Agent form (version left as a placeholder), platform, oscpu, appVersion",
+      "targets": [
+        {
+          "file": "src/invisible_core/data/retail/navigator.json",
+          "symbol": "$"
+        },
+        {
+          "file": "src/invisible_core/constants.py",
+          "symbol": "USER_AGENT, PLATFORM_OVERRIDE, OSCPU_OVERRIDE, APPVERSION_OVERRIDE (read from the file)"
+        },
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_NAVIGATOR_OVERRIDES (read from constants)"
+        }
+      ],
+      "status": "generated",
+      "generator": "scripts/retail/gen_tables.py:navigator",
+      "output": "src/invisible_core/data/retail/navigator.json",
+      "sources": [
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
+          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
+          "items_sha256": "0c4097b8f69c7031938d5e9ac19dd564a3668d5731822bd1fb1ccf2bf34af21c"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
+          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
+          "items_sha256": "799a3b48cbb75fedd5f7ff83b6a0414c4c354e4dd3f3fefb224c3d22af7536b8"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr2",
+          "items_sha256": "c604a130b647aa97c6aeff2c6e0a99f0e2dcf086b0fa86c26bd12f25f891f1b8"
+        }
+      ],
+      "host_needed": "github-runner or Windows 11 desktop (a page reads navigator.*)"
+    },
+    {
+      "id": "R06",
+      "m5": "R06",
+      "repos": [
+        "core"
+      ],
+      "what": "Brand prefs of the official branding (release notes URLs, selfxss count, welcome URL)",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_BASELINE['app.releaseNotesURL' ...]"
+        }
+      ],
+      "status": "none-page",
+      "produced_today": {
+        "kind": "test",
+        "ref": "tests/test_brand_prefs_are_the_cores.py"
+      },
+      "note": "reads the branding pref file of the pinned engine source; chrome-only prefs"
+    },
+    {
+      "id": "R07",
+      "m5": "R07",
+      "repos": [
+        "core"
+      ],
+      "what": "Official brand files a page can load under chrome://branding (archive)",
+      "targets": [
+        {
+          "file": "src/invisible_core/branding/official/branding.zip",
+          "symbol": "$"
+        },
+        {
+          "file": "src/invisible_core/branding/SOURCE.json",
+          "symbol": "$"
+        }
+      ],
+      "status": "none-page",
+      "produced_today": {
+        "kind": "script",
+        "ref": "scripts/gen_branding_archives.py"
+      },
+      "note": "regenerated from Mozilla's tree at every port; tests/test_branding_source.py fails while stale"
+    },
+    {
+      "id": "R08",
+      "m5": "R08",
+      "repos": [
+        "core"
+      ],
+      "what": "Three retail API keys (Safe Browsing, location, Mozilla)",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_BASELINE['zoom.stealth.apikey.*']"
+        }
+      ],
+      "status": "none-page",
+      "produced_today": {
+        "kind": "by-hand",
+        "ref": "read once from the retail omni.ja; no script re-reads them"
+      },
+      "note": "never exposed to content; used only in browser request URLs"
+    },
+    {
+      "id": "R09",
+      "m5": "R09",
+      "repos": [
+        "core"
+      ],
+      "what": "First-run prefs of a fresh retail profile: preonboarding, terms-of-use version and date",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_BASELINE (browser.preonboarding.*, termsofuse)"
+        }
+      ],
+      "status": "none-page",
+      "produced_today": {
+        "kind": "test",
+        "ref": "tests/test_first_run_is_declared.py"
+      },
+      "note": "measured with a probe kept outside this repository; the test ties the declared minimum version to the engine's source"
+    },
+    {
+      "id": "R10",
+      "m5": "R10",
+      "repos": [
+        "core"
+      ],
+      "what": "Prefs declared as retail 151 has them: field-sizing, fingerprinting protection and its overrides, cookieBehavior",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_BASELINE['layout.css.field-sizing.enabled', 'privacy.baselineFingerprintingProtection*']"
+        },
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_apply_hardware (network.cookie.cookieBehavior)"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": "captures/firefox-159.0/windows-11-desktop/2026-10-31-dpr1/items.json",
+        "items_keys": [
+          "surface.computedStyle.a",
+          "surface.computedStyle.input",
+          "control.toDataURL_deBG_shape",
+          "surface.navigator"
+        ],
+        "covers": "159 shows field-sizing in the computed style, the 16-hex deBG chunk shape in the PNG and cookieEnabled true: consistent with the declared prefs; the pref values themselves are not page-readable"
+      },
+      "host_needed": "github-runner (runner-page)",
+      "capture_plan": "runner-page",
+      "note": "measured on 151 (2026-08/10); no capture file of that run exists; the declared values were not re-captured on 159"
+    },
+    {
+      "id": "R11",
+      "m5": "R11",
+      "repos": [
+        "core"
+      ],
+      "what": "Fission defaults as retail on desktop: autostart, isolation strategy, process count",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_BASELINE['fission.*']"
+        }
+      ],
+      "status": "none-page",
+      "produced_today": {
+        "kind": "test",
+        "ref": "tests/test_fission_strategy1_prefs.py"
+      },
+      "note": "chrome-only process prefs; the test ties the three together and reads their types from the engine source"
+    },
+    {
+      "id": "R12",
+      "m5": "R12",
+      "repos": [
+        "core"
+      ],
+      "what": "TLS ClientHello of retail: cipher 0xC009 not offered (JA3/JA4 form)",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_BASELINE['security.ssl3.ecdhe_ecdsa_aes_128_sha']"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "verified once against a public TLS fingerprint service over the internet; no local capture exists"
+      },
+      "host_needed": "github-runner (runner-server: a local TLS server records the ClientHello)",
+      "capture_plan": "runner-server"
+    },
+    {
+      "id": "R13",
+      "m5": "R13",
+      "repos": [
+        "core"
+      ],
+      "what": "HTTP request headers of retail: set, order, Accept-Language q-values",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_apply_hardware (network.cookie.cookieBehavior comment: header order found from the wire)"
+        },
+        {
+          "file": "src/invisible_core/_locale.py",
+          "symbol": "_ACCEPT_LANG_TABLE (header form)"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "found by reading the wire against the stock build; the wrapper's e2e checks OUR header on a local socket and does not measure the retail"
+      },
+      "host_needed": "github-runner (runner-server: a local server records request line and header order)",
+      "capture_plan": "runner-server"
+    },
+    {
+      "id": "R14",
+      "m5": "R14",
+      "repos": [
+        "core"
+      ],
+      "what": "DoH default provider uri, bootstrap address, excluded domains",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_BASELINE['network.trr.*']"
+        }
+      ],
+      "status": "none-page",
+      "produced_today": {
+        "kind": "by-hand",
+        "ref": "the uri is Firefox's default; the bootstrap address is one the provider answered with on 2026-11-11"
+      },
+      "note": "chrome pref; lookups go to the provider, not to a server we run"
+    },
+    {
+      "id": "R15",
+      "m5": "R15",
+      "repos": [
+        "core"
+      ],
+      "what": "Remote Settings server, collection ids and security-state constants",
+      "targets": [
+        {
+          "file": "src/invisible_core/constants.py",
+          "symbol": "REMOTE_SETTINGS_SERVER, *_COLLECTION_ID, CRLITE_CHANNEL, CRLITE_MAX_AGE_S"
+        },
+        {
+          "file": "src/invisible_core/_security_state.py",
+          "symbol": "$"
+        }
+      ],
+      "status": "none-page",
+      "produced_today": {
+        "kind": "script",
+        "ref": "src/invisible_core/_security_state.py"
+      },
+      "note": "the data is downloaded from Mozilla's service at run time and verified, never pinned; the eight constants were read from Mozilla's source"
+    },
+    {
+      "id": "R16",
+      "m5": "R16",
+      "repos": [
+        "core"
+      ],
+      "what": "Default language list per locale build (Accept-Languages), 95 rows",
+      "targets": [
+        {
+          "file": "src/invisible_core/_locale.py",
+          "symbol": "_ACCEPT_LANG_TABLE"
+        },
+        {
+          "file": "src/invisible_core/_locale.py",
+          "symbol": "_ACCEPT_LANG_NO_EN"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "ported from Firefox's Rust source (intl/locale/rust/locale_service_glue); a retail Italian build's list was compared once on a signed 151.0; the 159 capture holds only the en-US row (navigator.languages en-US, en)"
+      },
+      "host_needed": "github-runner (one locale build per run; 95 builds)",
+      "capture_plan": "runner-page"
+    },
+    {
+      "id": "R17",
+      "m5": "R17",
+      "repos": [
+        "core"
+      ],
+      "what": "Set of 103 Firefox locale builds a persona can run",
+      "targets": [
+        {
+          "file": "src/invisible_core/_locale.py",
+          "symbol": "_FIREFOX_BUILDS"
+        }
+      ],
+      "status": "none-page",
+      "produced_today": {
+        "kind": "by-hand",
+        "ref": "list written by hand from the builds of Firefox 151 (entries that are not a build dropped)"
+      },
+      "note": "a list of published builds; not readable from a page. A generator could read Mozilla's release listing"
+    },
+    {
+      "id": "R18",
+      "m5": "R18",
+      "repos": [
+        "core"
+      ],
+      "what": "Country to Firefox build shares, 836 pairs (a population statistic)",
+      "targets": [
+        {
+          "file": "src/invisible_core/_locale.py",
+          "symbol": "_COUNTRY_FIREFOX_BUILDS"
+        }
+      ],
+      "status": "none-page",
+      "produced_today": {
+        "kind": "by-hand",
+        "ref": "owner's decision 2026-10-06: updated by hand from a public data report; the product must not depend on that site at run time"
+      }
+    },
+    {
+      "id": "R19.decode",
+      "m5": "R19",
+      "repos": [
+        "core"
+      ],
+      "what": "Media decode support per track mime type (declared)",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_WIN_DECODE_SUPPORT"
+        },
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_apply_codecs (decode_support, video/av1 line)"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": "captures/firefox-159.0/windows-11-desktop/2026-10-31-dpr1/items.json",
+        "items_keys": [
+          "surface.media.capabilities"
+        ],
+        "covers": "video/avc, hevc, vp8, vp9 and av1: supported, smooth and power efficient true, i.e. swhw: equal to the table",
+        "differs": "audio/mp4a-latm: the table says `sw` (Windows decodes audio in software) but the capture reports audio.aac power efficient true, so the rule that gives swhw for the video rows gives swhw here too: the table cannot be regenerated from the capture by one rule"
+      },
+      "host_needed": "Windows 11 + GPU, headed (hardware decoders)"
+    },
+    {
+      "id": "R19.encode",
+      "m5": "R19",
+      "repos": [
+        "core"
+      ],
+      "what": "Media encode support per track mime type for WebRTC (declared): software only for avc, vp8, vp9, av1",
+      "targets": [
+        {
+          "file": "src/invisible_core/data/retail/media_encode.json",
+          "symbol": "$"
+        },
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_WIN_ENCODE_SUPPORT (read from the file)"
+        }
+      ],
+      "status": "generated",
+      "generator": "scripts/retail/gen_tables.py:media_encode",
+      "output": "src/invisible_core/data/retail/media_encode.json",
+      "sources": [
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
+          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
+          "items_sha256": "0c4097b8f69c7031938d5e9ac19dd564a3668d5731822bd1fb1ccf2bf34af21c"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
+          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
+          "items_sha256": "799a3b48cbb75fedd5f7ff83b6a0414c4c354e4dd3f3fefb224c3d22af7536b8"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr2",
+          "items_sha256": "c604a130b647aa97c6aeff2c6e0a99f0e2dcf086b0fa86c26bd12f25f891f1b8"
+        }
+      ],
+      "host_needed": "Windows 11 + GPU, headed (hardware encoders)"
+    },
+    {
+      "id": "R20",
+      "m5": "R20",
+      "repos": [
+        "core"
+      ],
+      "what": "mediaCapabilities.decodingInfo table by container and codec family (10 rows)",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_WIN_DECODING_INFO"
+        },
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_apply_codecs (decoding_info)"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": "captures/firefox-159.0/windows-11-desktop/2026-10-31-dpr1/items.json",
+        "items_keys": [
+          "surface.media.capabilities"
+        ],
+        "covers": "5 of the 10 rows are covered by the capture and equal: mp4 avc1 111, mp4 hvc1 111, mp4 av01 111, webm vp09 111, webm vp8 110",
+        "differs": "not probed by the capture page, so the table cannot be generated: mp4 avc3, mp4 hev1, mp4 vp09, webm av01, webm vp9 (the capture's vp9 row asks for the vp09 string). The page needs those ten content types"
+      },
+      "host_needed": "Windows 11 + GPU, headed"
+    },
+    {
+      "id": "R21",
+      "m5": "R21",
+      "repos": [
+        "core"
+      ],
+      "what": "Widevine answer (EME enabled), speech synthesis and VP8 hardware prefs",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_apply_codecs (media.eme.enabled, mediadatadecoder_vp8_hardware_enabled)"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "one requestMediaKeySystemAccess call on 2026-08-09 (retail Windows OK com.widevine.alpha); the VP8 pref was read from MediaDataCodec.cpp; neither is in the host-gate page"
+      },
+      "host_needed": "Windows 11 desktop + GPU (SAPI and CDM)"
+    },
+    {
+      "id": "R22",
+      "m5": "R22",
+      "repos": [
+        "core"
+      ],
+      "what": "WebGPU D3D12 adapter: 12 features (Firefox adds core-features-and-limits) and 35 limits",
+      "targets": [
+        {
+          "file": "src/invisible_core/data/retail/webgpu.json",
+          "symbol": "$"
+        },
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_WIN_WEBGPU_FEATURES, _WIN_WEBGPU_LIMITS (read from the file)"
+        },
+        {
+          "file": "tests/test_webgpu_is_declared.py",
+          "symbol": "reads the file, holds no copy"
+        }
+      ],
+      "status": "generated",
+      "generator": "scripts/retail/gen_tables.py:webgpu",
+      "output": "src/invisible_core/data/retail/webgpu.json",
+      "sources": [
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
+          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
+          "items_sha256": "0c4097b8f69c7031938d5e9ac19dd564a3668d5731822bd1fb1ccf2bf34af21c"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
+          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
+          "items_sha256": "799a3b48cbb75fedd5f7ff83b6a0414c4c354e4dd3f3fefb224c3d22af7536b8"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr2",
+          "items_sha256": "c604a130b647aa97c6aeff2c6e0a99f0e2dcf086b0fa86c26bd12f25f891f1b8"
+        }
+      ],
+      "host_needed": "Windows 11 + GPU (the same for four adapter variants and five display scales in the 159 capture)"
+    },
+    {
+      "id": "R23.pool",
+      "m5": "R23",
+      "repos": [
+        "core"
+      ],
+      "what": "WebGL1/2 extension lists per Windows persona",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/data/webgl_gpu_pool.json",
+          "symbol": "win[*].prefs zoom.stealth.webgl.extensions / webgl2.extensions"
+        }
+      ],
+      "status": "pending",
+      "piece": 2
+    },
+    {
+      "id": "R23.baseline_lists",
+      "m5": "R23",
+      "repos": [
+        "core"
+      ],
+      "what": "Baseline WebGL1/2 extension lists (27 and 16 names), used when no persona is applied",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_WEBGL1_EXTENSIONS"
+        },
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_WEBGL2_EXTENSIONS"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": "captures/firefox-159.0/windows-11-desktop/2026-10-31-dpr1/items.json",
+        "items_keys": [
+          "surface.webgl1",
+          "surface.webgl2"
+        ],
+        "covers": "the lists of one Intel integrated GPU on retail 159: 31 and 19 names",
+        "differs": "WebGL1: the capture has 4 more (EXT_clip_control, EXT_depth_clamp, EXT_polygon_offset_clamp, EXT_texture_mirror_clamp_to_edge) and the table has none the capture lacks. WebGL2: the capture has 5 more (those four and EXT_texture_norm16) and the table has 2 the capture lacks (EXT_color_buffer_half_float, OES_texture_half_float_linear). The order differs too. The table was measured on 151 and is not changed"
+      },
+      "host_needed": "Windows 11 + GPU (the extension set depends on the ANGLE driver)"
+    },
+    {
+      "id": "R24",
+      "m5": "R24",
+      "repos": [
+        "core"
+      ],
+      "what": "WebGL numeric params per GPU model (int, int2, float, shader precisions)",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/data/webgl_gpu_pool.json",
+          "symbol": "win[*].prefs int_params / int2_params / float_params / shader_precisions"
+        }
+      ],
+      "status": "pending",
+      "piece": 2,
+      "note": "an offline extract of third-party telemetry, no extractor in the repository; MAX_VIEWS_OVR 4 was read on retail 159"
+    },
+    {
+      "id": "R25",
+      "m5": "R25",
+      "repos": [
+        "core"
+      ],
+      "what": "WebGL renderer and vendor strings",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/data/webgl_gpu_pool.json",
+          "symbol": "win[*].renderer_out / vendor"
+        },
+        {
+          "file": "src/invisible_core/_fpforge/data/webgl_renderer_pool.json",
+          "symbol": "$"
+        }
+      ],
+      "status": "pending",
+      "piece": 2,
+      "note": "offline third-party telemetry extract"
+    },
+    {
+      "id": "R26",
+      "m5": "R26",
+      "repos": [
+        "core"
+      ],
+      "what": "WebGL MSAA samples (4), ESSL version, stencil mask",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_apply_msaa (webgl.msaa-samples, webgl.msaa-force)"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": "captures/firefox-159.0/windows-11-desktop/2026-10-31-dpr1/items.json",
+        "items_keys": [
+          "surface.webgl1",
+          "surface.webgl2",
+          "control.webgl1",
+          "control.webgl2"
+        ],
+        "covers": "SAMPLES 4 and SAMPLE_BUFFERS 1 on the capture's GPU (Intel integrated); GLSL ES 1.0 and 3.00: consistent with the declared 4",
+        "differs": "one GPU only; the Arc A750 parameters hash at msaa=4 quoted in the code has no capture file"
+      },
+      "host_needed": "Windows 11 + each GPU model"
+    },
+    {
+      "id": "R27",
+      "m5": "R27",
+      "repos": [
+        "core"
+      ],
+      "what": "Graphics feature statuses, 20 devices x 63 features",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/data/win_gfx_devices.json",
+          "symbol": "$"
+        }
+      ],
+      "status": "pending",
+      "piece": 2
+    },
+    {
+      "id": "R28",
+      "m5": "R28",
+      "repos": [
+        "core"
+      ],
+      "what": "Software compositing statuses declared for every persona (16 features)",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_SOFTWARE_COMPOSITING_STATUS"
+        },
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_WIN_SOFTWARE_COMPOSITING_PREFS"
+        }
+      ],
+      "status": "none-page",
+      "produced_today": {
+        "kind": "by-hand",
+        "ref": "read with nsIGfxInfo.getFeatureStatusStr on a GitHub windows-2022 runner (adapter Microsoft Hyper-V Video); no script in this repository"
+      },
+      "note": "nsIGfxInfo is chrome-only; owner's decision 2026-11-15; tests/test_software_compositing_is_declared.py ties the table to the engine's names"
+    },
+    {
+      "id": "R29",
+      "m5": "R29",
+      "repos": [
+        "core"
+      ],
+      "what": "Window frame per display scale (border, maximized and popup chrome, popup position) and taskbar height",
+      "targets": [
+        {
+          "file": "src/invisible_core/constants.py",
+          "symbol": "WINDOW_FRAME_BY_DPR"
+        },
+        {
+          "file": "src/invisible_core/constants.py",
+          "symbol": "TASKBAR_PX"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "measured on retail 151 on 2026-10-08 with a workbench script outside this repository; a 2026-11-20 run on 160.0.1 at one scale (1.7647) exists outside this repository. The 159 captures cannot decide it: their window is not maximized (screenX 2 to 4, -6 at 2x)"
+      },
+      "host_needed": "Windows 11 desktop at display scales 1, 1.25, 1.5, 2 (set by hand in the OS), window maximized"
+    },
+    {
+      "id": "R30",
+      "m5": "R30",
+      "repos": [
+        "core"
+      ],
+      "what": "Windows 11 desktop defaults (text scale, scrollbars, drag, colours)",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/profile.py",
+          "symbol": "DesktopProfile"
+        },
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_apply_desktop, _apply_theme"
+        }
+      ],
+      "status": "pending",
+      "piece": 2
+    },
+    {
+      "id": "R31",
+      "m5": "R31",
+      "repos": [
+        "core"
+      ],
+      "what": "System colour palette, 46 light and 11 dark",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/palette.py",
+          "symbol": "_WIN_LIGHT_COLORS, _WIN_DARK_COLORS"
+        }
+      ],
+      "status": "pending",
+      "piece": 2
+    },
+    {
+      "id": "R32",
+      "m5": "R32",
+      "repos": [
+        "core"
+      ],
+      "what": "System font surface (Segoe UI, MS Shell Dlg 2, sizes)",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/profile.py",
+          "symbol": "FONT_UI_FAMILY, FONT_UI_SIZE, FontProfile"
+        },
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_apply_fonts"
+        }
+      ],
+      "status": "pending",
+      "piece": 2
+    },
+    {
+      "id": "R33",
+      "m5": "R33",
+      "repos": [
+        "core"
+      ],
+      "what": "CSS generic font families on Windows (20 rows)",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/profile.py",
+          "symbol": "GENERICS"
+        }
+      ],
+      "status": "pending",
+      "piece": 2
+    },
+    {
+      "id": "R34",
+      "m5": "R34",
+      "repos": [
+        "core"
+      ],
+      "what": "ClearType parameters (gamma, contrast, mode)",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/profile.py",
+          "symbol": "FONT_CLEARTYPE_*, FONT_FREETYPE_*"
+        },
+        {
+          "file": "src/invisible_core/_fpforge/data/cleartype_tuning.json",
+          "symbol": "$"
+        }
+      ],
+      "status": "pending",
+      "piece": 2
+    },
+    {
+      "id": "R35",
+      "m5": "R35",
+      "repos": [
+        "core"
+      ],
+      "what": "Glyph-edge coverage ladders per ClearType setting",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/data/coverage_ladders.json",
+          "symbol": "$"
+        }
+      ],
+      "status": "pending",
+      "piece": 2
+    },
+    {
+      "id": "R36",
+      "m5": "R36",
+      "repos": [
+        "core"
+      ],
+      "what": "speechSynthesis voices (the en-US set and one more language set)",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/profile.py",
+          "symbol": "VOICES, VOICES_IT, VOICES_BY_LANGUAGE"
+        }
+      ],
+      "status": "pending",
+      "piece": 2
+    },
+    {
+      "id": "R37",
+      "m5": "R37",
+      "repos": [
+        "core"
+      ],
+      "what": "Storage quota 10 GiB group cap",
+      "targets": [
+        {
+          "file": "src/invisible_core/_fpforge/data/cpt_storage_given_class_tier.json",
+          "symbol": "$"
+        }
+      ],
+      "status": "pending",
+      "piece": 2
+    },
+    {
+      "id": "R38",
+      "m5": "R38",
+      "repos": [
+        "core"
+      ],
+      "what": "Accessibility, pointer and touch defaults of a Windows desktop",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_apply_hardware (ui.prefers*, ui.useAccessibilityTheme, zoom.stealth.pointer.*, dom.w3c_touch_events.enabled, zoom.stealth.max_touch_points)"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": "captures/firefox-159.0/windows-11-desktop/2026-10-31-dpr1/items.json",
+        "items_keys": [
+          "surface.mq",
+          "surface.navigator"
+        ],
+        "covers": "default persona: prefers-reduced-motion no-preference, forced-colors none, prefers-contrast no-preference, pointer fine, hover hover, any-pointer fine, maxTouchPoints 0: equal to what the prefs declare",
+        "differs": "the capture's prefers-color-scheme is dark (that desktop was in dark mode): the scheme is the palette's, not this table's"
+      },
+      "host_needed": "Windows 11 desktop (accessibility and pointer settings)"
+    },
+    {
+      "id": "R39",
+      "m5": "R39",
+      "repos": [
+        "core"
+      ],
+      "what": "Input event latency of a real keyboard and mouse (median, sigma, clamp)",
+      "targets": [
+        {
+          "file": "src/invisible_core/juggler/_behaviour.py",
+          "symbol": "InputLatency"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "measured by a person typing on retail Windows Firefox 151 on 2026-10-13 (3 to 18 ms); no capture file exists"
+      },
+      "host_needed": "Windows 11 desktop + real keyboard and mouse"
+    },
+    {
+      "id": "R43",
+      "m5": "R43",
+      "repos": [
+        "core"
+      ],
+      "what": "WebRTC ICE prefs: mDNS host obfuscation, no relay-only",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_BASELINE['media.peerconnection.*']"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "compared once with vanilla Firefox on a public leak-test site (mDNS host candidate); no local capture exists"
+      },
+      "host_needed": "github-runner (runner-page: the mDNS host form is readable; srflx needs a NAT)",
+      "capture_plan": "runner-page"
+    },
+    {
+      "id": "R44",
+      "m5": "R44",
+      "repos": [
+        "core"
+      ],
+      "what": "Windows keyboard layouts and the keyboards each locale installs",
+      "targets": [
+        {
+          "file": "src/invisible_core/juggler/keylayouts_windows.py",
+          "symbol": "$"
+        }
+      ],
+      "status": "none-page",
+      "produced_today": {
+        "kind": "script",
+        "ref": "scripts/gen_windows_keylayouts.py"
+      },
+      "note": "read from the pinned kbd*.dll files and locale.nls of Windows 11; --check fails when stale"
+    },
+    {
+      "id": "R02",
+      "m5": "R02",
+      "repos": [
+        "series"
+      ],
+      "what": "Retail's source stamp: version, repo, changeset",
+      "targets": [
+        {
+          "file": "platform/release/src/browser/config/upstream_source.txt",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    },
+    {
+      "id": "R03",
+      "m5": "R03",
+      "repos": [
+        "series"
+      ],
+      "what": "Retail's rustc, PGO profile and code-generation options",
+      "targets": [
+        {
+          "file": "platform/ci/src/scripts/upstream_toolchain.py",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    },
+    {
+      "id": "R04",
+      "m5": "R04",
+      "repos": [
+        "series"
+      ],
+      "what": "Retail MAR files, byte for byte",
+      "targets": [
+        {
+          "file": "platform/ci/src/scripts/stock_parity.py",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    },
+    {
+      "id": "R05",
+      "m5": "R05",
+      "repos": [
+        "series"
+      ],
+      "what": "Application update prefs (intervals, URLs, MAR channel)",
+      "targets": [
+        {
+          "file": "stillborn/updater/FEATURE.md",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    },
+    {
+      "id": "R40",
+      "m5": "R40",
+      "repos": [
+        "series"
+      ],
+      "what": "Native line ending CRLF of Blob endings",
+      "targets": [
+        {
+          "file": "fingerprint/js-surface/line-endings/FEATURE.md",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    },
+    {
+      "id": "R41",
+      "m5": "R41",
+      "repos": [
+        "series"
+      ],
+      "what": "canvas measureText vertical metrics (whole numbers)",
+      "targets": [
+        {
+          "file": "fingerprint/canvas/text-metrics/src/dom/canvas/StealthCanvasTextMetrics.h",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    },
+    {
+      "id": "R42",
+      "m5": "R42",
+      "repos": [
+        "wrapper"
+      ],
+      "what": "Canvas text RGBA hashes, 342 cases",
+      "targets": [
+        {
+          "file": "tests/test_canvas_text_is_windows_e2e.py",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "wrapper"
+    },
+    {
+      "id": "R45",
+      "m5": "R45",
+      "repos": [
+        "series"
+      ],
+      "what": "121 bundled Windows retail font files",
+      "targets": [
+        {
+          "file": "fingerprint/fonts/bundle/src/browser/fonts/",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    },
+    {
+      "id": "R46",
+      "m5": "R46",
+      "repos": [
+        "series"
+      ],
+      "what": "Metrics of 127 bundled font faces",
+      "targets": [
+        {
+          "file": "fingerprint/fonts/bundle/src/browser/fonts/bundle-fonts.list",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    },
+    {
+      "id": "R47",
+      "m5": "R47",
+      "repos": [
+        "series"
+      ],
+      "what": "Font aliases and fallback lists",
+      "targets": [
+        {
+          "file": "fingerprint/fonts/bundle/src/browser/fonts/bundle-fonts.list",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    },
+    {
+      "id": "R48",
+      "m5": "R48",
+      "repos": [
+        "series"
+      ],
+      "what": "DirectWrite golden glyph-run alpha textures (580)",
+      "targets": [
+        {
+          "file": "fingerprint/fonts/idwr/src/gfx/idwr/src/gecko_golden/IdwrGolden.inc",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    },
+    {
+      "id": "R49",
+      "m5": "R49",
+      "repos": [
+        "series"
+      ],
+      "what": "idwr tables from DWrite.dll and ucrtbase.dll",
+      "targets": [
+        {
+          "file": "fingerprint/fonts/idwr/src/gfx/idwr/src/idwr/",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    },
+    {
+      "id": "R50",
+      "m5": "R50",
+      "repos": [
+        "series"
+      ],
+      "what": "xpcshell lock sha256 of 28 Mozilla files",
+      "targets": [
+        {
+          "file": "platform/ci/src/scripts/ci/xpcshell_support.json",
+          "symbol": null
+        }
+      ],
+      "status": "elsewhere",
+      "repo": "series"
+    }
+  ]
+}

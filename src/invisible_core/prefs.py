@@ -27,10 +27,11 @@ import zoneinfo
 from pathlib import Path
 from typing import Any, Dict, NamedTuple, Optional
 
-from .constants import OSCPU_OVERRIDE, PLATFORM_OVERRIDE, USER_AGENT
+from .constants import APPVERSION_OVERRIDE, OSCPU_OVERRIDE, PLATFORM_OVERRIDE, USER_AGENT
 from ._fpforge import Profile
 from ._fpforge.profile import branding_archive, voices_for
 from ._locale import SessionLocale
+from ._retail import table as _retail_table
 from ._webgl_personas import choose_gfx_device, gfx_device_for, persona_for, render_noise_seed
 from ._proxy import configure_proxy
 
@@ -56,7 +57,7 @@ _NAVIGATOR_OVERRIDES: Dict[str, str] = {
     # A/B knockout 2026-04-28 (n=30): F2 delete +0.083 RC vs BASE; n=100
     # confirm: +0.021; overnight isolated: +0.155 single-variant. Variable
     # signal, but the underlying data error is unambiguous.
-    "general.appversion.override": "5.0 (Windows)",
+    "general.appversion.override": APPVERSION_OVERRIDE,
 }
 
 
@@ -220,17 +221,14 @@ _WIN_DECODE_SUPPORT = chr(10).join([
 ])
 
 # What retail Windows 159 ENCODES for WebRTC, in decode_support's lines: software
-# only for all four WebRTC video codecs. Before this the engine asked the OpenH264
-# plugin (present or not, depending on whether the profile had downloaded it) and
-# the host's platform encoders. With video/avc declared in both tables the engine
-# also answers the H.264 software gate from them, not from the plugin or the GPU.
+# only for all four WebRTC video codecs. GENERATED from the retail 159 capture
+# (data/retail/media_encode.json, written by scripts/retail/gen_tables.py). Before
+# this the engine asked the OpenH264 plugin (present or not, depending on whether
+# the profile had downloaded it) and the host's platform encoders. With video/avc
+# declared in both tables the engine also answers the H.264 software gate from
+# them, not from the plugin or the GPU.
 # The engine refuses to start when this is empty (declaration gate).
-_WIN_ENCODE_SUPPORT = chr(10).join([
-    "video/avc|sw",
-    "video/vp8|sw",
-    "video/vp9|sw",
-    "video/av1|sw",
-])
+_WIN_ENCODE_SUPPORT = chr(10).join(_retail_table("media_encode")["encode_support"])
 
 # ──────────────────────────────────────────────────────────────────────
 #  Declared mediaCapabilities.decodingInfo
@@ -282,58 +280,13 @@ _WIN_DECODING_INFO = chr(10).join([
 #  engine adds "core-features-and-limits" itself, as Firefox does. Every Windows
 #  persona has one since the Direct3D 10 class slots left the pool (2026-11-01).
 # ──────────────────────────────────────────────────────────────────────
-_WIN_WEBGPU_FEATURES = chr(10).join([
-    "bgra8unorm-storage",
-    "depth-clip-control",
-    "depth32float-stencil8",
-    "dual-source-blending",
-    "float32-blendable",
-    "float32-filterable",
-    "indirect-first-instance",
-    "rg11b10ufloat-renderable",
-    "shader-f16",
-    "texture-compression-bc",
-    "texture-compression-bc-sliced-3d",
-    "timestamp-query",
-])
+# GENERATED from the retail 159 capture (data/retail/webgpu.json, written by
+# scripts/retail/gen_tables.py): the one place these values are written. Tests read
+# the same file.
+_WEBGPU = _retail_table("webgpu")
+_WIN_WEBGPU_FEATURES = chr(10).join(_WEBGPU["features"])
 
-_WIN_WEBGPU_LIMITS = chr(10).join([
-    "maxBindGroups=8",
-    "maxBindGroupsPlusVertexBuffers=24",
-    "maxBindingsPerBindGroup=4294967295",
-    "maxBufferSize=2147483644",
-    "maxColorAttachmentBytesPerSample=128",
-    "maxColorAttachments=8",
-    "maxComputeInvocationsPerWorkgroup=1024",
-    "maxComputeWorkgroupSizeX=1024",
-    "maxComputeWorkgroupSizeY=1024",
-    "maxComputeWorkgroupSizeZ=64",
-    "maxComputeWorkgroupStorageSize=32768",
-    "maxComputeWorkgroupsPerDimension=65535",
-    "maxDynamicStorageBuffersPerPipelineLayout=4",
-    "maxDynamicUniformBuffersPerPipelineLayout=8",
-    "maxInterStageShaderVariables=31",
-    "maxSampledTexturesPerShaderStage=64",
-    "maxSamplersPerShaderStage=64",
-    "maxStorageBufferBindingSize=2147483644",
-    "maxStorageBuffersInFragmentStage=64",
-    "maxStorageBuffersInVertexStage=64",
-    "maxStorageBuffersPerShaderStage=64",
-    "maxStorageTexturesInFragmentStage=64",
-    "maxStorageTexturesInVertexStage=64",
-    "maxStorageTexturesPerShaderStage=64",
-    "maxTextureArrayLayers=2048",
-    "maxTextureDimension1D=16384",
-    "maxTextureDimension2D=16384",
-    "maxTextureDimension3D=2048",
-    "maxUniformBufferBindingSize=65536",
-    "maxUniformBuffersPerShaderStage=64",
-    "maxVertexAttributes=30",
-    "maxVertexBufferArrayStride=2048",
-    "maxVertexBuffers=16",
-    "minStorageBufferOffsetAlignment=32",
-    "minUniformBufferOffsetAlignment=256",
-])
+_WIN_WEBGPU_LIMITS = chr(10).join(f"{name}={value}" for name, value in _WEBGPU["limits"])
 
 # ──────────────────────────────────────────────────────────────────────
 #  Windows system-font surface
