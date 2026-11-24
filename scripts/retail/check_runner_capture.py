@@ -8,13 +8,16 @@ as if this capture were each of its sources, and its bytes are compared with the
 
   regenerates   the generator writes exactly the committed bytes from this capture
   differs       it writes something else: the keys that differ are listed
-  cannot        the generator refuses this capture (a value it reads is absent, or two sources
-                disagree) and says why
+  cannot        the generator refuses this capture (an item it reads is absent or has another
+                shape, or two sources disagree) and says why in words
+  error         the generator failed in a way it does not know (an exception): a bug of the
+                generator or of the checker, never a statement about the capture. It is red
+                for every table, runner-capturable or not.
 
 An entry whose `host_needed` names the `github-runner` is runner-capturable: a capture from a
 runner has to regenerate it, and the exit status is 1 when one does not. The other entries are
 reported too (a runner has no GPU and no Windows 11 user settings, so they may rightly differ) and
-never change the exit status. Exit 2: CAPTURE_DIR is not a capture.
+never change the exit status, except for `error`, which always does. Exit 2: CAPTURE_DIR is not a capture.
 """
 from __future__ import annotations
 
@@ -51,6 +54,7 @@ def check(capture_dir: Path, registry: Path = REGISTRY) -> List[Dict[str, Any]]:
     capture_dir = Path(capture_dir)
     entries = json.loads(Path(registry).read_text(encoding="utf-8"))["entries"]
     original = cf.capture_dir
+    items = cf.load_items(capture_dir)
     results: List[Dict[str, Any]] = []
     try:
         for entry in entries:
@@ -61,12 +65,15 @@ def check(capture_dir: Path, registry: Path = REGISTRY) -> List[Dict[str, Any]]:
             result: Dict[str, Any] = {"id": entry["id"], "table": name, "output": entry["output"],
                                       "runner_capturable": runner_capturable(entry)}
             cf.capture_dir = lambda rel, sources=sources: capture_dir if rel in sources else original(rel)
+            absent = [key for key in gen.READS[name] if key not in items]
             try:
+                if absent:
+                    raise SystemExit(f"the capture has no item {', '.join(absent)}")
                 regenerated = fn(sources)
             except SystemExit as exc:  # a generator refuses by exiting with its reason
                 result.update(status="cannot", detail=str(exc.code))
-            except (KeyError, TypeError, ValueError) as exc:
-                result.update(status="cannot", detail=f"{type(exc).__name__}: {exc}")
+            except Exception as exc:  # noqa: BLE001 - nothing a generator raises may pass for a refusal
+                result.update(status="error", detail=f"unexpected {type(exc).__name__} in the generator: {exc}")
             else:
                 committed = (cf.REPO / entry["output"]).read_bytes()
                 if regenerated == committed:
@@ -80,8 +87,10 @@ def check(capture_dir: Path, registry: Path = REGISTRY) -> List[Dict[str, Any]]:
 
 
 def failed(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """The results that make the check red: a runner-capturable table that is not regenerated."""
-    return [r for r in results if r["runner_capturable"] and r["status"] != "regenerates"]
+    """The results that make the check red: a runner-capturable table that is not regenerated, and any
+    table whose generator failed unexpectedly (a bug is never reported as a table that needs another host)."""
+    return [r for r in results
+            if r["status"] == "error" or (r["runner_capturable"] and r["status"] != "regenerates")]
 
 
 def main(argv=None) -> int:
@@ -100,12 +109,12 @@ def main(argv=None) -> int:
     else:
         print(f"capture: firefox {meta['firefox_version']} on {meta['host']['kind']}, {meta['date']}")
         for r in results:
-            mark = {"regenerates": "ok  ", "differs": "DIFF", "cannot": "CANT"}[r["status"]]
+            mark = {"regenerates": "ok  ", "differs": "DIFF", "cannot": "CANT", "error": "ERR "}[r["status"]]
             scope = "runner-capturable" if r["runner_capturable"] else "needs another host"
             print(f"{mark} {r['id']:<10} {r['table']:<14} {r['status']}: {r['detail']}  [{scope}]")
     bad = failed(results)
     if bad:
-        print("RED: " + ", ".join(f"{r['id']} ({r['status']})" for r in bad) + " is runner-capturable and is not regenerated",
+        print("RED: " + ", ".join(f"{r['id']} ({r['status']})" for r in bad) + " is red: a runner-capturable table that is not regenerated, or a generator that failed unexpectedly",
               file=sys.stderr)
     return 1 if bad else 0
 

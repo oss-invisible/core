@@ -114,10 +114,19 @@ def webgl_extensions(sources: List[str]) -> bytes:
     Windows answers, in the order its engine returns them: the same at every display scale. The core
     gives the one pair to every Windows persona (ANGLE's D3D11 set is the same whatever the vendor)."""
     caps = {s: cf.load_items(cf.capture_dir(s)) for s in sources}
+    missing = [label for label, key in (("WebGL1", "surface.webgl1"), ("WebGL2", "surface.webgl2"))
+               if any(not _has_extension_list(c[key]) for c in caps.values())]
+    if missing:  # a host with no GPU answers the page with a word instead of a context's values
+        both = " and ".join(missing)
+        raise SystemExit(f"the capture has no {both} extension list (no {both} context on this host)")
     return _dumps("webgl_extensions", sources, {
         "webgl1": _same("webgl1.extensions", {s: c["surface.webgl1"]["extensions"] for s, c in caps.items()}),
         "webgl2": _same("webgl2.extensions", {s: c["surface.webgl2"]["extensions"] for s, c in caps.items()}),
     })
+
+
+def _has_extension_list(item: Any) -> bool:
+    return isinstance(item, dict) and isinstance(item.get("extensions"), list)
 
 
 #: The system fonts a page reads with `font: caption` and the like; they carry one size and one family.
