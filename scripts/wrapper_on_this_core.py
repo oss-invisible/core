@@ -94,12 +94,6 @@ _NEVER_COLLECTED = "playwright-upstream"
 EXCLUDED = (
     ("windows", "tests/test_juggler_posix_pipe.py",
      "the POSIX leg of the pipe does not execute on Windows (module-level skipif on win32)"),
-    ("windows", "tests/test_fission_strategy1_bench.py::test_same_site_other_port_stays_in_process",
-     "it asks for the processes of a site by name, which only Linux has (tests/_processes.py: "
-     "pytest.skip off Linux; Windows names no process, ProcessUtils_none.cpp)"),
-    ("windows", "tests/test_fission_strategy1_bench.py::test_cross_site_iframe_gets_its_own_process",
-     "the same oracle as the test above: it asks for the processes of a site by name on its first "
-     "line, and tests/_processes.py skips off Linux"),
     (None, "tests/test_the_working_clone_has_the_workbench_next_to_it.py::test_the_workbench_inventory_and_the_package_cannot_DRIFT",
      "reads a script of the maintainer's workbench, which no clone has (pytest.skip)"),
     (None, "tests/test_juggler_injected.py::test_OUR_CLIENT_DOES_NOT_CROSS_into_the_page_realm",
@@ -168,23 +162,6 @@ def _w_module_skipif_win32(rel: str):
     return check
 
 
-def _w_processes_by_site(test_name: str):
-    """The test asks for the processes of a site by name, and the helper skips off Linux."""
-    rel = "tests/test_fission_strategy1_bench.py"
-
-    def check(wrapper: Path, engine_tag: str | None) -> None:
-        helper = _read(wrapper, "tests/_processes.py")
-        if not re.search(r"if not sys\.platform\.startswith\([\"']linux[\"']\):\s*\n\s*pytest\.skip\(", helper):
-            raise _Gone("tests/_processes.py no longer skips off Linux")
-        text = _read(wrapper, rel)
-        if not re.search(r"^def processes_of\(.*?\n\s+return site_processes_below\(", text,
-                         re.MULTILINE | re.DOTALL):
-            raise _Gone(f"processes_of of {rel} no longer goes through site_processes_below")
-        if "processes_of(" not in _function_body(text, test_name, rel):
-            raise _Gone(f"{test_name} no longer asks for the processes of a site")
-    return check
-
-
 def _w_workbench(rel: str, test_name: str, skip_reason: str, absent: str, depth: int):
     """The test skips when a file of the maintainer's workbench is not there, and no clone has it."""
     def check(wrapper: Path, engine_tag: str | None) -> None:
@@ -203,10 +180,6 @@ def _w_workbench(rel: str, test_name: str, skip_reason: str, absent: str, depth:
 #: entry (its target in EXCLUDED) -> the check of its reason.
 WITNESSES = {
     "tests/test_juggler_posix_pipe.py": _w_module_skipif_win32("tests/test_juggler_posix_pipe.py"),
-    "tests/test_fission_strategy1_bench.py::test_same_site_other_port_stays_in_process":
-        _w_processes_by_site("test_same_site_other_port_stays_in_process"),
-    "tests/test_fission_strategy1_bench.py::test_cross_site_iframe_gets_its_own_process":
-        _w_processes_by_site("test_cross_site_iframe_gets_its_own_process"),
     "tests/test_the_working_clone_has_the_workbench_next_to_it.py::test_the_workbench_inventory_and_the_package_cannot_DRIFT":
         _w_workbench("tests/test_the_working_clone_has_the_workbench_next_to_it.py", "test_the_workbench_inventory_and_the_package_cannot_DRIFT",
                      "the workbench is not next to this checkout", "scripts/inventario_voce6.py", 3),
