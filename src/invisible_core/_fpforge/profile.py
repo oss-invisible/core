@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, fields as _dc_fields, replace as _dc_r
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .. import _retail
 from ._sampler import _load as _load_data, sample as _sample_raw
 
 # Top level, not deferred: `_webgl_personas` imports nothing from this package at
@@ -657,13 +658,11 @@ from ..constants import TASKBAR_PX, WINDOW_FRAME_BY_DPR, WindowFrame  # noqa: E4
 #: (dom/media/webspeech/synth/windows/SapiService.cpp), so on Windows no voice
 #: is the default. Until 43.39.0 David was the default and Zira came second,
 #: and a page reads both from `speechSynthesis.getVoices()`.
-VOICES = ",".join([
-    "Microsoft David - English (United States)|en-US|0|1",
-    "Microsoft Mark - English (United States)|en-US|0|1",
-    "Microsoft Zira - English (United States)|en-US|0|1",
-    "Microsoft David Desktop - English (United States)|en-US|0|1",
-    "Microsoft Zira Desktop - English (United States)|en-US|0|1",
-])
+#:
+#: The rows are generated from the retail captures (`data/retail/voices.json`,
+#: R36 of captures/pinned.json) and written nowhere else.
+_EN_VOICES = _retail.table("voices")["voices"]
+VOICES = ",".join(_EN_VOICES)
 
 #: The voices of an English (United States) Windows with the Italian language
 #: added, in the order retail Firefox 151 lists them - measured 2026-10-15 on
@@ -672,14 +671,16 @@ VOICES = ",".join([
 #: Cosimo, Elsa and Elsa Desktop, interleaved as SAPI enumerates them, none the
 #: default. A REAL configuration and nothing more: an Italian-UI Windows has not
 #: been measured and may list different voices (70-known-bugs.md [B315]).
+#: The five en-US rows are the generated table's (`_EN_VOICES`); the three Italian
+#: rows are typed here, a measurement the registry keeps as R36.it (by hand).
 VOICES_IT = ",".join([
-    "Microsoft David - English (United States)|en-US|0|1",
-    "Microsoft Mark - English (United States)|en-US|0|1",
-    "Microsoft Zira - English (United States)|en-US|0|1",
+    _EN_VOICES[0],
+    _EN_VOICES[1],
+    _EN_VOICES[2],
     "Microsoft Cosimo - Italian (Italy)|it-IT|0|1",
     "Microsoft Elsa - Italian (Italy)|it-IT|0|1",
-    "Microsoft David Desktop - English (United States)|en-US|0|1",
-    "Microsoft Zira Desktop - English (United States)|en-US|0|1",
+    _EN_VOICES[3],
+    _EN_VOICES[4],
     "Microsoft Elsa Desktop - Italian (Italy)|it-IT|0|1",
 ])
 
@@ -773,11 +774,15 @@ GENERICS = chr(10).join([
 # setting one of them to 7 and watching the profile still answer 0.
 
 #: The canonical Windows values. Not sampled - see FontProfile for why.
-FONT_UI_FAMILY = "Segoe UI"
-FONT_UI_SIZE = "12"          # string: Preferences::GetFloat parses text
+#: Generated from the retail captures (`data/retail/system_fonts.json`, R32 of
+#: captures/pinned.json); the size is a string because Preferences::GetFloat parses text,
+#: the monospace size an int (Firefox ships 13 on Windows, 12 in its Unix block).
+_SYSTEM_FONTS = _retail.table("system_fonts")
+FONT_UI_FAMILY = _SYSTEM_FONTS["ui_family"]
+FONT_UI_SIZE = _SYSTEM_FONTS["ui_size"]
 #: Windows' form-control font name, see FontProfile.dialog_family.
-FONT_DIALOG_FAMILY = "MS Shell Dlg 2"
-FONT_MONOSPACE_SIZE = 13     # Firefox ships 13 on Windows, 12 in its Unix block
+FONT_DIALOG_FAMILY = _SYSTEM_FONTS["dialog_family"]
+FONT_MONOSPACE_SIZE = _SYSTEM_FONTS["monospace_size"]
 
 #: The text quality an untuned Windows desktop reports: ClearType.
 FONT_SYSTEM_TEXT_QUALITY = 5

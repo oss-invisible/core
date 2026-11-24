@@ -5,7 +5,7 @@
     "generated": "a script regenerates the table from the captures named in `sources`; the committed bytes are what it writes",
     "by-hand": "typed in the code; `measurement` names the capture file that bears on it (or says it is missing); `host_needed` names the host a new capture needs",
     "none-page": "no page can read it; `produced_today` says how it is produced",
-    "pending": "to be handled by the second piece (the _fpforge tables)",
+    "pending": "no entry is pending: every table of _fpforge is generated, by-hand or none-page",
     "elsewhere": "written in another repository"
   },
   "entries": [
@@ -36,23 +36,23 @@
       "sources": [
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
-          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+          "items_sha256": "d3c578d9a1bb23a4d8c1380e01fe777675db9bf67966b94bc4ea1f1768c4c698"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
-          "items_sha256": "0c4097b8f69c7031938d5e9ac19dd564a3668d5731822bd1fb1ccf2bf34af21c"
+          "items_sha256": "678dd0502c84dfc662599a228e5b3aa62eaa68848b41ae03fa0941bc0f3883e2"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
-          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+          "items_sha256": "cb9450650152a282c96ac3f36ec5576f41be055e913ac4b6fb27e7183fc67b64"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
-          "items_sha256": "799a3b48cbb75fedd5f7ff83b6a0414c4c354e4dd3f3fefb224c3d22af7536b8"
+          "items_sha256": "3cf0124fc3083e1fabbf2f8b952726303a9b638cd944390a3e552ae50ae3fc45"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr2",
-          "items_sha256": "c604a130b647aa97c6aeff2c6e0a99f0e2dcf086b0fa86c26bd12f25f891f1b8"
+          "items_sha256": "b114e88c9bbac057e1cf5d66fc533a36b68e4ed9119c570c8f0299c9b6bf4544"
         }
       ],
       "host_needed": "github-runner or Windows 11 desktop (a page reads navigator.*)"
@@ -401,23 +401,23 @@
       "sources": [
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
-          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+          "items_sha256": "d3c578d9a1bb23a4d8c1380e01fe777675db9bf67966b94bc4ea1f1768c4c698"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
-          "items_sha256": "0c4097b8f69c7031938d5e9ac19dd564a3668d5731822bd1fb1ccf2bf34af21c"
+          "items_sha256": "678dd0502c84dfc662599a228e5b3aa62eaa68848b41ae03fa0941bc0f3883e2"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
-          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+          "items_sha256": "cb9450650152a282c96ac3f36ec5576f41be055e913ac4b6fb27e7183fc67b64"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
-          "items_sha256": "799a3b48cbb75fedd5f7ff83b6a0414c4c354e4dd3f3fefb224c3d22af7536b8"
+          "items_sha256": "3cf0124fc3083e1fabbf2f8b952726303a9b638cd944390a3e552ae50ae3fc45"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr2",
-          "items_sha256": "c604a130b647aa97c6aeff2c6e0a99f0e2dcf086b0fa86c26bd12f25f891f1b8"
+          "items_sha256": "b114e88c9bbac057e1cf5d66fc533a36b68e4ed9119c570c8f0299c9b6bf4544"
         }
       ],
       "host_needed": "Windows 11 + GPU, headed (hardware encoders)"
@@ -498,23 +498,23 @@
       "sources": [
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
-          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+          "items_sha256": "d3c578d9a1bb23a4d8c1380e01fe777675db9bf67966b94bc4ea1f1768c4c698"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
-          "items_sha256": "0c4097b8f69c7031938d5e9ac19dd564a3668d5731822bd1fb1ccf2bf34af21c"
+          "items_sha256": "678dd0502c84dfc662599a228e5b3aa62eaa68848b41ae03fa0941bc0f3883e2"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
-          "items_sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+          "items_sha256": "cb9450650152a282c96ac3f36ec5576f41be055e913ac4b6fb27e7183fc67b64"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
-          "items_sha256": "799a3b48cbb75fedd5f7ff83b6a0414c4c354e4dd3f3fefb224c3d22af7536b8"
+          "items_sha256": "3cf0124fc3083e1fabbf2f8b952726303a9b638cd944390a3e552ae50ae3fc45"
         },
         {
           "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr2",
-          "items_sha256": "c604a130b647aa97c6aeff2c6e0a99f0e2dcf086b0fa86c26bd12f25f891f1b8"
+          "items_sha256": "b114e88c9bbac057e1cf5d66fc533a36b68e4ed9119c570c8f0299c9b6bf4544"
         }
       ],
       "host_needed": "Windows 11 + GPU (the same for four adapter variants and five display scales in the 159 capture)"
@@ -525,15 +525,48 @@
       "repos": [
         "core"
       ],
-      "what": "WebGL1/2 extension lists per Windows persona",
+      "what": "WebGL1/2 extension lists of every Windows persona: the one pair retail Firefox answers on Direct3D 11 (31 and 19 names, in the engine's order)",
       "targets": [
         {
+          "file": "src/invisible_core/data/retail/webgl_extensions.json",
+          "symbol": "$"
+        },
+        {
+          "file": "src/invisible_core/_webgl_personas.py",
+          "symbol": "_with_retail_extensions (win[*].prefs zoom.stealth.webgl.extensions / webgl2.extensions)"
+        },
+        {
           "file": "src/invisible_core/_fpforge/data/webgl_gpu_pool.json",
-          "symbol": "win[*].prefs zoom.stealth.webgl.extensions / webgl2.extensions"
+          "symbol": "win[*].prefs (holds no extension list: the loader puts the pair after the vendor)"
         }
       ],
-      "status": "pending",
-      "piece": 2
+      "status": "generated",
+      "generator": "scripts/retail/gen_tables.py:webgl_extensions",
+      "output": "src/invisible_core/data/retail/webgl_extensions.json",
+      "sources": [
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
+          "items_sha256": "d3c578d9a1bb23a4d8c1380e01fe777675db9bf67966b94bc4ea1f1768c4c698"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
+          "items_sha256": "678dd0502c84dfc662599a228e5b3aa62eaa68848b41ae03fa0941bc0f3883e2"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
+          "items_sha256": "cb9450650152a282c96ac3f36ec5576f41be055e913ac4b6fb27e7183fc67b64"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
+          "items_sha256": "3cf0124fc3083e1fabbf2f8b952726303a9b638cd944390a3e552ae50ae3fc45"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr2",
+          "items_sha256": "b114e88c9bbac057e1cf5d66fc533a36b68e4ed9119c570c8f0299c9b6bf4544"
+        }
+      ],
+      "host_needed": "Windows 11 desktop with a GPU (captured on an Intel integrated GPU; a GitHub runner has no GPU)",
+      "note": "the core gives this one pair to every persona; the capture is one GPU family, so the other GPUs' own lists were never captured"
     },
     {
       "id": "R23.baseline_lists",
@@ -570,16 +603,25 @@
       "repos": [
         "core"
       ],
-      "what": "WebGL numeric params per GPU model (int, int2, float, shader precisions)",
+      "what": "WebGL numeric answers per GPU model: 41 int params, 3 int2 params, 1 float param, 12 shader-precision triples (3 distinct sets over 14 Windows personas)",
       "targets": [
         {
           "file": "src/invisible_core/_fpforge/data/webgl_gpu_pool.json",
           "symbol": "win[*].prefs int_params / int2_params / float_params / shader_precisions"
         }
       ],
-      "status": "pending",
-      "piece": 2,
-      "note": "an offline extract of third-party telemetry, no extractor in the repository; MAX_VIEWS_OVR 4 was read on retail 159"
+      "status": "by-hand",
+      "measurement": {
+        "file": "captures/firefox-159.0/windows-11-desktop/2026-10-31-dpr1/items.json",
+        "items_keys": [
+          "surface.webgl1",
+          "surface.webgl2"
+        ],
+        "covers": "the 57 numbers of one Intel integrated GPU on retail 159, and MAX_VIEWS_OVR 4 (the extension parameter of OVR_multiview2)",
+        "differs": "the pool holds 3 sets and the capture, one GPU, decides one of them. Set of the 6 Intel HD personas (slots 1, 3, 4, 5, 6, 8): identical to the capture, every one of the 57 numbers. Set of the 7 GeForce GTX 980 personas (slots 0, 7, 9, 10, 11, 12, 13): 3 numbers differ from the capture, as expected of another GPU: MAX_VERTEX_UNIFORM_VECTORS 4095 (capture 4096), MAX_VERTEX_UNIFORM_COMPONENTS 16380 (16384), MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS 212988 (212992). Set of the Intel HD Graphics 400 persona (slot 2): MAX_SAMPLES 16 (capture 8). The table is not changed"
+      },
+      "host_needed": "Windows 11 desktop, one capture per GPU model of the pool (a GitHub runner has no GPU)",
+      "note": "an offline extract of third-party telemetry of older Firefox, a population per GPU model: a page capture of one machine cannot generate it; no extractor in the repository"
     },
     {
       "id": "R25",
@@ -587,7 +629,7 @@
       "repos": [
         "core"
       ],
-      "what": "WebGL renderer and vendor strings",
+      "what": "WebGL renderer and vendor strings: 14 pool entries (ANGLE ... or similar) and the 444-row pool of sanitized renderer strings",
       "targets": [
         {
           "file": "src/invisible_core/_fpforge/data/webgl_gpu_pool.json",
@@ -598,9 +640,14 @@
           "symbol": "$"
         }
       ],
-      "status": "pending",
-      "piece": 2,
-      "note": "offline third-party telemetry extract"
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "the capture's own renderer and vendor strings are the capture host's GPU and are redacted by rule (capture_format.DROP); in the private raw capture the Intel integrated string equals the renderer of the pool's 6 Intel HD personas. The pool entries and their weights are an offline extract of third-party telemetry (a fingerprint-network archive for the 444 rows), a population no page capture of one machine can give"
+      },
+      "host_needed": "Windows 11 desktop, one capture per GPU model (the strings are the GPU itself)",
+      "note": "population table with its source named; the sanitizing rule (SanitizeRenderer buckets) is Firefox source"
     },
     {
       "id": "R26",
@@ -642,8 +689,12 @@
           "symbol": "$"
         }
       ],
-      "status": "pending",
-      "piece": 2
+      "status": "none-page",
+      "produced_today": {
+        "kind": "by-hand",
+        "ref": "a script kept outside this repository and outside every workflow reads nsIGfxInfo feature statuses from the official 159.0 build (20261022150525) with the device spoofed per row; no script in the repository regenerates the file"
+      },
+      "note": "nsIGfxInfo is chrome-only, no page reads a status; needs a Windows 11 desktop (the 20 GPU devices are spoofed by environment variables, driver sensitivity checked on 3 driver pairs)"
     },
     {
       "id": "R28",
@@ -711,8 +762,14 @@
           "symbol": "_apply_desktop, _apply_theme"
         }
       ],
-      "status": "pending",
-      "piece": 2
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "measured on three arms (retail 151 on Windows 11, our Windows build, our Linux build) on 2026-10-17; the measurement file is not in this repository. The 159 capture carries none of the 14 values as a number (its media queries and computed styles do not give the scrollbar size, the drag distance, the text scale or the double-click selection); three of the 14 (drag threshold, click in a scrollbar track, word selection) need real pointer input, which a capture page cannot produce"
+      },
+      "host_needed": "Windows 11 desktop (real pointer input for 3 of the 14 values)",
+      "note": "defaults of a desktop, not a retail table: no 159 capture decides them"
     },
     {
       "id": "R31",
@@ -720,15 +777,24 @@
       "repos": [
         "core"
       ],
-      "what": "System colour palette, 46 light and 11 dark",
+      "what": "System colour palette, 46 light and 11 dark ui.* prefs",
       "targets": [
         {
           "file": "src/invisible_core/_fpforge/palette.py",
           "symbol": "_WIN_LIGHT_COLORS, _WIN_DARK_COLORS"
         }
       ],
-      "status": "pending",
-      "piece": 2
+      "status": "by-hand",
+      "measurement": {
+        "file": "captures/firefox-159.0/windows-11-desktop/2026-10-31-dpr1/items.json",
+        "items_keys": [
+          "surface.systemColors"
+        ],
+        "covers": "the colours a page resolves for the CSS system keywords on retail 159 in one scheme (light): 42 of the 46 light prefs have a keyword",
+        "differs": "the table holds the ui.* pref values the engine reads, the capture the colour a page resolves for the keyword, and 21 of the 42 comparable ones differ: ui.activeborder #B4B4B4 (ActiveBorder rgb(129, 127, 132)), ui.activecaption #99B4D1 (rgb(255, 255, 255)), ui.appworkspace #ABABAB (rgb(255, 255, 255)), ui.background #000000 (rgb(255, 255, 255)), ui.buttonface #F0F0F0 (rgb(233, 233, 237)), ui.buttonhighlight #FFFFFF (rgb(233, 233, 237)), ui.buttonshadow #A0A0A0 (rgb(233, 233, 237)), ui.buttonborder #000000 (rgb(129, 127, 132)), ui.inactiveborder #F4F7FC (rgb(129, 127, 132)), ui.inactivecaption #BFCDDB (rgb(255, 255, 255)), ui.inactivecaptiontext #434E54 (rgb(109, 109, 109)), ui.infobackground #FFFFE1 (rgb(255, 255, 255)), ui.menu #F9F9FB (rgb(255, 255, 255)), ui.scrollbar #C8C8C8 (rgb(255, 255, 255)), ui.threeddarkshadow #696969 (rgb(129, 127, 132)), ui.threedface #F0F0F0 (rgb(233, 233, 237)), ui.threedhighlight #FFFFFF (rgb(129, 127, 132)), ui.threedlightshadow #E3E3E3 (rgb(129, 127, 132)), ui.threedshadow #A0A0A0 (rgb(129, 127, 132)), ui.windowframe #646464 (rgb(129, 127, 132)), ui.-moz-hyperlinktext #0066CC (LinkText rgb(0, 0, 238)). The other 21 are equal. Four prefs (ui.-moz_cellhighlighttext, ui.-moz_menubarhovertext, ui.-moz_menuhover, ui.-moz_menuhovertext) have no keyword a page can resolve, and the 11 dark values need a capture with a dark colour scheme. The table is not changed"
+      },
+      "host_needed": "Windows 11 desktop (one capture per colour scheme, light and dark)",
+      "note": "measured against stock 151 in 2026-08/10; the pref values are not what content resolves for several keywords (the engine answers those from its own stand-ins)"
     },
     {
       "id": "R32",
@@ -736,19 +802,71 @@
       "repos": [
         "core"
       ],
-      "what": "System font surface (Segoe UI, MS Shell Dlg 2, sizes)",
+      "what": "System font surface, four values: the shell font family 'Segoe UI' and size 12, the form-control family 'MS Shell Dlg 2', the default monospace size 13",
       "targets": [
         {
+          "file": "src/invisible_core/data/retail/system_fonts.json",
+          "symbol": "$"
+        },
+        {
           "file": "src/invisible_core/_fpforge/profile.py",
-          "symbol": "FONT_UI_FAMILY, FONT_UI_SIZE, FontProfile"
+          "symbol": "FONT_UI_FAMILY, FONT_UI_SIZE, FONT_DIALOG_FAMILY, FONT_MONOSPACE_SIZE, FontProfile"
         },
         {
           "file": "src/invisible_core/prefs.py",
           "symbol": "_apply_fonts"
         }
       ],
-      "status": "pending",
-      "piece": 2
+      "status": "generated",
+      "generator": "scripts/retail/gen_tables.py:system_fonts",
+      "output": "src/invisible_core/data/retail/system_fonts.json",
+      "sources": [
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
+          "items_sha256": "d3c578d9a1bb23a4d8c1380e01fe777675db9bf67966b94bc4ea1f1768c4c698"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
+          "items_sha256": "678dd0502c84dfc662599a228e5b3aa62eaa68848b41ae03fa0941bc0f3883e2"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
+          "items_sha256": "cb9450650152a282c96ac3f36ec5576f41be055e913ac4b6fb27e7183fc67b64"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
+          "items_sha256": "3cf0124fc3083e1fabbf2f8b952726303a9b638cd944390a3e552ae50ae3fc45"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr2",
+          "items_sha256": "b114e88c9bbac057e1cf5d66fc533a36b68e4ed9119c570c8f0299c9b6bf4544"
+        }
+      ],
+      "host_needed": "github-runner or Windows 11 desktop (a page reads getComputedStyle)",
+      "note": "the monospace size is read from a textarea in the page's default language (the x-western group) and declared for the six groups Firefox sets to 13 on Windows"
+    },
+    {
+      "id": "R32.th",
+      "m5": "R32",
+      "repos": [
+        "core"
+      ],
+      "what": "Thai minimum font size: font.minimum-size.th 10 (the one of the 28 language groups with an OS-conditional default)",
+      "targets": [
+        {
+          "file": "src/invisible_core/prefs.py",
+          "symbol": "_apply_fonts (font.minimum-size.th)"
+        }
+      ],
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "measured 2026-08-09 with a span lang=th at 5px: stock 151 and our Windows build both answer 42.067 for every size at or below 10; the 159 capture has no such span, and its text widths are redacted by rule"
+      },
+      "host_needed": "github-runner (runner-page: one span lang=th read by a page)",
+      "capture_plan": "runner-page",
+      "note": "split from R32: no item of the 159 capture decides it"
     },
     {
       "id": "R33",
@@ -756,15 +874,20 @@
       "repos": [
         "core"
       ],
-      "what": "CSS generic font families on Windows (20 rows)",
+      "what": "CSS generic font families on Windows (20 rows generic|lang|family)",
       "targets": [
         {
           "file": "src/invisible_core/_fpforge/profile.py",
           "symbol": "GENERICS"
         }
       ],
-      "status": "pending",
-      "piece": 2
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "the generic-family table a Windows Firefox resolves to, moved out of C++ on 2026-08-09; the 159 capture holds text widths and computed styles that say 'serif', 'sans-serif' and 'monospace' (the generic name, never the family it resolves to), so no item names a family, and its widths are redacted by rule"
+      },
+      "host_needed": "Windows 11 desktop (the installed fonts decide the family)"
     },
     {
       "id": "R34",
@@ -772,7 +895,7 @@
       "repos": [
         "core"
       ],
-      "what": "ClearType parameters (gamma, contrast, mode)",
+      "what": "ClearType parameters (gamma, contrast, mode) of an untuned retail Windows and the FreeType mirror",
       "targets": [
         {
           "file": "src/invisible_core/_fpforge/profile.py",
@@ -783,8 +906,12 @@
           "symbol": "$"
         }
       ],
-      "status": "pending",
-      "piece": 2
+      "status": "none-page",
+      "produced_today": {
+        "kind": "by-hand",
+        "ref": "profile.py: 1800/100 is the ladder retail 151 draws with the Avalon.Graphics registry key absent (re-measured 2026-10-24); rendering mode 0 chosen by comparing the grey levels of ten drawings with a privileged screenshot on a signed 151.0, six modes swept"
+      },
+      "note": "the registry setting and the privileged screenshot are not page-visible (the effect is, see R35); the tuning frequencies of cleartype_tuning.json are a data statement, not measured"
     },
     {
       "id": "R35",
@@ -792,15 +919,21 @@
       "repos": [
         "core"
       ],
-      "what": "Glyph-edge coverage ladders per ClearType setting",
+      "what": "Glyph-edge coverage ladders per ClearType setting: 12 (gamma, contrast) settings x 17 levels",
       "targets": [
         {
           "file": "src/invisible_core/_fpforge/data/coverage_ladders.json",
           "symbol": "$"
         }
       ],
-      "status": "pending",
-      "piece": 2
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "generated from captures of retail 151.0 (BuildID 20260516144017), 12 captures, one per ClearType setting changed by hand in the OS; the generator lives in a workbench outside this repository. The private raw 159 capture holds one setting, the untuned machine's: its canvas text of Arial at 20px has the 17 levels of the (1800, 100) ladder, level for level; the other 11 settings are not decided by it, and the public capture keeps only the hash of those pixels"
+      },
+      "host_needed": "Windows 11 desktop (the ClearType setting of the OS changed by hand, 12 captures)",
+      "note": "the ladder is what the OS setting does to a glyph edge; a page capture reads one setting per host"
     },
     {
       "id": "R36",
@@ -808,15 +941,66 @@
       "repos": [
         "core"
       ],
-      "what": "speechSynthesis voices (the en-US set and one more language set)",
+      "what": "speechSynthesis voices of retail Windows with the en-US voices: 5, in its order, none the default, all local",
+      "targets": [
+        {
+          "file": "src/invisible_core/data/retail/voices.json",
+          "symbol": "$"
+        },
+        {
+          "file": "src/invisible_core/_fpforge/profile.py",
+          "symbol": "VOICES, VOICES_BY_LANGUAGE (the en row and the fallback)"
+        }
+      ],
+      "status": "generated",
+      "generator": "scripts/retail/gen_tables.py:voices",
+      "output": "src/invisible_core/data/retail/voices.json",
+      "sources": [
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
+          "items_sha256": "d3c578d9a1bb23a4d8c1380e01fe777675db9bf67966b94bc4ea1f1768c4c698"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
+          "items_sha256": "678dd0502c84dfc662599a228e5b3aa62eaa68848b41ae03fa0941bc0f3883e2"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
+          "items_sha256": "cb9450650152a282c96ac3f36ec5576f41be055e913ac4b6fb27e7183fc67b64"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
+          "items_sha256": "3cf0124fc3083e1fabbf2f8b952726303a9b638cd944390a3e552ae50ae3fc45"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr2",
+          "items_sha256": "b114e88c9bbac057e1cf5d66fc533a36b68e4ed9119c570c8f0299c9b6bf4544"
+        }
+      ],
+      "host_needed": "Windows 11 desktop (the SAPI voices are the OS language packs; a GitHub runner lists none or other voices)",
+      "note": "the public capture keeps the en-US rows only (capture_format.ROW_KEEP): the other voices are the capture host's own language packs"
+    },
+    {
+      "id": "R36.it",
+      "m5": "R36",
+      "repos": [
+        "core"
+      ],
+      "what": "speechSynthesis voices of an en-US Windows with a second language pack added: the five en-US voices and three more (8 rows)",
       "targets": [
         {
           "file": "src/invisible_core/_fpforge/profile.py",
-          "symbol": "VOICES, VOICES_IT, VOICES_BY_LANGUAGE"
+          "symbol": "VOICES_IT, VOICES_BY_LANGUAGE (the it row)"
         }
       ],
-      "status": "pending",
-      "piece": 2
+      "status": "by-hand",
+      "measurement": {
+        "file": null,
+        "missing": true,
+        "evidence": "measured 2026-10-15 on retail 151 on such a machine; the private raw 159 capture lists the same 8 voices in the same order, but the public capture keeps the en-US rows only, so no public file carries the other three. The five en-US rows of the set come from the generated table"
+      },
+      "host_needed": "Windows 11 desktop with the second language pack installed",
+      "note": "a Windows with another UI language has not been measured (a language with no row gets the en-US set); each new language row is a measurement"
     },
     {
       "id": "R37",
@@ -824,15 +1008,48 @@
       "repos": [
         "core"
       ],
-      "what": "Storage quota 10 GiB group cap",
+      "what": "Storage quota of a retail Firefox on a disk of 100 GiB or more: the 10 GiB group cap, written once and given to every cell of the sampler's table",
       "targets": [
         {
-          "file": "src/invisible_core/_fpforge/data/cpt_storage_given_class_tier.json",
+          "file": "src/invisible_core/data/retail/storage_quota.json",
           "symbol": "$"
+        },
+        {
+          "file": "src/invisible_core/_fpforge/_sampler.py",
+          "symbol": "_STORAGE_QUOTA_MB, _CPT_STORAGE"
+        },
+        {
+          "file": "src/invisible_core/_fpforge/data/cpt_storage_given_class_tier.json",
+          "symbol": "table (the probabilities and positions of the draw, no value)"
         }
       ],
-      "status": "pending",
-      "piece": 2
+      "status": "generated",
+      "generator": "scripts/retail/gen_tables.py:storage_quota",
+      "output": "src/invisible_core/data/retail/storage_quota.json",
+      "sources": [
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
+          "items_sha256": "d3c578d9a1bb23a4d8c1380e01fe777675db9bf67966b94bc4ea1f1768c4c698"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
+          "items_sha256": "678dd0502c84dfc662599a228e5b3aa62eaa68848b41ae03fa0941bc0f3883e2"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
+          "items_sha256": "cb9450650152a282c96ac3f36ec5576f41be055e913ac4b6fb27e7183fc67b64"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
+          "items_sha256": "3cf0124fc3083e1fabbf2f8b952726303a9b638cd944390a3e552ae50ae3fc45"
+        },
+        {
+          "capture": "firefox-159.0/windows-11-desktop/2026-10-31-dpr2",
+          "items_sha256": "b114e88c9bbac057e1cf5d66fc533a36b68e4ed9119c570c8f0299c9b6bf4544"
+        }
+      ],
+      "host_needed": "github-runner (runner-page: navigator.storage.estimate(); the runner's disk must be 100 GiB or more) or Windows 11 desktop",
+      "note": "the cap is a constant of Firefox (QuotaManager::GetGroupLimitForLimit); below 100 GiB the quota is a tenth of the disk"
     },
     {
       "id": "R38",

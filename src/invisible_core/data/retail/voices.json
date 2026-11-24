@@ -1,0 +1,20 @@
+{
+  "_generated": {
+    "generator": "scripts/retail/gen_tables.py:voices",
+    "captures": [
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.25",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.5",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr1.75",
+      "firefox-159.0/windows-11-desktop/2026-10-31-dpr2"
+    ],
+    "edit": "never by hand"
+  },
+  "voices": [
+    "Microsoft David - English (United States)|en-US|0|1",
+    "Microsoft Mark - English (United States)|en-US|0|1",
+    "Microsoft Zira - English (United States)|en-US|0|1",
+    "Microsoft David Desktop - English (United States)|en-US|0|1",
+    "Microsoft Zira Desktop - English (United States)|en-US|0|1"
+  ]
+}

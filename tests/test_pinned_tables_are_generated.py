@@ -145,6 +145,9 @@ def test_a_capture_is_well_formed(rel, entries):
     items = json.loads(items_bytes)
     assert cf.survivors(items) == [], f"{rel}: values of the capture host outside the rule"
     assert meta["redacted"] == cf.placeholders(items) and meta["items"]["redacted"] == len(meta["redacted"])
+    # a kept list whose rows are the capture host's own keeps the rows of the table only, and says so
+    assert cf.row_leaks(items) == [], f"{rel}: rows of the capture host outside capture_format.ROW_KEEP"
+    assert set(meta["dropped_rows"]) == set(cf.ROW_KEEP), f"{rel}: meta.json does not list the rows it dropped"
     text_all = items_bytes.decode("ascii")
     for vendor in ("Intel", "NVIDIA", "GeForce", "Radeon", "llvmpipe", "ANGLE ("):
         assert vendor not in text_all, f"{rel}: a GPU string ({vendor!r}) outside the family in meta.json"
@@ -240,7 +243,8 @@ def test_a_generator_reads_only_the_items_it_declares(monkeypatch):
 def test_a_generator_reads_its_values_from_the_captures_only():
     # the generator file may order and spell; it holds no retail value of its own
     text = (ROOT / "scripts" / "retail" / "gen_tables.py").read_text(encoding="utf-8")
-    for needle in ("Win32", "Windows NT", "maxTextureDimension", "bgra8unorm", "5.0 (Windows)", "16384"):
+    for needle in ("Win32", "Windows NT", "maxTextureDimension", "bgra8unorm", "5.0 (Windows)", "16384",
+                   "Segoe UI", "MS Shell Dlg", "Microsoft David", "10737418240", "EXT_clip_control", "OVR_multiview2"):
         assert needle not in text, f"gen_tables.py holds {needle!r}: it belongs to a capture"
 
 
@@ -272,9 +276,9 @@ def test_a_none_page_entry_says_how_it_is_produced(entries):
             assert (ROOT / made["ref"]).is_file(), f"{e['id']}: {made['ref']} does not exist"
 
 
-def test_a_pending_entry_is_a_second_piece_table(entries):
-    for e in _by_status(entries, "pending"):
-        assert e["piece"] == 2 and any("_fpforge" in t["file"] or t["symbol"] for t in e["targets"]), e["id"]
+def test_no_entry_is_pending(entries):
+    """Every table of _fpforge is generated, by hand (with its host) or none-page (with how it is made)."""
+    assert not _by_status(entries, "pending"), [e["id"] for e in _by_status(entries, "pending")]
 
 
 # --------------------------------------------------------------------------- one place per value
@@ -285,13 +289,6 @@ def _python_files():
         for p in (ROOT / sub).rglob("*.py"):
             if p != Path(__file__).resolve():
                 yield p
-
-
-#: A literal a generated table holds that is still typed elsewhere, and why. The second piece
-#: removes the _fpforge copy of the navigator's appVersion.
-KNOWN_SECOND_COPIES = {
-    ("5.0 (Windows)", "src/invisible_core/_fpforge/_sampler.py"),
-}
 
 
 def _needles():
@@ -307,17 +304,28 @@ def _needles():
     yield "navigator", f'"{nav["oscpu"]}"'
     yield "navigator", f'"{nav["platform"]}"'
     yield "navigator", nav["user_agent_template"].split("{version}")[0]
+    extensions = _retail.table("webgl_extensions")
+    for key in ("webgl1", "webgl2"):
+        yield "webgl_extensions", ",".join(extensions[key])
+        yield "webgl_extensions", ", ".join(f'"{n}"' for n in extensions[key])
+    for row in _retail.table("voices")["voices"]:
+        yield "voices", f'"{row}"'
+    fonts = _retail.table("system_fonts")
+    for key in ("ui_family", "dialog_family"):
+        yield "system_fonts", f'= "{fonts[key]}"'
+    yield "system_fonts", f'FONT_UI_SIZE = "{fonts["ui_size"]}"'
+    yield "system_fonts", f'FONT_MONOSPACE_SIZE = {fonts["monospace_size"]}'
 
 
 def test_a_retail_value_is_written_once():
     needles = sorted(set(_needles()))
-    assert len(needles) > 40
+    assert len(needles) > 50
     found = []
     for path in _python_files():
         text = path.read_text(encoding="utf-8", errors="replace")
         rel = path.relative_to(ROOT).as_posix()
         for table, needle in needles:
-            if needle in text and (needle.strip('"'), rel) not in KNOWN_SECOND_COPIES:
+            if needle in text:
                 found.append((table, needle, rel))
     assert not found, f"retail values typed outside their data file: {found[:10]}"
 
@@ -338,3 +346,60 @@ def test_the_tables_load_in_the_shape_the_core_reads():
     assert len(prefs._WIN_WEBGPU_LIMITS.split(chr(10))) == 35
     assert prefs._WIN_ENCODE_SUPPORT.split(chr(10)) == _retail.table("media_encode")["encode_support"]
     assert Path(invisible_core.__file__).parent.joinpath("data", "retail", "webgpu.json").is_file()
+
+
+def test_the_pool_and_the_sampler_hold_no_value_of_a_generated_table():
+    """The two data files that used to carry retail values keep their own part only: the Windows personas
+    of the GPU pool hold no extension list (the loader puts the generated pair in), and the cells of the
+    storage table hold probabilities, not the quota."""
+    from invisible_core import _webgl_personas
+    from invisible_core._fpforge import _sampler
+
+    data = ROOT / "src" / "invisible_core" / "_fpforge" / "data"
+    pool = json.loads((data / "webgl_gpu_pool.json").read_text(encoding="utf-8"))
+    for e in pool["win"]:
+        assert not {"zoom.stealth.webgl.extensions", "zoom.stealth.webgl2.extensions"} & set(e["prefs"])
+    lists = _retail.table("webgl_extensions")
+    for persona in _webgl_personas._gpu_pool():
+        assert persona["prefs"]["zoom.stealth.webgl.extensions"] == ",".join(lists["webgl1"])
+        assert persona["prefs"]["zoom.stealth.webgl2.extensions"] == ",".join(lists["webgl2"])
+        keys = list(persona["prefs"])
+        assert keys.index("zoom.stealth.webgl.extensions") == keys.index("zoom.stealth.webgl.vendor") + 1
+    cells = json.loads((data / "cpt_storage_given_class_tier.json").read_text(encoding="utf-8"))["table"]
+    assert all(set(row) == {"prob"} for rows in cells.values() for row in rows)
+    quota = _retail.table("storage_quota")["quota_mb"]
+    assert {row["value"] for rows in _sampler._CPT_STORAGE.values() for row in rows} == {quota}
+    assert {k: [r["prob"] for r in rows] for k, rows in _sampler._CPT_STORAGE.items()} == {
+        k: [r["prob"] for r in rows] for k, rows in cells.items()}
+
+
+def test_the_sampler_reads_the_appversion_from_constants():
+    from invisible_core import constants
+    from invisible_core._fpforge import _sampler
+
+    assert _sampler._LOCKED["app_version"] is constants.APPVERSION_OVERRIDE
+
+
+def test_the_voices_and_the_fonts_are_the_tables():
+    from invisible_core._fpforge import profile
+
+    voices = _retail.table("voices")["voices"]
+    assert profile.VOICES == ",".join(voices) and len(voices) == 5
+    assert all(row.split("|")[1] == "en-US" for row in voices), "the table is the en-US set"
+    # the set with a second language pack interleaves its three own rows into the same five
+    it_rows = profile.VOICES_IT.split(",")
+    assert [r for r in it_rows if r in voices] == voices and len(it_rows) == 8
+    assert profile.voices_for("en-US") == profile.VOICES
+    fonts = _retail.table("system_fonts")
+    assert (profile.FONT_UI_FAMILY, profile.FONT_UI_SIZE) == (fonts["ui_family"], fonts["ui_size"])
+    assert profile.FONT_DIALOG_FAMILY == fonts["dialog_family"]
+    assert profile.FONT_MONOSPACE_SIZE == fonts["monospace_size"] and isinstance(fonts["monospace_size"], int)
+    assert isinstance(fonts["ui_size"], str), "Preferences::GetFloat parses the text form"
+
+
+def test_the_row_rule_removes_the_hosts_own_voices():
+    items = {"surface.voices": [["a", "en-US", True, False, "u1"], ["b", "xx", True, False, "u2"],
+                                ["c", "en-US", True, False, "u3"]]}
+    assert cf.row_leaks(items) == ["surface.voices"]
+    assert cf.drop_rows(items).keys() == {"surface.voices"}
+    assert [r[0] for r in items["surface.voices"]] == ["a", "c"] and cf.row_leaks(items) == []

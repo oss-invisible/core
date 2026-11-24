@@ -35,8 +35,9 @@ import os
 import re
 from typing import Any, Dict, Optional, Tuple
 
-from ..constants import (OSCPU_OVERRIDE, PLATFORM_OVERRIDE, TASKBAR_PX,
-                         USER_AGENT)
+from .. import _retail
+from ..constants import (APPVERSION_OVERRIDE, OSCPU_OVERRIDE, PLATFORM_OVERRIDE,
+                         TASKBAR_PX, USER_AGENT)
 from ._network import Network, Node
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,7 +71,7 @@ _LOCKED: Dict[str, Any] = {
     "platform": PLATFORM_OVERRIDE,
     "oscpu": OSCPU_OVERRIDE,
     "app_code_name": "Mozilla",
-    "app_version": "5.0 (Windows)",
+    "app_version": APPVERSION_OVERRIDE,
     "product_sub": "20100101",
     "webdriver": False,
     # max_touch_points USED TO BE HERE, and had to go. It became
@@ -97,7 +98,14 @@ _GPU_POOL = _load("webgl_renderer_pool.json")["entries"]
 # is measured data, and deleting a measurement to tidy an unused variable is how
 # a table gets re-derived from scratch a year later.
 _CPT_SCREEN = _load("cpt_screen_given_class_tier.json")["table"]
-_CPT_STORAGE = _load("cpt_storage_given_class_tier.json")["table"]
+# The quota of every cell is the retail one (`data/retail/storage_quota.json`, R37 of
+# captures/pinned.json, generated from the captures); the file holds the draw's
+# probabilities and positions, not the value.
+_STORAGE_QUOTA_MB = _retail.table("storage_quota")["quota_mb"]
+_CPT_STORAGE = {
+    cell: [{"value": _STORAGE_QUOTA_MB, "prob": row["prob"]} for row in rows]
+    for cell, rows in _load("cpt_storage_given_class_tier.json")["table"].items()
+}
 # Hidden tier variable that makes hwc/screen/storage jointly coherent
 _CPT_INTRA_TIER = _load("cpt_intra_tier_given_class.json")["table"]
 # MSAA depends on (gpu_class, screen_tier) - 4K gaming → MSAA=0, 1080p+GPU → MSAA=4

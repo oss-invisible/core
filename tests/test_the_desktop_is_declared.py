@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from invisible_core import _retail
 from invisible_core import prefs as P
 from invisible_core._fpforge import generate_profile
 
@@ -63,13 +64,15 @@ def test_the_two_builds_declare_the_same_desktop(monkeypatch):
 
 def test_the_three_form_control_fonts_are_the_dialog_font(monkeypatch):
     """A7: retail answers `getComputedStyle(input).fontFamily` with
-    "MS Shell Dlg 2"; the other seven system fonts are the shell font."""
+    the dialog font; the other seven system fonts are the shell font. Both
+    families are the retail table's (data/retail/system_fonts.json, R32)."""
+    fonts = _retail.table("system_fonts")
     prefs = _prefs(monkeypatch, "win32")
     for element in ("-moz-button", "-moz-field", "-moz-list"):
-        assert prefs["ui.font." + element] == "MS Shell Dlg 2", element
+        assert prefs["ui.font." + element] == fonts["dialog_family"], element
     for element in ("caption", "icon", "menu", "message-box", "small-caption",
                     "status-bar", "-moz-pull-down-menu"):
-        assert prefs["ui.font." + element] == "Segoe UI", element
+        assert prefs["ui.font." + element] == fonts["ui_family"], element
 
 
 @pytest.mark.parametrize("pin,pref,value", [

@@ -4,6 +4,9 @@
   "date": "2026-10-31",
   "dpr": 1.5,
   "dpr_asked": 1.5,
+  "dropped_rows": {
+    "surface.voices": "rows whose column 1 is not 'en-US'"
+  },
   "firefox_version": "159.0",
   "format": "retail-capture/1",
   "host": {
@@ -18,9 +21,9 @@
   "items": {
     "count": 3283,
     "images": 2089,
-    "redacted": 3296,
+    "redacted": 3291,
     "renamed_keys": 400,
-    "sha256": "dc177b76d0ba1a9be7b691788b2db2cf38cceb894507114b209b5338dac25428"
+    "sha256": "cb9450650152a282c96ac3f36ec5576f41be055e913ac4b6fb27e7183fc67b64"
   },
   "items_format": "host-gate/1",
   "noise_keys": [
@@ -37,7 +40,8 @@
   },
   "raw": {
     "kept": "the maintainers' private measurement archive (host-gate/1 file, not in this repository)",
-    "sha256": "bfd886858c293e3b33e9dc4db2022408294a7ab488b30baa4fa390a5ad162b5a",
+    "sha256": "99f72a5392faad6d47b67d01e24e4d8acf21dc283778f9c53ef92a246947c643",
+    "sha256_before_rewrite": "bfd886858c293e3b33e9dc4db2022408294a7ab488b30baa4fa390a5ad162b5a",
     "size": 6579032
   },
   "redacted": [
@@ -99,7 +103,6 @@
     "surface.computedStyle.body",
     "surface.computedStyle.button",
     "surface.computedStyle.select",
-    "surface.computedStyle.textarea",
     "surface.devices",
     "surface.document",
     "surface.document.hasFocus",
@@ -186,11 +189,7 @@
     "surface.proto.Worker",
     "surface.screen",
     "surface.screen.orientation",
-    "surface.storage",
-    "surface.systemColors",
-    "surface.systemFonts",
     "surface.visualViewport",
-    "surface.voices",
     "surface.webgl1|extension_parameters|WEBGL_debug_renderer_info",
     "surface.webgl1|parameters|RENDERER",
     "surface.webgl1|parameters|VENDOR",

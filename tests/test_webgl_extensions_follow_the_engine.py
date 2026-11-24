@@ -26,42 +26,26 @@ the same way; a non-Intel official 159 measurement would sharpen them.
 """
 from __future__ import annotations
 
-import json
-import pathlib
 import re
 
 import pytest
 
 from _engine_source import EngineSource
+from invisible_core import _retail
+from invisible_core._webgl_personas import _gpu_pool
 
 pytestmark = pytest.mark.unit
 
-_POOL = pathlib.Path(__import__("invisible_core").__file__).parent / "_fpforge" / "data" / "webgl_gpu_pool.json"
 _W1, _W2 = "zoom.stealth.webgl.extensions", "zoom.stealth.webgl2.extensions"
 _SOURCE = EngineSource.pinned()
 
 #: Official Firefox 159.0, Windows 11, ANGLE (Intel, Intel(R) HD Graphics
-#: Direct3D11 vs_5_0 ps_5_0), measured 2026-10-30 (the set; ordered as the 159
-#: engine's WebGLExtensionID returns them).
-OFFICIAL_159_INTEL_WEBGL = [
-    "ANGLE_instanced_arrays", "EXT_blend_minmax", "EXT_clip_control", "EXT_color_buffer_half_float",
-    "EXT_depth_clamp", "EXT_float_blend", "EXT_frag_depth", "EXT_polygon_offset_clamp",
-    "EXT_shader_texture_lod", "EXT_sRGB", "EXT_texture_compression_bptc", "EXT_texture_compression_rgtc",
-    "EXT_texture_filter_anisotropic", "EXT_texture_mirror_clamp_to_edge", "OES_element_index_uint",
-    "OES_fbo_render_mipmap", "OES_standard_derivatives", "OES_texture_float", "OES_texture_float_linear",
-    "OES_texture_half_float", "OES_texture_half_float_linear", "OES_vertex_array_object",
-    "WEBGL_color_buffer_float", "WEBGL_compressed_texture_s3tc", "WEBGL_compressed_texture_s3tc_srgb",
-    "WEBGL_debug_renderer_info", "WEBGL_debug_shaders", "WEBGL_depth_texture", "WEBGL_draw_buffers",
-    "WEBGL_lose_context", "WEBGL_provoking_vertex",
-]
-OFFICIAL_159_INTEL_WEBGL2 = [
-    "EXT_clip_control", "EXT_color_buffer_float", "EXT_depth_clamp", "EXT_float_blend",
-    "EXT_polygon_offset_clamp", "EXT_texture_compression_bptc", "EXT_texture_compression_rgtc",
-    "EXT_texture_filter_anisotropic", "EXT_texture_mirror_clamp_to_edge", "EXT_texture_norm16",
-    "OES_draw_buffers_indexed", "OES_texture_float_linear", "OVR_multiview2", "WEBGL_compressed_texture_s3tc",
-    "WEBGL_compressed_texture_s3tc_srgb", "WEBGL_debug_renderer_info", "WEBGL_debug_shaders",
-    "WEBGL_lose_context", "WEBGL_provoking_vertex",
-]
+#: Direct3D11 vs_5_0 ps_5_0), measured 2026-10-30 and in the dated captures of
+#: 2026-10-31: the lists are the generated table's, written once
+#: (data/retail/webgl_extensions.json, R23 of captures/pinned.json), in the order
+#: the 159 engine's WebGLExtensionID returns them.
+OFFICIAL_159_INTEL_WEBGL = _retail.table("webgl_extensions")["webgl1"]
+OFFICIAL_159_INTEL_WEBGL2 = _retail.table("webgl_extensions")["webgl2"]
 #: The 159 additions, every one of which a 159 identity must report.
 NEW_IN_159_WEBGL = ["EXT_clip_control", "EXT_polygon_offset_clamp", "EXT_texture_mirror_clamp_to_edge"]
 NEW_IN_159_WEBGL2 = NEW_IN_159_WEBGL + ["EXT_texture_norm16"]
@@ -89,7 +73,8 @@ OFFICIAL_157_INTEL_WEBGL2 = [
 
 
 def _windows():
-    return json.loads(_POOL.read_text(encoding="utf-8"))["win"]
+    """The Windows personas as the core hands them out: the extension lists are the table's, put in by the loader."""
+    return [{"prefs": e["prefs"]} for e in _gpu_pool()]
 
 
 def _split(value):

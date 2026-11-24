@@ -7,21 +7,18 @@ answers 4, ANGLE's D3D11 constant.
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
-import invisible_core
+from invisible_core._webgl_personas import _gpu_pool
 
 pytestmark = pytest.mark.unit
 
-POOL = Path(invisible_core.__file__).parent / "_fpforge" / "data" / "webgl_gpu_pool.json"
 MAX_VIEWS_OVR = 0x9631
 
 
 def personas():
-    return json.loads(POOL.read_text(encoding="utf-8"))["win"]
+    """The Windows personas as the core hands them out (the extension lists are the retail table's)."""
+    return _gpu_pool()
 
 
 @pytest.mark.parametrize("i", range(len(personas())))
