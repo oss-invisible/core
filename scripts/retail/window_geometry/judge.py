@@ -11,14 +11,11 @@ Red when:
     an error, or a point of the grid check does not show what launch a shows at that point (content top, size mode);
   * at the scales of plan.HOSTGATE_DPRS, launches a and b lack their `rdm_hostgate` step, or the collection page did not
     post its result WITHOUT inRDMPane (a missing POST WITH inRDMPane is printed as `RDM HANG` and is a finding, not red);
-  * at the FIRST resolution of scale 1 (display mode, scale reached live), the MAXIMIZED step is not exactly the row of
-    invisible_core WINDOW_FRAME_BY_DPR (read from the source of this checkout): the invisible border
-    (GetWindowRect width minus work-area width, halved), screenX = round-half-up(-border / dpr) and
-    round(mozInnerScreenY * dpr) = maximized_ui. This is the proof that Marionette does not change the frame.
-    Everywhere else the comparison is printed and a difference is "DIFFERS (window-size dependent, see grid)", not red:
-    decision of the pm. The table came from Firefox 151 on a different panel, and the chrome height above the content
-    depends on the window size in Firefox 159 (85 CSS maximized at 1920x1032 CSS, 72.67 at 1280x688); only at the one
-    point where the table and 159 agree in window size is it a proof. That dependency is what the grid measures.
+  * at every scale reached live (display mode), at every resolution, the MAXIMIZED step is not exactly what the core declares
+    (invisible_core, read from the source of this checkout by frame_table.py): the invisible border (GetWindowRect width
+    minus work-area width, halved), screenX = round-half-up(-border / dpr) and round(mozInnerScreenY * dpr) =
+    declared_maximized_ui(frame, the measured screen.availHeight in CSS px), i.e. the density rule, which depends on the
+    window size. This is also the proof that Marionette does not change the frame.
 A scale Windows would not take is "not reachable live: derived path" and is not red by itself.
 """
 from __future__ import annotations
@@ -38,8 +35,6 @@ import plan  # noqa: E402
 import request as request_file  # noqa: E402
 
 STEPS = plan.CORE_STEPS
-#: (scale, resolution) where the maximized step must equal the core table (see the docstring).
-STRICT_POINT = (1.0, (1920, 1080))
 
 
 def half_up(value: float) -> int:
@@ -83,17 +78,19 @@ def derived(step: Dict[str, Any], dpr: float) -> Dict[str, Any]:
             "work_css": [(work[2] - work[0]) / dpr, (work[3] - work[1]) / dpr]}
 
 
-def check_maximized(run: Dict[str, Any], table: Dict[float, Dict[str, int]]) -> List[Tuple[str, str, Any, Any, bool]]:
-    """(name, what, got, expected, ok) for the three comparisons with the core table."""
+def check_maximized(run: Dict[str, Any], table: Dict[float, Any]) -> List[Tuple[str, str, Any, Any, bool]]:
+    """(name, what, got, expected, ok) for the three comparisons with what the core declares."""
     dpr = float(run["dpr_asked"])
-    row = table[dpr]
-    step = run["steps"]["maximized"]
-    d = derived(step, dpr)
-    screen_x = step["content"]["screenX"]
-    ui = half_up(step["content"]["mozInnerScreenY"] * dpr)
-    return [("border", "(GetWindowRect width - rcWork width) / 2", d["border"], row["border"], d["border"] == row["border"]),
-            ("screenX", "round-half-up(-border / dpr)", screen_x, half_up(-row["border"] / dpr), screen_x == half_up(-row["border"] / dpr)),
-            ("maximized_ui", "round(mozInnerScreenY * dpr)", ui, row["maximized_ui"], ui == row["maximized_ui"])]
+    frame = table[dpr]
+    content = run["steps"]["maximized"]["content"]
+    d = derived(run["steps"]["maximized"], dpr)
+    screen_x = content["screenX"]
+    ui = half_up(content["mozInnerScreenY"] * dpr)
+    avail = content["screen"]["availHeight"]
+    want_x, want_ui = half_up(-frame.border / dpr), frame_table.declared_maximized_ui(frame, avail)
+    return [("border", "(GetWindowRect width - rcWork width) / 2", d["border"], frame.border, d["border"] == frame.border),
+            ("screenX", "round-half-up(-border / dpr)", screen_x, want_x, screen_x == want_x),
+            ("maximized_ui", f"round(mozInnerScreenY * dpr) at availHeight {avail}", ui, want_ui, ui == want_ui)]
 
 
 def name_of(run: Dict[str, Any]) -> str:
@@ -268,8 +265,7 @@ def core_steps_of(run: Dict[str, Any]) -> Dict[str, Any]:
     return {name: run["steps"][name] for name in STEPS if name in run["steps"]}
 
 
-def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: Dict[float, Dict[str, int]],
-             strict_point: Tuple[float, Tuple[int, int]] = STRICT_POINT) -> Dict[str, Any]:
+def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: Dict[float, Any]) -> Dict[str, Any]:
     """{"red": bool, "problems": [...], "lines": [...]}"""
     problems: List[str] = []
     lines: List[str] = []
@@ -293,13 +289,10 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
         if run["mode"] == "display" and not shown.get("dpi_reached"):
             lines.append(f"    not reachable live: derived path ({shown.get('reason')})")
         elif run["mode"] == "display":
-            # Red only at the one point where the core table and Firefox 159 agree in window size; see the docstring.
-            strict = (dpr, tuple(run["resolution"])) == (float(strict_point[0]), tuple(strict_point[1]))
             for name, what, got, want, ok in check_maximized(run, table):
-                verdict = "ok" if ok else ("DIFFERENT" if strict else "DIFFERS (window-size dependent, see grid)")
-                lines.append(f"    maximized {name}: {what} = {got} ; core table {want} : {verdict}")
-                if not ok and strict:
-                    problems.append(f"{name_of(run)}: maximized {name} is {got}, the core table says {want}")
+                lines.append(f"    maximized {name}: {what} = {got} ; core declares {want} : {'ok' if ok else 'DIFFERENT'}")
+                if not ok:
+                    problems.append(f"{name_of(run)}: maximized {name} is {got}, the core declares {want}")
         for step_name in required_steps(run):
             step = run["steps"][step_name]
             if "skipped" in step:
@@ -371,7 +364,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--request", type=Path, default=request_file.REQUEST)
     args = ap.parse_args(argv)
     request = request_file.load(args.request)
-    result = evaluate(load_runs(args.root), request["dpr"], frame_table.load(), (1.0, tuple(request["resolutions"][0])))
+    result = evaluate(load_runs(args.root), request["dpr"], frame_table.load())
     text = report(result)
     print(text)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")

@@ -5,7 +5,7 @@
 `round` is a positive integer, raised to make the workflow run again. A scale must be a key of invisible_core WINDOW_FRAME_BY_DPR (the judge has a row to compare with only there), the launches
 are at least two distinct letters (the judge compares them), and the version is a release. scripts/retail/window_geometry/
 request.py refuses anything else in the first job, before a Windows runner is started. The table is read from the source of
-the checkout by frame_table.py, without importing the package, and must be the table the package itself has.
+the checkout by frame_table.py (constants.py loaded by file path, not installed), and must be what the package itself declares.
 """
 from __future__ import annotations
 
@@ -31,12 +31,26 @@ def test_the_committed_request_is_valid_and_is_the_four_scales_of_159_in_round_4
 
 
 def test_the_table_read_from_the_source_is_the_table_of_the_package():
-    from invisible_core.constants import WINDOW_FRAME_BY_DPR
+    from invisible_core.constants import WINDOW_FRAME_BY_DPR, declared_maximized_ui
 
     read = frame_table.load()
     assert set(read) == set(WINDOW_FRAME_BY_DPR)
     for dpr, row in WINDOW_FRAME_BY_DPR.items():
-        assert read[dpr] == row._asdict()
+        assert read[dpr] == row
+        for avail in (400, 600, 700, 719, 720, 800, 1032):
+            assert frame_table.declared_maximized_ui(read[dpr], avail) == declared_maximized_ui(row, avail)
+
+
+def test_the_source_is_read_by_file_path_without_importing_the_package(tmp_path):
+    """The judge job has a checkout and Python: constants.py is executed from its path, its siblings under a private name."""
+    import subprocess
+    import sys
+
+    code = ("import sys; sys.path.insert(0, %r); import frame_table; t = frame_table.load(); "
+            "assert 'invisible_core' not in sys.modules, 'the package was imported'; "
+            "print(sorted(t), frame_table.declared_maximized_ui(t[1.5], 672))") % str(ROOT / "scripts" / "retail" / "window_geometry")
+    out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, cwd=tmp_path, check=True)
+    assert out.stdout.strip() == "[1.0, 1.25, 1.5, 2.0] 109"
 
 
 def test_the_command_line_prints_the_version_and_the_job_matrix(tmp_path, capsys):

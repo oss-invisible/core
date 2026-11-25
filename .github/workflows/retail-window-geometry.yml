@@ -12,7 +12,7 @@ name: retail-window-geometry
 # which Marionette requires for it; no other MOZ_* variable): the restored window is produced by
 # exactly the line Juggler runs (TargetRegistry.js setViewportSize: window.resizeBy). Proof that Marionette does not
 # change the frame: at every scale reached live, the maximized geometry measured here must equal invisible_core
-# WINDOW_FRAME_BY_DPR (measured from plain launches) exactly, or the scale is not valid (judge.py).
+# WINDOW_FRAME_BY_DPR and declared_maximized_ui (measured from plain launches) exactly, or the scale is not valid (judge.py).
 #
 # Round 2 (the `round` of the request) adds, per scale: Juggler's whole sequence at 390x844 CSS (steps juggler and
 # juggler_rdm), at scales 1 and 1.25 a grid of restored windows and the minimum window, the maximized step at every
@@ -23,7 +23,7 @@ name: retail-window-geometry
 #
 # The `judge` job is the one verdict: it reads every artifact, prints the table, and is red when a scale is
 # missing, a launch left a process, launch a differs from launch b (p from q), the grid check of launch b differs from
-# launch a, or scale 1 at its first resolution differs from the table (other sizes are printed, not red).
+# launch a, or a scale reached live differs from what the core declares (border, screenX and the bar the density rule gives at the measured availHeight).
 #
 # Same trigger shape as ci.yml (tests/test_ci_runs_once_per_commit.py): pull requests through `pull_request`,
 # `push` only for main, a new push to a pull request replaces the run it supersedes.
