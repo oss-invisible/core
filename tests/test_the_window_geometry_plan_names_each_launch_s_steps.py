@@ -29,7 +29,7 @@ WORK = [0, 0, 1920, 1032]
 
 
 def test_the_grid_is_the_widths_and_heights_of_the_order_and_contains_the_grid_check():
-    assert len(plan.GRID_WIDTHS) == 17 and len(plan.GRID_HEIGHTS) == 16 and len(plan.grid_points()) == 272
+    assert len(plan.GRID_WIDTHS) == 15 and len(plan.GRID_HEIGHTS) == 14 and len(plan.grid_points()) == 210
     assert plan.GRID_WIDTHS == tuple(sorted(plan.GRID_WIDTHS)) and plan.GRID_HEIGHTS == tuple(sorted(plan.GRID_HEIGHTS))
     assert plan.GRID_WIDTHS[0] == 500 and plan.GRID_WIDTHS[-1] == 1900 and plan.GRID_HEIGHTS[0] == 450 and plan.GRID_HEIGHTS[-1] == 1000
     assert plan.GRID_CHECK_POINTS == ((500, 450), (1280, 672), (1366, 768), (1536, 816), (1900, 1000), (800, 600))
@@ -50,7 +50,7 @@ def test_the_points_that_fit_at_each_scale_of_the_grid_are_a_subset_that_shrinks
     def count(scale):
         return sum(plan.fits(w, h, [16, 16], scale, WORK) for w, h in plan.grid_points())
 
-    assert count(1.0) == 272 and 0 < count(1.25) < 272 and count(1.5) < count(1.25)
+    assert count(1.0) == 210 and 0 < count(1.25) < 210 and count(1.5) < count(1.25)
 
 
 def test_juggler_s_height_is_844_when_it_fits_else_the_largest_multiple_of_ten_that_does():
