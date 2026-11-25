@@ -84,6 +84,35 @@ jobs:
         # gate rather than a cleanup backlog. Keep it that way.
         run: |
           python -m ruff check --select F821,F811,F601 --no-cache --output-format concise .
+      # RULE ci-14: THE REGISTRY OF REGRESSION TESTS (ci/regressions.json) only grows, and every row is a test that pytest collects. The checker
+      # and the registry of main are read from origin/main, never from the branch being judged (the checker imports ci_skips from its own folder,
+      # so both go to one folder); a file that is not on main yet is the copy of this branch, and the log says so. One leg, Linux 3.12: the check is
+      # OS-independent. This job is part of `gate`, the required verdict. The core has no suite registry file, so no --suites.
+      - name: regression registry (ci-14)
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        shell: bash
+        run: |
+          d="$RUNNER_TEMP/ci14"
+          mkdir -p "$d"
+          if git show origin/main:scripts/ci_regressions.py > "$d/ci_regressions.py" 2>/dev/null; then
+            echo "ci_regressions.py: read from origin/main"
+          else
+            echo "ci_regressions.py is not on origin/main yet: falling back to the copy of this branch"
+            cp scripts/ci_regressions.py "$d/ci_regressions.py"
+          fi
+          if git show origin/main:scripts/ci_skips.py > "$d/ci_skips.py" 2>/dev/null; then
+            echo "ci_skips.py: read from origin/main"
+          else
+            echo "ci_skips.py is not on origin/main yet: falling back to the copy of this branch"
+            cp scripts/ci_skips.py "$d/ci_skips.py"
+          fi
+          if git show origin/main:ci/regressions.json > "$d/main-regressions.json" 2>/dev/null; then
+            echo "regression registry of main: read from origin/main"
+          else
+            echo "ci/regressions.json is not on origin/main yet: no registry of main to compare with"
+            rm -f "$d/main-regressions.json"
+          fi
+          python "$d/ci_regressions.py" check --registry ci/regressions.json --main-registry "$d/main-regressions.json" --root .
       # -rs prints WHY anything skipped, so a skip is readable in the log
       # instead of being indistinguishable from a pass.
       - name: Run the suite
