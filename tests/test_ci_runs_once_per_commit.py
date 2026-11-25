@@ -37,6 +37,9 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 #: The one expression a cancelling group may use, whitespace aside.
 CANCEL_ONLY_PULL_REQUESTS = "${{github.event_name=='pull_request'}}"
+#: The one clause a group may add for the merge queue: a queue run is keyed on its own ref (one
+#: branch per queue entry), which is unique to the entry and never main's.
+MERGE_GROUP_CLAUSE = "github.event_name=='merge_group'&&github.ref||"
 #: Publishing and scheduled workflows: an upload or a snapshot that has started
 #: is allowed to finish.
 NEVER_CANCEL = {"publish.yml", "publish-wiki.yml", "counters.yml"}
@@ -107,7 +110,9 @@ def problems_concurrency(name: str, spec: dict) -> list[str]:
     if "github.run_id" not in group:
         out.append(f"{name}: outside a pull request the group is not unique to the run, "
                    f"so a newer pending run of main replaces an older one")
-    if "github.ref" in group or "head_ref" in group:
+    if "merge_group" in ev and MERGE_GROUP_CLAUSE not in _flat(group):
+        out.append(f"{name}: runs on the merge queue and its group is not keyed on the ref of the merge group")
+    if "github.ref" in _flat(group).replace(MERGE_GROUP_CLAUSE, "") or "head_ref" in group:
         out.append(f"{name}: the group is keyed on the ref, which is main for every push to main")
     return out
 

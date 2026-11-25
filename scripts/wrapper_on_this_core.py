@@ -393,7 +393,7 @@ def judge_junit(junit_paths: list[Path], files: list[str], codes: list[int]) -> 
 # and no `//`. A line that starts with `wrapper-ref` followed by optional blanks and `:`
 # in any case but does not fit is an ERROR, not an ignored line; so are two such lines.
 # Only a pull request is read: on a push (main) and on a tag the ref is `main` and the
-# body, if there is one, is not looked at.
+# body, if there is one, is not looked at; a merge group (the merge queue) has no body: `main`.
 
 WRAPPER_REPO_URL = "https://github.com/oss-invisible/playwright"
 WRAPPER_DEFAULT_REF = "main"
@@ -431,6 +431,9 @@ def choose_wrapper_ref(event: str, body: str | None, ls_remote=None) -> tuple[st
 
     ``ls_remote(branch)`` returns the text of `git ls-remote --heads <wrapper> refs/heads/<branch>`
     (injected by the tests)."""
+    if event == "merge_group":
+        return WRAPPER_DEFAULT_REF, (f"event `merge_group`: a queue run has no pull request body, so the wrapper's {WRAPPER_DEFAULT_REF} "
+                                     "(a declared branch was tried on the pull request's own run)")
     if event != "pull_request":
         return WRAPPER_DEFAULT_REF, f"event `{event}`: always the wrapper's {WRAPPER_DEFAULT_REF}, a `wrapper-ref:` line is not read"
     lines = declared_wrapper_refs(body or "")
