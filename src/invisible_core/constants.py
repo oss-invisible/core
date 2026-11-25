@@ -73,20 +73,122 @@ APPVERSION_OVERRIDE: str = _NAVIGATOR["app_version"]
 # nsGlobalWindowOuter.cpp - with nothing tying them together.
 TASKBAR_PX: int = 48
 
+# --- The browser chrome above the page, Firefox 159 -------------------------
+#
+# What the window client top to the content top is made of, and what decides
+# it. Read from the retail 159.0 browser/omni.ja (sha256 e079c395...a610; the
+# analysis is RetailCaptures analysis/window-geometry/chrome-density/README.md,
+# files and lines below are inside that omni.ja). Each term is CSS px at scale 1.
+#
+# The height is a density attribute set by script, not a media query:
+# browser.js gUIDensity switches the window to "compact" by itself while
+# browser.uidensity has no user value (a fresh profile has none).
+
+#: Tab strip: --tab-min-height (tabs.css L9, L16) + 2 x --tab-margin-block
+#: (tab.tokens.css L145, tabs.css L80-86); #tabbrowser-tabs min-height
+#: (tabs.css L50, L189). Normal 32 + 2 x 6, compact 28 + 2 x 4.
+TABSTRIP_CSS_NORMAL: int = 32 + 2 * 6
+TABSTRIP_CSS_COMPACT: int = 28 + 2 * 4
+
+#: Nav bar: --urlbar-height (urlbar/variables.css L14, L31) + 2 x
+#: --urlbar-padding-block of 4 (urlbar.tokens.css L26, urlbar.css L197).
+#: Normal 32 + 2 x 4, compact 28 + 2 x 4.
+NAVBAR_CSS_NORMAL: int = 32 + 2 * 4
+NAVBAR_CSS_COMPACT: int = 28 + 2 * 4
+
+#: .browserContainer border-block-start, --border-width (content-area.css L53,
+#: L70). Layout snaps it down to whole device pixels, at least one.
+CONTENT_BORDER_CSS: int = 1
+
+#: AUTO_COMPACT_REFERENCE_TABSTRIP_HEIGHT (browser.js gUIDensity).
+AUTO_COMPACT_REFERENCE_TABSTRIP_CSS: int = 36
+#: browser.compactmode.auto.threshold, default "0.05" (firefox.js).
+AUTO_COMPACT_THRESHOLD: float = 0.05
+#: The window is compact when 36 / H > 0.05, i.e. H < 36 / 0.05 = 720 CSS px;
+#: H = 720 is normal (36 / 720 is not greater than 0.05).
+AUTO_COMPACT_BELOW_CSS: float = AUTO_COMPACT_REFERENCE_TABSTRIP_CSS / AUTO_COMPACT_THRESHOLD
+
+#: Firefox's smallest main window, chrome inner size in CSS px (width, height).
+#: Measured live on retail 159.0 at scales 1 and 1.25, 500 wide at all four
+#: (GitHub runs oss-invisible/core 45657528859, 45672953042, 45679625406;
+#: RetailCaptures efb8d8f).
+MIN_INNER_CSS: tuple = (500, 120)
+
+#: Where a restored main window sits after Juggler's resize, device px on both
+#: axes. Measured live at scales 1, 1.25, 1.5 and 2 (same runs as MIN_INNER_CSS).
+RESTORED_POSITION: int = 4
+
+
+def _half_up(value: float) -> int:
+    """Round half up, as layout snaps a box edge to a device pixel."""
+    return int(value + 0.5)
+
+
+def ui_density(reference_height_css: float) -> str:
+    """The UI density Firefox 159 picks on its own: "compact" below 720 CSS
+    px of reference height, "normal" from 720 (browser.js gUIDensity)."""
+    if AUTO_COMPACT_REFERENCE_TABSTRIP_CSS / reference_height_css > AUTO_COMPACT_THRESHOLD:
+        return "compact"
+    return "normal"
+
+
+def density_reference_height(avail_height_css: float, chrome_inner_height_css: float,
+                             maximized: bool) -> float:
+    """The height the density rule reads (browser.js _densityReferenceSize):
+    for a maximized window the larger of screen.availHeight and the chrome
+    window's innerHeight, for a restored one the chrome innerHeight."""
+    if maximized:
+        return max(avail_height_css, chrome_inner_height_css)
+    return chrome_inner_height_css
+
+
+def chrome_height_device(scale: float, density: str) -> int:
+    """The chrome height above the content in device px, from the window
+    client top to the content top, the same for a maximized and a restored
+    window: tab strip and nav bar each snapped half up, plus the border."""
+    if density == "compact":
+        tabstrip, navbar = TABSTRIP_CSS_COMPACT, NAVBAR_CSS_COMPACT
+    elif density == "normal":
+        tabstrip, navbar = TABSTRIP_CSS_NORMAL, NAVBAR_CSS_NORMAL
+    else:
+        raise ValueError("density must be 'normal' or 'compact', not %r" % (density,))
+    border = max(1, int(CONTENT_BORDER_CSS * scale))
+    return _half_up(tabstrip * scale) + _half_up(navbar * scale) + border
+
+
 class WindowFrame(NamedTuple):
     """The window frame of Windows Firefox at one display scale, in DEVICE
     pixels."""
     #: Windows' invisible resize border, on the left, right and bottom of every
     #: window and on top of a popup. A maximized window sits this far OFF the
-    #: screen on three sides.
+    #: screen on three sides. The same for a restored window.
     border: int
     #: A maximized window: from the screen top to the content top (tab strip
-    #: plus toolbar, seen from the screen).
+    #: plus toolbar, seen from the screen). This is the Firefox 151
+    #: measurement, which is what the published engine reads. Firefox 159
+    #: answers the density rule instead (ui_normal / ui_compact, see
+    #: declared_maximized_ui); switching is pending a decision
+    #: (MAXIMIZED_UI_FROM_DENSITY).
     maximized_ui: int
     #: A popup: from the window top, border included, to the content top.
     popup_ui: int
     #: Where a popup opened without left/top is put, on both axes.
     popup_position: int
+    #: Chrome height above the content with the normal density, maximized or
+    #: restored (chrome_height_device).
+    ui_normal: int
+    #: Chrome height above the content with the compact density.
+    ui_compact: int
+    #: Where a restored main window sits, on both axes (RESTORED_POSITION).
+    restored_position: int
+
+
+def _frame(border: int, maximized_ui: int, popup_ui: int, scale: float) -> WindowFrame:
+    return WindowFrame(
+        border=border, maximized_ui=maximized_ui, popup_ui=popup_ui, popup_position=4,
+        ui_normal=chrome_height_device(scale, "normal"),
+        ui_compact=chrome_height_device(scale, "compact"),
+        restored_position=RESTORED_POSITION)
 
 
 #: The window frame per display scale, measured on retail Firefox 151 on
@@ -101,18 +203,40 @@ class WindowFrame(NamedTuple):
 #: (cpt_screen_given_class_tier.json). A scale outside it has no measured frame
 #: and is refused, never interpolated (engine rule 2).
 #:
+#: ui_normal / ui_compact are computed (chrome_height_device), not typed: 85 /
+#: 73, 106 / 91, 127 / 109, 170 / 146, the first seven measured live on
+#: Firefox 159.0 (the runs listed at MIN_INNER_CSS), 170 the model's value.
+#:
 #: ⛔ It replaces CHROME_W = 0 and CHROME_H = 85 with window_x = window_y = 0,
 #: from a 2026-08-09 measurement of a window that was not a maximized Windows
 #: Firefox (a 768-pixel-tall screen, no resize border): it described a window
 #: at the screen origin with no side border, which Windows never draws
 #: maximized, and every popup answered the same numbers.
 WINDOW_FRAME_BY_DPR: dict = {
-    1.0: WindowFrame(border=8, maximized_ui=85, popup_ui=72, popup_position=4),
-    1.25: WindowFrame(border=9, maximized_ui=107, popup_ui=90, popup_position=4),
-    1.5: WindowFrame(border=11, maximized_ui=127, popup_ui=106, popup_position=4),
-    2.0: WindowFrame(border=13, maximized_ui=169, popup_ui=139, popup_position=4),
+    1.0: _frame(8, 85, 72, 1.0),
+    1.25: _frame(9, 107, 90, 1.25),
+    1.5: _frame(11, 127, 106, 1.5),
+    2.0: _frame(13, 169, 139, 2.0),
 }
 
+#: Whether the maximized window's chrome height declared to the engine is the
+#: density rule's (Firefox 159) instead of the Firefox 151 `maximized_ui`.
+#: False until the switch is decided: the published engine reads
+#: `maximized_ui`, so nothing changes while this is False.
+MAXIMIZED_UI_FROM_DENSITY: bool = False
+
+
+def declared_maximized_ui(frame: WindowFrame, avail_height_css: float) -> int:
+    """The chrome height of a maximized window, in device px, to declare.
+
+    While MAXIMIZED_UI_FROM_DENSITY is False it is frame.maximized_ui. When
+    True it is the density rule's value for the work area's height: a
+    maximized window's chrome innerHeight is never larger than screen
+    availHeight, so availHeight is the reference."""
+    if not MAXIMIZED_UI_FROM_DENSITY:
+        return frame.maximized_ui
+    density = ui_density(density_reference_height(avail_height_css, avail_height_css, True))
+    return frame.ui_compact if density == "compact" else frame.ui_normal
 
 
 def ARCHIVE_NAME(platform_key: str, machine: str) -> str:

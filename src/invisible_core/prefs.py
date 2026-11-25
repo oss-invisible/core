@@ -27,7 +27,9 @@ import zoneinfo
 from pathlib import Path
 from typing import Any, Dict, NamedTuple, Optional
 
-from .constants import APPVERSION_OVERRIDE, OSCPU_OVERRIDE, PLATFORM_OVERRIDE, USER_AGENT
+from .constants import (
+    APPVERSION_OVERRIDE, OSCPU_OVERRIDE, PLATFORM_OVERRIDE, USER_AGENT, declared_maximized_ui,
+)
 from ._fpforge import Profile
 from ._fpforge.profile import branding_archive, voices_for
 from ._locale import SessionLocale
@@ -1278,9 +1280,11 @@ def _apply_screen(prefs: Dict[str, Any], profile: Profile) -> None:
     # retail 151, and a popup answers its own frame.
     frame = profile.screen.frame
     prefs["zoom.stealth.screen.frame_border"]     = frame.border
-    prefs["zoom.stealth.screen.maximized_ui"]     = frame.maximized_ui
+    prefs["zoom.stealth.screen.maximized_ui"]     = declared_maximized_ui(
+        frame, profile.screen.css_avail_height)
     prefs["zoom.stealth.screen.popup_ui"]         = frame.popup_ui
     prefs["zoom.stealth.screen.popup_position"]   = frame.popup_position
+    # The restored-window prefs (ui_normal, ui_compact, restored_position) come with the engine change that reads them.
     prefs["zoom.stealth.screen.avail_device_width"]  = profile.screen.avail_device_width
     prefs["zoom.stealth.screen.avail_device_height"] = profile.screen.avail_device_height
     # DEAD, and kept only so the next reader does not re-add them. Neither name
