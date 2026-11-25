@@ -15,7 +15,13 @@ than the floor is red. The judge never reads pytest's text ("N passed" is not ev
         type "pytest.rerun" (a failed attempt that was run again: even a listed node cannot excuse it); a skipped
         testcase (an xfail is one) that no row of the list matches for this os and python; a list that is not a json
         array; a row that is malformed, has no reason, has a bad os or python, or names a test file that does not exist
-        under the root; fewer tests that passed than --min-tests (a skipped test is not one of them).
+        under the root; the same test with different outcomes in different junit files (it passed in one and failed or
+        was skipped in the other); fewer tests that passed than --min-tests (a skipped test is not one of them).
+
+        The testcases of all the junit files are grouped by node id, and a test is one test however many files carry it:
+        the same junit passed twice, or two legs that write the same cases, count once. The floor counts the distinct
+        node ids of which every occurrence passed; a node id skipped in every occurrence is judged once against the
+        list, not once per file; a failure or a rerun is one problem line per node id.
 
     ci_skips.py report --junit <xml> [--junit <xml> ...] [--allowed <list>] [--os <os>] [--python <x.y>] [--min-tests N]
                        [--root <dir>]
@@ -80,7 +86,8 @@ def _file_of(classname: str, attr_file: str | None, root: Path) -> tuple[str, st
 
 
 class Case:
-    def __init__(self, element: ET.Element, root: Path):
+    def __init__(self, element: ET.Element, root: Path, source: str = ""):
+        self.source = source
         self.name = element.get("name", "")
         self.file, rest = _file_of(element.get("classname", ""), element.get("file"), root)
         self.nodeid = "::".join(x for x in (self.file, rest, self.name) if x)
@@ -90,6 +97,8 @@ class Case:
         self.skip_type = (skipped.get("type") or "") if skipped is not None else ""
         self.skip_message = ((skipped.get("message") or "") if skipped is not None else "").strip()
         self.passed = not self.failed and not self.skipped
+        self.rerun = self.skipped and self.skip_type == "pytest.rerun"
+        self.outcome = "failed" if self.failed else "skipped" if self.skipped else "passed"
 
 
 def read_junits(paths: list[str], root: Path) -> tuple[list[Case], list[str]]:
@@ -102,7 +111,7 @@ def read_junits(paths: list[str], root: Path) -> tuple[list[Case], list[str]]:
             problems.append(_line(str(path), "the junit is missing or not readable (%s)" % exc,
                                   "the pytest of the leg must write it with --junitxml and -o junit_family=xunit2, and the step must not be skipped"))
             continue
-        cases.extend(Case(e, root) for e in tree_root.iter("testcase"))
+        cases.extend(Case(e, root, str(path)) for e in tree_root.iter("testcase"))
     return cases, problems
 
 
@@ -163,8 +172,38 @@ def _matches(row: dict, case: Case, os_: str | None, python: str | None) -> bool
     return case.file == node or case.nodeid == node or case.nodeid.startswith(node + "::") or case.nodeid.startswith(node + "[")
 
 
+def group_by_nodeid(cases: list[Case]) -> dict[str, list[Case]]:
+    """The testcases of all the junit files by node id, in the order of first appearance."""
+    groups: dict[str, list[Case]] = {}
+    for c in cases:
+        groups.setdefault(c.nodeid, []).append(c)
+    return groups
+
+
 def unlisted_skips(cases: list[Case], rows: list[dict], os_: str | None, python: str | None) -> list[Case]:
-    return [c for c in cases if c.skipped and c.skip_type != "pytest.rerun" and not any(_matches(r, c, os_, python) for r in rows)]
+    """One case per node id that is skipped (not as a rerun) and that no row excuses, however many files carry it."""
+    found: list[Case] = []
+    for group in group_by_nodeid(cases).values():
+        skipped = next((c for c in group if c.skipped and not c.rerun), None)
+        if skipped is not None and not any(_matches(r, skipped, os_, python) for r in rows):
+            found.append(skipped)
+    return found
+
+
+def different_outcomes(group: list[Case]) -> list[tuple[Case, Case]]:
+    """The pairs (first, other) of one node id that have different outcomes in different junit files; a rerun attempt is
+    left out (it is its own problem, and it shares its file with the attempt that passed)."""
+    first: dict[str, list[Case]] = {}
+    for c in group:
+        if not c.rerun:
+            first.setdefault(c.outcome, []).append(c)
+    order = [o for o in ("passed", "failed", "skipped") if o in first]
+    pairs: list[tuple[Case, Case]] = []
+    for other in order[1:]:
+        pair = next(((a, b) for a in first[order[0]] for b in first[other] if a.source != b.source), None)
+        if pair is not None:
+            pairs.append(pair)
+    return pairs
 
 
 def judge(junits: list[str], allowed: str | None, os_: str | None, python: str | None, min_tests: int,
@@ -173,17 +212,23 @@ def judge(junits: list[str], allowed: str | None, os_: str | None, python: str |
     cases, problems = read_junits(junits, root)
     rows, row_problems = read_rows(allowed, root)
     problems += row_problems
-    for c in cases:
-        if c.failed:
-            problems.append(_line(c.nodeid, "the test failed or errored", "fix the test or the code; a red test is never rerun into a green"))
-        if c.skipped and c.skip_type == "pytest.rerun":
-            problems.append(_line(c.nodeid, "a failed attempt that was run again (type pytest.rerun): it passed only at a later attempt",
+    groups = group_by_nodeid(cases)
+    for nodeid, group in groups.items():
+        if any(c.failed for c in group):
+            problems.append(_line(nodeid, "the test failed or errored", "fix the test or the code; a red test is never rerun into a green"))
+        if any(c.rerun for c in group):
+            problems.append(_line(nodeid, "a failed attempt that was run again (type pytest.rerun): it passed only at a later attempt",
                                   "find why it fails the first time and fix that; the leg runs with -p no:rerunfailures"))
+        for a, b in different_outcomes(group):
+            problems.append(_line(nodeid, "it %s in %s and %s in %s (the same test, different outcomes in different junit files)"
+                                  % (a.outcome, a.source, b.outcome, b.source),
+                                  "the legs that write the same test must agree: find why it %s in one and %s in the other, and fix that"
+                                  % (a.outcome, b.outcome)))
     for c in unlisted_skips(cases, rows, os_, python):
         why = c.skip_message or "no message"
         problems.append(_line(c.nodeid, "skipped (%s) and no row of the list excuses it on %s python %s" % (why, os_, python),
                               "make the test run; only a test that cannot run on this system gets a row in ci/allowed-skips.json, with its reason"))
-    ran = sum(1 for c in cases if c.passed)
+    ran = sum(1 for group in groups.values() if all(c.passed for c in group))
     if ran < min_tests:
         problems.append(_line("%d junit file(s)" % len(junits), "%d tests passed, the floor is %d" % (ran, min_tests),
                               "a test was deselected, skipped or never collected: restore it, or raise the floor together with the tests"))

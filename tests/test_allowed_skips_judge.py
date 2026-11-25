@@ -1,7 +1,8 @@
 """scripts/ci_skips.py is the judge of a pytest leg (rule ci-13: nothing counts as passed that did not pass): it must be red on
 every failure, error, unlisted skip (an xfail is one), testcase skipped with type "pytest.rerun" (even a listed one), invalid list or
 row (not an array, malformed, no reason, bad os or python, test file gone) and shortfall against the floor of tests that passed (a
-skipped test is not one), and only then; its `report` mode only prints and never fails. The junit files and the test files here are
+skipped test is not one), a test with different outcomes in different junit files, and only then; the testcases of the junit files are
+grouped by node id, so the same case in two files counts once toward the floor and a skip of it is judged once; its `report` mode only prints and never fails. The junit files and the test files here are
 written by hand in tmp_path, which is passed as --root (the folder that row files and classnames resolve against); the last test
 reads the real ci/allowed-skips.json of the repository."""
 import importlib.util
@@ -222,6 +223,91 @@ def test_the_floor_counts_every_junit_file(tmp_path, capsys):
     argv[argv.index("--min-tests") + 1] = "4"
     assert skips.main(argv) == 1
     capsys.readouterr()
+
+
+def _run_files(tmp_path, capsys, files, rows=(), *, floor, os="linux", python="3.11", mode="judge"):
+    """Run the command on several junit files, each one a list of cases; returns (exit code, output)."""
+    argv = [mode, "--allowed", _list(tmp_path / "allowed.json", list(rows)), "--os", os, "--python", python,
+            "--min-tests", str(floor), "--root", str(tmp_path)]
+    for i, cases in enumerate(files):
+        argv += ["--junit", _junit(tmp_path / ("leg%d.xml" % i), cases)]
+    code = skips.main(argv)
+    return code, capsys.readouterr().out
+
+
+def test_the_same_junit_given_twice_counts_each_test_once(tmp_path, capsys):
+    one = _junit(tmp_path / "one.xml", GREEN)
+    argv = ["judge", "--junit", one, "--junit", one, "--allowed", _list(tmp_path / "allowed.json", []), "--os", "linux",
+            "--python", "3.11", "--min-tests", "3", "--root", str(tmp_path)]
+    assert skips.main(argv) == 0
+    assert capsys.readouterr().out.startswith("OK ")
+    argv[argv.index("--min-tests") + 1] = "6"
+    assert skips.main(argv) == 1
+    out = capsys.readouterr().out
+    assert "3 tests passed, the floor is 6" in out
+    _every_line_has_the_form(out)
+    # two different files that carry the same cases are the same thing
+    assert _run_files(tmp_path, capsys, [GREEN, GREEN], floor=3)[0] == 0
+    assert _run_files(tmp_path, capsys, [GREEN, GREEN], floor=6)[0] == 1
+
+
+def test_two_junits_that_share_some_nodeids_count_the_union(tmp_path, capsys):
+    first, second = GREEN[:2], [GREEN[1], GREEN[2], _case(FILE_B, "test_new")]
+    code, out = _run_files(tmp_path, capsys, [first, second], floor=4)
+    assert code == 0 and out.startswith("OK "), out
+    code, out = _run_files(tmp_path, capsys, [first, second], floor=5)
+    assert code == 1 and "4 tests passed, the floor is 5" in out
+    _every_line_has_the_form(out)
+
+
+def test_a_failure_in_a_duplicated_testcase_is_one_failure_line(tmp_path, capsys):
+    bad = [*GREEN, _case(FILE_A, "test_bad", "failure")]
+    code, out = _run_files(tmp_path, capsys, [bad, bad], floor=3)
+    assert code == 1
+    assert out.count("tests/test_a.py::test_bad: the test failed or errored") == 1
+    _every_line_has_the_form(out)
+
+
+def test_a_test_that_passed_in_one_file_and_failed_in_the_other_is_red_with_its_own_line(tmp_path, capsys):
+    passed, failed = [*GREEN, _case(FILE_B, "test_d")], [*GREEN, _case(FILE_B, "test_d", "failure")]
+    code, out = _run_files(tmp_path, capsys, [passed, failed], floor=1)
+    assert code == 1
+    lines = out.splitlines()
+    different = [x for x in lines if "different outcomes in different junit files" in x]
+    assert len(different) == 1
+    assert different[0].startswith("FAIL tests/test_b.py::test_d: it passed in ") and " and failed in " in different[0]
+    assert "leg0.xml" in different[0] and "leg1.xml" in different[0]
+    assert any(x.startswith("FAIL tests/test_b.py::test_d: the test failed or errored") for x in lines)
+    _every_line_has_the_form(out)
+    # the order of the files does not matter
+    code, out = _run_files(tmp_path, capsys, [failed, passed], floor=1)
+    assert code == 1 and "it passed in " in out and "leg1.xml and failed in" in out.replace(str(tmp_path), "")
+    # the test that failed in one file does not count for the floor, whatever the floor is
+    assert "3 tests passed, the floor is 5" in _run_files(tmp_path, capsys, [passed, failed], floor=5)[1]
+
+
+def test_a_test_that_passed_in_one_file_and_was_skipped_in_the_other_is_red(tmp_path, capsys):
+    passed, skipped = [*GREEN, _case(FILE_B, "test_d")], [*GREEN, _case(FILE_B, "test_d", "skipped")]
+    for rows in ([], [_row(FILE_B)]):  # a listed skip does not make the two files agree
+        code, out = _run_files(tmp_path, capsys, [passed, skipped], rows, floor=3)
+        assert code == 1
+        different = [x for x in out.splitlines() if "different outcomes in different junit files" in x]
+        assert len(different) == 1 and ": it passed in " in different[0] and " and skipped in " in different[0]
+        _every_line_has_the_form(out)
+    # the test that was skipped in one file does not count for the floor
+    assert "3 tests passed, the floor is 4" in _run_files(tmp_path, capsys, [passed, skipped], [_row(FILE_B)], floor=4)[1]
+
+
+def test_a_test_skipped_in_both_files_needs_one_row_and_is_reported_once(tmp_path, capsys):
+    both = [*GREEN, _case(FILE_B, "test_w", "skipped", message="no display")]
+    code, out = _run_files(tmp_path, capsys, [both, both], floor=3)
+    assert code == 1
+    assert out.count("tests/test_b.py::test_w: skipped (no display)") == 1 and len(out.splitlines()) == 1
+    assert "different outcomes" not in out
+    code, out = _run_files(tmp_path, capsys, [both, both], [_row(FILE_B + "::test_w")], floor=3)
+    assert code == 0 and out.startswith("OK "), out
+    code, out = _run_files(tmp_path, capsys, [both, both], floor=3, mode="report")
+    assert code == 0 and out.splitlines() == ["SKIP tests/test_b.py::test_w: no display"]
 
 
 def test_a_failure_is_red(tmp_path, capsys):
