@@ -121,11 +121,17 @@ class ScreenProfile:
         return self.height - int(self.taskbar_px * self.dpr + 0.5)
 
     @property
+    def css_avail_height(self) -> int:
+        """`screen.availHeight` as a page reads it."""
+        return self._css(self.avail_device_height)
+
+    @property
     def viewport(self) -> tuple:
         """The content area of the maximized window, in CSS pixels: the work
         area's full width, and its height minus the UI above the content."""
         return (self.css_width,
-                self._css(self.avail_device_height - self.frame.maximized_ui))
+                self._css(self.avail_device_height
+                          - declared_maximized_ui(self.frame, self.css_avail_height)))
 
 
 @dataclass(frozen=True)
@@ -645,7 +651,9 @@ SCREEN_REFRESH_HZ = 60
 #: The Windows taskbar, re-exported so a pin can reach it by the same name
 #: as every other declared constant. The value lives in constants.py, which
 #: the sampler imports too - one number, one home.
-from ..constants import TASKBAR_PX, WINDOW_FRAME_BY_DPR, WindowFrame  # noqa: E402,F401
+from ..constants import (  # noqa: E402,F401
+    TASKBAR_PX, WINDOW_FRAME_BY_DPR, WindowFrame, declared_maximized_ui,
+)
 
 #: The five Windows English (United States) voices, in the order the binary
 #: parses them (`name|lang|default|local`). See HardwareProfile.voices for why

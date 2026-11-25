@@ -1,10 +1,11 @@
 """The judge of the window-geometry capture is red for what the rule names and green for what it does not.
 
 scripts/retail/window_geometry/judge.py reads the raw files of every scale. Held here, on small synthetic runs built from the
-table of the package itself:
-  * launch a equal to launch b and a maximized step equal to WINDOW_FRAME_BY_DPR at every scale: green;
-  * the border one pixel off, screenX off, the content top off: red at the first resolution of scale 1 only, naming what
-    differs; at any other scale or size the difference is printed as window-size dependent and is not red;
+what the core declares (frame_table.py reads the checked-out constants.py with the core's own functions):
+  * launch a equal to launch b and a maximized step equal to WINDOW_FRAME_BY_DPR and declared_maximized_ui (the density rule
+    at the measured availHeight) at every scale: green;
+  * the border one pixel off, screenX off, the content top off, at any scale and size reached live: red, naming what differs;
+    the bar of a maximized window is judged at the measured availHeight (1.5 at 672 CSS: 109 green, 127 red);
   * launch a different from launch b on one number of any of the six steps (maximized, restored, juggler, juggler_rdm, juggler2, juggler_back): red,
     with the number printed; the grid, the minimum and the grid check are not in that comparison;
   * at the scales of the grid, launch a must have its grid and minimum, launch b its grid check, and every point of the check
@@ -69,10 +70,13 @@ def hostgate_step(false_posted=True, true_posted=True):
 GRID = [(w, h) for w in (500, 800, 1280, 1366, 1536, 1900) for h in (450, 600, 672, 768, 816, 1000)]
 
 
-def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=True, table=TABLE, grid=None, dppx=None):
-    """A run whose maximized step is the core table's row. `grid` None: what the launch has in the plan at the scales of the grid."""
-    row = table[dpr]
-    border, ui = row["border"], row["maximized_ui"]
+def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=True, table=TABLE, grid=None, dppx=None,
+             avail=None, ui=None):
+    """A run whose maximized step is what the core declares (the bar from the density rule at availHeight `avail` CSS, default the work area). `grid` None: what the launch has in the plan at the scales of the grid."""
+    frame = table[dpr]
+    border = frame.border
+    avail = (WORK[3] - WORK[1]) / dpr if avail is None else avail
+    ui = frame_table.declared_maximized_ui(frame, avail) if ui is None else ui
     window = [-border, -border, WORK[2] + border, WORK[3] + border]
 
     def step(rect, top_ui):
@@ -85,16 +89,16 @@ def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=T
             "content": {"innerWidth": 1900, "innerHeight": 900, "outerWidth": 1936, "outerHeight": 1049,
                         "screenX": judge.half_up(-border / dpr), "screenY": judge.half_up(-border / dpr),
                         "mozInnerScreenX": 0.0, "mozInnerScreenY": ui / dpr,
-                        "screen": {"width": 1536, "height": 864},
+                        "screen": {"width": 1536, "height": 864, "availHeight": avail},
                         "events": {"count": 3, "dx": 7, "dy": 91}, "probe": probe(dpr)},
             "input": [{"asked": [1, 2], "cursor": [1, 2]}], "settled": True}
 
     restored = [100, 120, 100 + 390 + 2 * border, 120 + 844 + 100]
     steps = {"maximized": step(window, ui)}
     if launch != "m":
-        steps.update({"restored": step(restored, row["popup_ui"]), "juggler": step(restored, row["popup_ui"]),
-                      "juggler_rdm": step(restored, row["popup_ui"]), "juggler2": step(restored, row["popup_ui"]),
-                      "juggler_back": dict(step(restored, row["popup_ui"]), window_state={"windowState": 3, "sizemode": "normal", "maximized": False})})
+        steps.update({"restored": step(restored, frame.popup_ui), "juggler": step(restored, frame.popup_ui),
+                      "juggler_rdm": step(restored, frame.popup_ui), "juggler2": step(restored, frame.popup_ui),
+                      "juggler_back": dict(step(restored, frame.popup_ui), window_state={"windowState": 3, "sizemode": "normal", "maximized": False})})
     if grid is None:
         grid = mode == "display" and reached and float(dpr) in plan.GRID_DPRS and launch in ("a", "b")
     if grid and launch == "a":
@@ -162,35 +166,56 @@ def test_a_border_one_pixel_off_at_the_first_resolution_of_scale_1_is_red():
 
 
 @pytest.mark.parametrize("dpr", [d for d in sorted(TABLE) if d != 1.0])
-def test_a_border_one_pixel_off_at_any_other_scale_is_printed_as_window_size_dependent_and_is_not_red(dpr):
+def test_a_border_one_pixel_off_at_any_other_scale_is_red(dpr):
     runs = two_launches(dpr)
     widen_border(runs)
     result = evaluate(runs)
-    assert not result["red"], result["problems"]
-    assert any("DIFFERS (window-size dependent, see grid)" in line for line in result["lines"])
+    assert result["red"] and any("maximized border" in p for p in result["problems"])
+    assert not any("window-size dependent" in line for line in result["lines"])
 
 
-def test_scale_1_at_another_size_is_not_the_strict_point():
+def test_scale_1_at_another_size_is_red_too():
     runs = [make_run(1.0, launch, resolution=(1280, 720)) for launch in "ab"]
+    assert not evaluate(runs)["red"]
     widen_border(runs)
     result = evaluate(runs)
-    assert not result["red"], result["problems"]
-    assert any("DIFFERS (window-size dependent" in line for line in result["lines"])
-    assert evaluate(runs, strict_point=(1.0, (1280, 720)))["red"], "the strict point is an argument, the request's first resolution"
+    assert result["red"] and any("maximized border" in p for p in result["problems"])
 
 
-def test_a_screen_x_one_off_is_red_at_the_strict_point():
+def test_a_screen_x_one_off_is_red():
     runs = two_launches(1.0)
     for run in runs:
         run["steps"]["maximized"]["content"]["screenX"] += 1
     assert any("maximized screenX" in p for p in evaluate(runs)["problems"])
 
 
-def test_a_content_top_one_device_pixel_off_is_red_at_the_strict_point():
+def test_a_content_top_one_device_pixel_off_is_red():
     runs = two_launches(1.0)
     for run in runs:
         run["steps"]["maximized"]["content"]["mozInnerScreenY"] += 1
     assert any("maximized maximized_ui" in p for p in evaluate(runs)["problems"])
+
+
+def maximized_at(avail, ui, dpr=1.5):
+    runs = [make_run(dpr, launch, avail=avail, ui=ui) for launch in "ab"]
+    return evaluate(runs)
+
+
+def test_the_bar_of_a_maximized_window_is_judged_at_the_measured_avail_height_by_the_density_rule():
+    """1.5, availHeight 672 CSS: below 720, compact, 109 device px; 127 is the normal density's bar."""
+    green = maximized_at(672, 109)
+    assert green["problems"] == [] and not green["red"]
+    red = maximized_at(672, 127)
+    assert red["red"]
+    assert any("maximized maximized_ui is 127, the core declares 109" in p for p in red["problems"])
+
+
+@pytest.mark.parametrize("dpr", sorted(TABLE))
+def test_the_bar_follows_the_density_rule_at_both_densities(dpr):
+    frame = TABLE[dpr]
+    for avail, bar in ((600, frame.ui_compact), (1000, frame.ui_normal)):
+        assert not maximized_at(avail, bar, dpr)["red"]
+        assert maximized_at(avail, frame.ui_normal if bar == frame.ui_compact else frame.ui_compact, dpr)["red"]
 
 
 def test_launch_a_and_launch_b_that_differ_by_one_number_are_red_and_the_number_is_printed():
@@ -448,16 +473,14 @@ def test_a_scale_reached_live_needs_no_q_and_its_p_is_never_compared():
     assert not evaluate(runs)["red"]
 
 
-def test_launch_m_is_checked_against_the_table_only_at_the_strict_point_and_is_printed_everywhere():
+def test_launch_m_is_checked_against_the_core_at_every_size_and_is_printed():
     wide = make_run(1.25, "m", resolution=(1280, 720))
-    wide["steps"]["maximized"]["native"]["window_rect"][0] -= 1
     result = evaluate(two_launches(1.25) + [wide])
     assert not result["red"], result["problems"]
     assert any("launch m (display)" in line for line in result["lines"])
-    assert any("DIFFERS (window-size dependent, see grid)" in line for line in result["lines"])
-    at_strict = make_run(1.0, "m")
-    at_strict["steps"]["maximized"]["native"]["window_rect"][0] -= 1
-    assert evaluate(two_launches(1.0) + [at_strict])["red"]
+    wide["steps"]["maximized"]["native"]["window_rect"][0] -= 1
+    result = evaluate(two_launches(1.25) + [wide])
+    assert result["red"] and any("launch m (display)" in p and "maximized border" in p for p in result["problems"])
 
 
 def test_the_devpixelsperpx_launches_m_are_labelled_with_the_value_and_need_no_pair_and_no_table():

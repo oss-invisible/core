@@ -44,7 +44,8 @@ MARIONETTE_EXCEPTION = (
     "which Marionette requires for it; no other MOZ_* variable): the restored window is produced by exactly the "
     "line Juggler runs (TargetRegistry.js setViewportSize: window.resizeBy). Proof that Marionette does not change "
     "the frame: at every scale reached live, the maximized geometry measured here must equal invisible_core "
-    "WINDOW_FRAME_BY_DPR (measured from plain launches) exactly, or the scale is not valid (judge.py).")
+    "WINDOW_FRAME_BY_DPR and declared_maximized_ui (measured from plain launches) exactly, or the scale is not valid "
+    "(judge.py).")
 COMMAND_IN_WORDS = (
     "Per scale: set each requested resolution, then the Windows display scale (DisplayConfig -3/-4), read the "
     "effective DPI back; launch retail Firefox -no-remote -profile <fresh dir> -marionette <page>; maximize the "
@@ -53,8 +54,8 @@ COMMAND_IN_WORDS = (
     "the collection page host-gate-2.html without and with inRDMPane. Every "
     "resolution Windows offers: launch m, maximized only. Last, 100% scale and layout.css.devPixelsPerPx = the "
     "scale (launches p and q), and in the job of scale 1 devPixelsPerPx 0.75 and 0.5 (launch m).")
-PROOF_RULE = ("judge.py: launch a equals launch b (p equals q); at the first resolution of scale 1 the maximized step "
-              "equals WINDOW_FRAME_BY_DPR; the grid check of launch b equals the rows of launch a.")
+PROOF_RULE = ("judge.py: launch a equals launch b (p equals q); at every scale reached live the maximized step "
+              "equals WINDOW_FRAME_BY_DPR and declared_maximized_ui; the grid check of launch b equals the rows of launch a.")
 
 
 def sha256(path: Path) -> str:

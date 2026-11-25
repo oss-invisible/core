@@ -70,15 +70,16 @@ def test_the_screen_a_page_reads_is_the_panel_divided_by_the_scale(panel, dpr, c
 
 @pytest.mark.unit
 @pytest.mark.parametrize("dpr,frame,viewport,avail_device", [
-    # The 2048x1280 panel measured on retail Firefox 151, Windows 11,
-    # 2026-10-08. Device pixels: border, UI above a maximized window's content,
-    # popup UI, default popup position. The viewport is the work area (panel
-    # minus a 48 CSS taskbar) minus the UI, divided by the scale: 890 at 125%
-    # is (1220 - 107) / 1.25, the innerHeight retail reported.
+    # A 2048x1280 panel. Device pixels: border, UI above a maximized window's
+    # content (the density rule's value for the work area: normal at 100%,
+    # 125% and 150%, compact at 200% where availHeight is 592 CSS), popup UI,
+    # default popup position. The viewport is the work area (panel minus a 48
+    # CSS taskbar) minus the UI, divided by the scale: 891 at 125% is
+    # (1220 - 106) / 1.25.
     (1.0, (8, 85, 72, 4), (2048, 1147), (2048, 1232)),
-    (1.25, (9, 107, 90, 4), (1638, 890), (2048, 1220)),
+    (1.25, (9, 106, 90, 4), (1638, 891), (2048, 1220)),
     (1.5, (11, 127, 106, 4), (1365, 721), (2048, 1208)),
-    (2.0, (13, 169, 139, 4), (1024, 508), (2048, 1184)),
+    (2.0, (13, 146, 139, 4), (1024, 519), (2048, 1184)),
 ])
 def test_the_window_frame_is_declared_in_device_pixels_per_scale(dpr, frame, viewport, avail_device):
     """Known-bad until 38.x: one CSS window for every scale and every window -
