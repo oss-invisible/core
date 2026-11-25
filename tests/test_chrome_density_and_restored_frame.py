@@ -1,9 +1,6 @@
 """The chrome height above the page on Firefox 159 is a function of the UI
-density and the scale; the maximized height declared to the engine stays the
-Firefox 151 one until MAXIMIZED_UI_FROM_DENSITY is switched on."""
-import json
-from pathlib import Path
-
+density and the scale, and the maximized height declared to the engine is the
+density rule's value for the persona's work area."""
 import pytest
 
 from invisible_core import constants
@@ -19,9 +16,6 @@ from invisible_core.constants import (
 from invisible_core.prefs import translate_profile_to_prefs
 
 _RUNS = "GitHub runs oss-invisible/core 45657528859, 45672953042, 45679625406"
-
-_SCREEN_TABLE = Path(constants.__file__).parent / "_fpforge" / "data" / "cpt_screen_given_class_tier.json"
-
 
 @pytest.mark.unit
 @pytest.mark.parametrize("scale,density,expected", [
@@ -80,58 +74,62 @@ def test_the_smallest_main_window():
     assert MIN_INNER_CSS == (500, 120)
 
 
-def _persona_screens():
-    table = json.loads(_SCREEN_TABLE.read_text(encoding="utf-8"))["table"]
-    seen = set()
-    for rows in table.values():
-        for row in rows:
-            v = row["value"]
-            seen.add((v["w"], v["h"], v["dpr"]))
-    return sorted(seen)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("w,h,dpr", _persona_screens())
-def test_the_declared_height_is_the_published_one_while_the_gate_is_off(w, h, dpr):
-    assert constants.MAXIMIZED_UI_FROM_DENSITY is False
+def _declared(w, h, dpr):
     p = generate_profile(seed=11, pin={"screen.width": w, "screen.height": h, "screen.dpr": dpr})
-    screen = p.screen
-    assert declared_maximized_ui(screen.frame, screen.css_avail_height) == screen.frame.maximized_ui
-    prefs = translate_profile_to_prefs(p, timezone="America/New_York")
-    assert prefs["zoom.stealth.screen.maximized_ui"] == screen.frame.maximized_ui
+    return p, translate_profile_to_prefs(p, timezone="America/New_York")
 
 
 @pytest.mark.unit
-def test_the_prefs_of_many_seeds_carry_the_published_maximized_height():
-    for seed in range(60):
-        p = generate_profile(seed=seed)
-        prefs = translate_profile_to_prefs(p, timezone="America/New_York")
-        assert prefs["zoom.stealth.screen.maximized_ui"] == p.screen.frame.maximized_ui
-        for name in ("ui_normal", "ui_compact", "restored_position"):
-            assert "zoom.stealth.screen." + name not in prefs
+@pytest.mark.parametrize("w,h,dpr,avail_css,maximized_ui,old,viewport_h", [
+    # availHeight 672 CSS is below 720: compact. The Firefox 151 value was 127.
+    (1920, 1080, 1.5, 672, 109, 127, 599),
+    # availHeight 816 CSS: normal. The Firefox 151 value was 107.
+    (1920, 1080, 1.25, 816, 106, 107, 816 - 85),
+    # availHeight 1032 CSS: normal. The Firefox 151 value was 169.
+    (3840, 2160, 2.0, 1032, 170, 169, 1032 - 85),
+])
+def test_the_maximized_height_is_the_density_rules_for_the_work_area(
+        w, h, dpr, avail_css, maximized_ui, old, viewport_h):
+    p, prefs = _declared(w, h, dpr)
+    assert p.screen.css_avail_height == avail_css
+    got = prefs["zoom.stealth.screen.maximized_ui"]
+    assert got == maximized_ui, "%sx%s at %s: maximized_ui %d, the Firefox 151 value was %d" % (
+        w, h, dpr, got, old)
+    assert got == declared_maximized_ui(p.screen.frame, avail_css)
+    # The viewport is the work area minus that chrome, in CSS px.
+    vh = p.screen.viewport[1]
+    assert vh == viewport_h, "%sx%s at %s: viewport height %d (with the old %d it was %d)" % (
+        w, h, dpr, vh, old, p.screen._css(p.screen.avail_device_height - old))
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("dpr,avail_css,expected", [
-    (1.0, 1032, 85),
-    (1.25, 816, 106),
-    (1.5, 1032, 127),
-    (2.0, 1032, 170),
-    (2.0, 516, 146),
-    (1.5, 672, 109),     # a 1920x1080 panel at 150%: availHeight 672 CSS
-    (1.0, 719, 73),
+    (1.0, 1032, 85), (1.25, 816, 106), (1.5, 1032, 127), (2.0, 1032, 170),
+    (1.5, 672, 109), (1.0, 719, 73), (1.0, 720, 85), (2.0, 516, 146),
 ])
-def test_with_the_gate_on_the_declared_height_is_the_density_rule(monkeypatch, dpr, avail_css, expected):
-    monkeypatch.setattr(constants, "MAXIMIZED_UI_FROM_DENSITY", True)
+def test_declared_maximized_ui_is_the_density_rule(dpr, avail_css, expected):
     assert declared_maximized_ui(WINDOW_FRAME_BY_DPR[dpr], avail_css) == expected
 
 
 @pytest.mark.unit
-def test_with_the_gate_on_a_generated_profile_declares_the_density_height(monkeypatch):
-    monkeypatch.setattr(constants, "MAXIMIZED_UI_FROM_DENSITY", True)
-    p = generate_profile(seed=7, pin={"screen.width": 2048, "screen.height": 1280, "screen.dpr": 1.25})
-    prefs = translate_profile_to_prefs(p, timezone="America/New_York")
-    assert prefs["zoom.stealth.screen.maximized_ui"] == 106
-    # The viewport follows the declared height: (1220 - 106) / 1.25.
-    from invisible_core import context_geometry
-    assert context_geometry(p)["viewport"]["height"] == 891
+@pytest.mark.parametrize("w,h,dpr", [(1920, 1080, 1.5), (1920, 1080, 1.25), (3840, 2160, 2.0),
+                                     (1920, 1080, 1.0)])
+def test_the_new_chrome_prefs_are_declared_as_integers(w, h, dpr):
+    p, prefs = _declared(w, h, dpr)
+    frame = WINDOW_FRAME_BY_DPR[dpr]
+    expected = {
+        "ui_normal": frame.ui_normal,
+        "ui_compact": frame.ui_compact,
+        "compact_below_css": 720,
+        "restored_position": 4,
+        "min_inner_width_css": 500,
+        "min_inner_height_css": 120,
+    }
+    for name, value in expected.items():
+        got = prefs["zoom.stealth.screen." + name]
+        assert got == value and type(got) is int, (name, got)
+
+
+@pytest.mark.unit
+def test_the_compact_bound_is_an_exact_integer():
+    assert constants.AUTO_COMPACT_BELOW_CSS_INT == constants.AUTO_COMPACT_BELOW_CSS == 720

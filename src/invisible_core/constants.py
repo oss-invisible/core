@@ -107,6 +107,10 @@ AUTO_COMPACT_THRESHOLD: float = 0.05
 #: The window is compact when 36 / H > 0.05, i.e. H < 36 / 0.05 = 720 CSS px;
 #: H = 720 is normal (36 / 720 is not greater than 0.05).
 AUTO_COMPACT_BELOW_CSS: float = AUTO_COMPACT_REFERENCE_TABSTRIP_CSS / AUTO_COMPACT_THRESHOLD
+#: The same bound as the integer the engine reads; it must be exact, because the
+#: pref is an integer.
+AUTO_COMPACT_BELOW_CSS_INT: int = int(AUTO_COMPACT_BELOW_CSS)
+assert AUTO_COMPACT_BELOW_CSS_INT == AUTO_COMPACT_BELOW_CSS, "the compact bound is not an integer"
 
 #: Firefox's smallest main window, chrome inner size in CSS px (width, height).
 #: Measured live on retail 159.0 at scales 1 and 1.25, 500 wide at all four
@@ -163,19 +167,14 @@ class WindowFrame(NamedTuple):
     #: window and on top of a popup. A maximized window sits this far OFF the
     #: screen on three sides. The same for a restored window.
     border: int
-    #: A maximized window: from the screen top to the content top (tab strip
-    #: plus toolbar, seen from the screen). This is the Firefox 151
-    #: measurement, which is what the published engine reads. Firefox 159
-    #: answers the density rule instead (ui_normal / ui_compact, see
-    #: declared_maximized_ui); switching is pending a decision
-    #: (MAXIMIZED_UI_FROM_DENSITY).
-    maximized_ui: int
     #: A popup: from the window top, border included, to the content top.
     popup_ui: int
     #: Where a popup opened without left/top is put, on both axes.
     popup_position: int
     #: Chrome height above the content with the normal density, maximized or
-    #: restored (chrome_height_device).
+    #: restored (chrome_height_device). A maximized window's chrome height,
+    #: from the screen top to the content top, is ui_normal or ui_compact
+    #: (declared_maximized_ui).
     ui_normal: int
     #: Chrome height above the content with the compact density.
     ui_compact: int
@@ -183,21 +182,22 @@ class WindowFrame(NamedTuple):
     restored_position: int
 
 
-def _frame(border: int, maximized_ui: int, popup_ui: int, scale: float) -> WindowFrame:
+def _frame(border: int, popup_ui: int, scale: float) -> WindowFrame:
     return WindowFrame(
-        border=border, maximized_ui=maximized_ui, popup_ui=popup_ui, popup_position=4,
+        border=border, popup_ui=popup_ui, popup_position=4,
         ui_normal=chrome_height_device(scale, "normal"),
         ui_compact=chrome_height_device(scale, "compact"),
         restored_position=RESTORED_POSITION)
 
 
-#: The window frame per display scale, measured on retail Firefox 151 on
-#: Windows 11 on 2026-10-08, lending the display scale (the workbench's
-#: scripts/window_geometry/scales.py). Measured, not chosen: a page reads
-#: screenX, outerWidth - availWidth and mozInnerScreenY in one line each, and
-#: retail answers -8, 16 and 85 at 100%, -7, 15 and 85.6 at 125%. In device
-#: pixels the four rows are one rule; every CSS value is the device value
-#: divided by the scale with Gecko's rounding, done by the engine.
+#: The window frame per display scale. The resize border and the popup frame
+#: were measured on retail Firefox on Windows 11, lending the display scale (the
+#: workbench's scripts/window_geometry/scales.py): a page reads screenX,
+#: outerWidth - availWidth and mozInnerScreenY in one line each. The border is
+#: the same for a restored and a maximized window, confirmed live at all four
+#: scales (8/9/11/13). In device pixels the four rows are one rule; every CSS
+#: value is the device value divided by the scale with Gecko's rounding, done
+#: by the engine.
 #:
 #: The keys are the DOMAIN: the four scales the screen table gives personas
 #: (cpt_screen_given_class_tier.json). A scale outside it has no measured frame
@@ -213,28 +213,17 @@ def _frame(border: int, maximized_ui: int, popup_ui: int, scale: float) -> Windo
 #: at the screen origin with no side border, which Windows never draws
 #: maximized, and every popup answered the same numbers.
 WINDOW_FRAME_BY_DPR: dict = {
-    1.0: _frame(8, 85, 72, 1.0),
-    1.25: _frame(9, 107, 90, 1.25),
-    1.5: _frame(11, 127, 106, 1.5),
-    2.0: _frame(13, 169, 139, 2.0),
+    1.0: _frame(8, 72, 1.0),
+    1.25: _frame(9, 90, 1.25),
+    1.5: _frame(11, 106, 1.5),
+    2.0: _frame(13, 139, 2.0),
 }
 
-#: Whether the maximized window's chrome height declared to the engine is the
-#: density rule's (Firefox 159) instead of the Firefox 151 `maximized_ui`.
-#: False until the switch is decided: the published engine reads
-#: `maximized_ui`, so nothing changes while this is False.
-MAXIMIZED_UI_FROM_DENSITY: bool = False
-
-
 def declared_maximized_ui(frame: WindowFrame, avail_height_css: float) -> int:
-    """The chrome height of a maximized window, in device px, to declare.
-
-    While MAXIMIZED_UI_FROM_DENSITY is False it is frame.maximized_ui. When
-    True it is the density rule's value for the work area's height: a
-    maximized window's chrome innerHeight is never larger than screen
-    availHeight, so availHeight is the reference."""
-    if not MAXIMIZED_UI_FROM_DENSITY:
-        return frame.maximized_ui
+    """The chrome height of a maximized window, in device px, to declare: the
+    density rule's value for the work area's height. A maximized window's
+    chrome innerHeight is never larger than screen availHeight, so availHeight
+    is the reference."""
     density = ui_density(density_reference_height(avail_height_css, avail_height_css, True))
     return frame.ui_compact if density == "compact" else frame.ui_normal
 

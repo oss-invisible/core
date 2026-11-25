@@ -28,7 +28,8 @@ from pathlib import Path
 from typing import Any, Dict, NamedTuple, Optional
 
 from .constants import (
-    APPVERSION_OVERRIDE, OSCPU_OVERRIDE, PLATFORM_OVERRIDE, USER_AGENT, declared_maximized_ui,
+    APPVERSION_OVERRIDE, AUTO_COMPACT_BELOW_CSS_INT, MIN_INNER_CSS, OSCPU_OVERRIDE,
+    PLATFORM_OVERRIDE, USER_AGENT, declared_maximized_ui,
 )
 from ._fpforge import Profile
 from ._fpforge.profile import branding_archive, voices_for
@@ -1276,15 +1277,25 @@ def _apply_screen(prefs: Dict[str, Any], profile: Profile) -> None:
     prefs["zoom.stealth.screen.taskbar_px"]   = profile.screen.taskbar_px
     # The window frame and the work area, in DEVICE pixels (firefox-38): the
     # engine divides by the window's own scale with Gecko's rounding, so a
-    # maximized window reads screenX -7 and mozInnerScreenY 85.6 at 125% like
-    # retail 151, and a popup answers its own frame.
+    # maximized window reads screenX -7 at 125% and a popup answers its own
+    # frame.
     frame = profile.screen.frame
     prefs["zoom.stealth.screen.frame_border"]     = frame.border
+    # The maximized window's chrome height: the density rule's value (ui_normal or ui_compact).
     prefs["zoom.stealth.screen.maximized_ui"]     = declared_maximized_ui(
         frame, profile.screen.css_avail_height)
     prefs["zoom.stealth.screen.popup_ui"]         = frame.popup_ui
     prefs["zoom.stealth.screen.popup_position"]   = frame.popup_position
-    # The restored-window prefs (ui_normal, ui_compact, restored_position) come with the engine change that reads them.
+    # Chrome height above the content per density, device px: the engine picks one by the density rule.
+    prefs["zoom.stealth.screen.ui_normal"]        = frame.ui_normal
+    prefs["zoom.stealth.screen.ui_compact"]       = frame.ui_compact
+    # The density rule: compact while the reference height is below this many CSS px.
+    prefs["zoom.stealth.screen.compact_below_css"] = AUTO_COMPACT_BELOW_CSS_INT
+    # Where a restored main window sits, device px on both axes.
+    prefs["zoom.stealth.screen.restored_position"] = frame.restored_position
+    # Firefox's smallest main window, chrome inner size in CSS px.
+    prefs["zoom.stealth.screen.min_inner_width_css"]  = MIN_INNER_CSS[0]
+    prefs["zoom.stealth.screen.min_inner_height_css"] = MIN_INNER_CSS[1]
     prefs["zoom.stealth.screen.avail_device_width"]  = profile.screen.avail_device_width
     prefs["zoom.stealth.screen.avail_device_height"] = profile.screen.avail_device_height
     # DEAD, and kept only so the next reader does not re-add them. Neither name
