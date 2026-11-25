@@ -505,12 +505,15 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
             native = steps["maximized"]["native"]
             scale = steps["maximized"]["chrome"]["devicePixelRatio"]
             work = native.get("work_rect") or [0, 0, 0, 0]
-            if "restored" in steps_wanted:
-                steps["restored"] = session.restored(work, scale)
-                raw["restored_size_used"] = steps["restored"].pop("size_used")
+            # Juggler's sequence runs on the maximized window, as setViewportSize does on a fresh page: the
+            # toolbar height it reads (toolbarTop) is the maximized window's. Run 45672953042 ran it after the
+            # restored step, from a compact window, and measured that route instead.
             if "juggler" in steps_wanted:
                 steps["juggler"], steps["juggler_rdm"], raw["juggler_size_used"] = session.juggler(work, scale)
                 session.clear_juggler()
+            if "restored" in steps_wanted:
+                steps["restored"] = session.restored(work, scale)
+                raw["restored_size_used"] = steps["restored"].pop("size_used")
             if "grid" in steps_wanted:
                 steps["grid"] = session.grid(plan.grid_points(), scale, work)
             if "minimum" in steps_wanted:

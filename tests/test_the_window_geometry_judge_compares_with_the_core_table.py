@@ -362,12 +362,20 @@ def test_at_the_scales_of_the_grid_a_missing_or_failed_part_is_red(what):
     assert evaluate([a, b])["red"], what
 
 
-def test_a_grid_check_point_that_is_not_exactly_the_row_of_launch_a_is_red_and_the_number_is_printed():
+def test_a_grid_check_point_that_shows_another_content_top_is_red_and_the_number_is_printed():
     a, b = two_launches(1.0)
-    b["steps"]["grid_check"][2]["native"]["window_rect"][0] += 1
+    b["steps"]["grid_check"][2]["chrome"]["stack"]["y"] += 12
     result = evaluate([a, b])
     assert result["red"] and any("grid check point 1366x768 differs" in p for p in result["problems"])
-    assert any("native.window_rect[0]" in line for line in result["lines"])
+    assert any("stack_y" in line for line in result["lines"])
+
+
+def test_a_grid_check_point_reached_at_another_size_but_showing_the_same_is_not_red():
+    """At a fractional scale resizeBy lands on a size that depends on where it starts (run 45672953042, 1.25)."""
+    a, b = two_launches(1.25)
+    b["steps"]["grid_check"][2]["native"]["window_rect"][3] += 1
+    b["steps"]["grid_check"][2]["chrome"]["innerHeight"] -= 0.8
+    assert not evaluate([a, b])["red"]
     ok = evaluate(two_launches(1.0))
     n = len(plan.GRID_CHECK_POINTS)
     assert any(f"grid check: {n} of {n} point(s) equal" in line for line in ok["lines"])

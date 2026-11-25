@@ -1,6 +1,6 @@
 """captures/WINDOW_GEOMETRY_REQUEST.json says which release, which display scales, how many launches and which resolutions.
 
-    {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"], "resolutions": [[1920, 1080], [2560, 1440]], "round": 2}
+    {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"], "resolutions": [[1920, 1080], [1600, 1200], [2560, 1440]], "round": 3}
 
 `round` is a positive integer, raised to make the workflow run again. A scale must be a key of invisible_core WINDOW_FRAME_BY_DPR (the judge has a row to compare with only there), the launches
 are at least two distinct letters (the judge compares them), and the version is a release. scripts/retail/window_geometry/
@@ -20,10 +20,10 @@ pytestmark = pytest.mark.unit
 req = load_window_geometry("request")
 frame_table = load_window_geometry("frame_table")
 GOOD = {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"],
-        "resolutions": [[1920, 1080], [2560, 1440]], "round": 2}
+        "resolutions": [[1920, 1080], [1600, 1200], [2560, 1440]], "round": 3}
 
 
-def test_the_committed_request_is_valid_and_is_the_four_scales_of_159_in_round_2():
+def test_the_committed_request_is_valid_and_is_the_four_scales_of_159_in_round_3():
     committed = json.loads((ROOT / "captures" / "WINDOW_GEOMETRY_REQUEST.json").read_text(encoding="utf-8"))
     assert committed == GOOD
     assert req.load(ROOT / "captures" / "WINDOW_GEOMETRY_REQUEST.json") == GOOD

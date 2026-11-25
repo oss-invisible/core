@@ -8,7 +8,7 @@ Red when:
   * launch a differs from launch b (launch p from q) at a resolution that has both, on any number of the four steps
     (the diff is printed); the grid, the minimum and the grid check are not part of that comparison;
   * at the scales of plan.GRID_DPRS, launch a lacks its grid and minimum, launch b lacks its grid check, a grid row is
-    an error, or a point of the grid check is not exactly the row of launch a at the same point;
+    an error, or a point of the grid check does not show what launch a shows at that point (content top, size mode);
   * at the scales of plan.HOSTGATE_DPRS, launches a and b lack their `rdm_hostgate` step, or the collection page did not
     post its result WITHOUT inRDMPane (a missing POST WITH inRDMPane is printed as `RDM HANG` and is a finding, not red);
   * at the FIRST resolution of scale 1 (display mode, scale reached live), the MAXIMIZED step is not exactly the row of
@@ -214,6 +214,12 @@ def grid_lines(run: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def shown_at(row: Dict[str, Any]) -> Dict[str, Any]:
+    """What a grid row says the window shows: the content top in CSS and the size mode."""
+    chrome = row.get("chrome") or {}
+    return {"stack_y": (chrome.get("stack") or {}).get("y"), "sizemode": chrome.get("sizemode")}
+
+
 def grid_problems(first: Dict[str, Any], second: Dict[str, Any], dpr: float) -> Tuple[List[str], List[str]]:
     """(lines, problems) of the grid rules for launch a (`first`) against launch b (`second`) at a scale of GRID_DPRS."""
     lines: List[str] = []
@@ -234,7 +240,10 @@ def grid_problems(first: Dict[str, Any], second: Dict[str, Any], dpr: float) -> 
         if point not in rows_a:
             problems.append(f"dpr {dpr:g}: grid check point {point[0]}x{point[1]} is not in the grid of launch {first['launch']}")
             continue
-        diff = differences(rows_a[point], row)
+        # Only what the window SHOWS at that point is compared: the content top and the size mode. The sizes
+        # reached are not: at a fractional scale resizeBy rounds from the size it starts at, so the device size a
+        # point lands on depends on the route there (run 45672953042, scale 1.25: 671.2 vs 672 CSS), not on Firefox.
+        diff = differences(shown_at(rows_a[point]), shown_at(row))
         if not diff:
             equal += 1
             continue
