@@ -4,15 +4,18 @@ No browser starts and no Windows call is made. Held here:
   * the launch is `firefox.exe -no-remote -profile <empty directory> -marionette <url>` and its profile holds one file,
     user.js, with exactly the declared prefs: anything else (a second file, another pref, a policy in the install folder, a
     MOZ_ variable) is refused before the spawn;
-  * the Juggler line is the one of TargetRegistry.js, word for word;
+  * the Juggler line is the one of TargetRegistry.js, word for word, and so is Juggler's whole sequence (styles on the browser
+    and its stack, then the resizeBy), without inRDMPane (the step juggler_rdm sets it); what clears it removes every style set;
   * a wait ends only when the value is ready and has not moved for the hold time, and says so when it never settles;
   * the mouse points are inside the browser rectangle, from the client origin, at the scale of the window;
   * the structures handed to Windows have the sizes Windows expects, and the scale steps are relative to the recommended one;
-  * the run plan: every launch at the first resolution, the first alone at the others.
+  * the run plan: every launch at the first resolution, the first alone at the others;
+  * the launch takes only the steps asked for.
 """
 from __future__ import annotations
 
 import ctypes
+import re
 from pathlib import Path
 
 import pytest
@@ -172,3 +175,60 @@ def test_marionette_s_variable_with_another_value_is_refused(tmp_path):
     measure.assert_launch(command(profile), profile, install, {"MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "1"}, prefs)
     with pytest.raises(measure.MeasureError, match="declared launch"):
         measure.assert_launch(command(profile), profile, install, {"MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "0"}, prefs)
+
+
+#: juggler/TargetRegistry.js (setViewportSize), lines 999-1018 of the series, minus the stealth guard, `inRDMPane = true` and
+#: the wait for the content size. Kept here as text: the test never reads the engine's source.
+JUGGLER_LINES = [
+    "this._linkedBrowser.style.setProperty('width', width + 'px');",
+    "this._linkedBrowser.style.setProperty('height', height + 'px');",
+    "this._linkedBrowser.style.setProperty('box-sizing', 'content-box');",
+    "this._linkedBrowser.closest('.browserStack').style.setProperty('overflow', 'auto');",
+    "this._linkedBrowser.closest('.browserStack').style.setProperty('contain', 'size');",
+    "this._linkedBrowser.closest('.browserStack').style.setProperty('scrollbar-width', 'none');",
+    "const stackRect = this._linkedBrowser.closest('.browserStack').getBoundingClientRect();",
+    "const toolbarTop = stackRect.y;",
+    "this._window.resizeBy(width - this._window.innerWidth, height + toolbarTop - this._window.innerHeight);",
+]
+
+
+def test_juggler_s_whole_sequence_is_its_lines_in_order_on_the_selected_browser_as_the_tab():
+    lines = measure.JUGGLER_SEQUENCE.split("\n")
+    assert lines[0] == "const width = arguments[0], height = arguments[1];"
+    start = lines.index("(function () {")
+    assert lines[start + 1:start + 1 + len(JUGGLER_LINES)] == JUGGLER_LINES
+    assert lines[start + 1 + len(JUGGLER_LINES):] == ["}).call({_linkedBrowser: gBrowser.selectedBrowser, _window: window});", "return true;"]
+
+
+def test_juggler_s_sequence_does_not_set_inrdmpane_and_the_rdm_step_sets_it_only_on_the_selected_browser():
+    assert "inRDMPane" not in measure.JUGGLER_SEQUENCE
+    assert measure.RDM_ON == "gBrowser.selectedBrowser.browsingContext.inRDMPane = true; return true;"
+    assert "inRDMPane = false" in measure.JUGGLER_CLEAR
+
+
+def test_what_clears_juggler_s_sequence_removes_every_property_it_set_and_no_other():
+    set_on_browser = re.findall(r"this\._linkedBrowser\.style\.setProperty\('([\w-]+)'", measure.JUGGLER_SEQUENCE)
+    set_on_stack = re.findall(r"closest\('\.browserStack'\)\.style\.setProperty\('([\w-]+)'", measure.JUGGLER_SEQUENCE)
+    assert set_on_browser == ["width", "height", "box-sizing"] and set_on_stack == ["overflow", "contain", "scrollbar-width"]
+    removed_on_browser = re.search(r"for \(const name of \[([^\]]*)\]\) browser\.style\.removeProperty", measure.JUGGLER_CLEAR).group(1)
+    removed_on_stack = re.search(r"for \(const name of \[([^\]]*)\]\) stack\.style\.removeProperty", measure.JUGGLER_CLEAR).group(1)
+    assert re.findall(r"'([\w-]+)'", removed_on_browser) == set_on_browser
+    assert re.findall(r"'([\w-]+)'", removed_on_stack) == set_on_stack
+
+
+def test_the_old_restored_step_keeps_its_plain_resize_and_its_fallback():
+    assert (measure.RESIZE_WIDTH, measure.RESIZE_HEIGHT, measure.FALLBACK_HEIGHT, measure.FRAME_ALLOWANCE_CSS) == (390, 844, 400, 200)
+    assert "setProperty" not in measure.JUGGLER_RESIZE
+
+
+def test_the_grid_resize_asks_for_the_chrome_inner_size_by_a_difference_and_the_row_reads_the_stack():
+    assert "window.resizeBy(w - window.innerWidth, h - window.innerHeight)" in measure.RESIZE_CHROME_INNER
+    assert "getBoundingClientRect()" in measure.CHROME_ROW and "stack: {x: s.x, y: s.y, width: s.width, height: s.height}" in measure.CHROME_ROW
+    assert (measure.GRID_TIMEOUT, measure.HOLD_SECONDS) == (10.0, 1.0)
+
+
+def test_the_launch_takes_the_maximized_step_always_and_the_others_only_when_asked():
+    source = (Path(measure.__file__)).read_text(encoding="utf-8")
+    for name in ("restored", "juggler", "grid", "minimum", "grid_check"):
+        assert f'if "{name}" in steps_wanted:' in source, name
+    assert 'steps["maximized"] = session.maximized()' in source

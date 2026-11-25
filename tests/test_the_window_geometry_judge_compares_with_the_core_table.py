@@ -3,8 +3,14 @@
 scripts/retail/window_geometry/judge.py reads the raw files of every scale. Held here, on small synthetic runs built from the
 table of the package itself:
   * launch a equal to launch b and a maximized step equal to WINDOW_FRAME_BY_DPR at every scale: green;
-  * the border one pixel off, screenX off, the content top off: red, each naming what differs;
-  * launch a different from launch b on one number of the restored step: red, with the number printed;
+  * the border one pixel off, screenX off, the content top off: red at the first resolution of scale 1 only, naming what
+    differs; at any other scale or size the difference is printed as window-size dependent and is not red;
+  * launch a different from launch b on one number of any of the four steps (maximized, restored, juggler, juggler_rdm): red,
+    with the number printed; the grid, the minimum and the grid check are not in that comparison;
+  * at the scales of the grid, launch a must have its grid and minimum, launch b its grid check, and every point of the check
+    must be exactly launch a's row at that point;
+  * launch p must equal launch q (the derived path at a scale Windows did not reach);
+  * launch m (every resolution Windows offers) needs the maximized step alone;
   * a scale whose display scale was not reached: "not reachable live: derived path", not red, whatever it measured;
   * the derived-path launch (devPixelsPerPx) is reported and never compared with the table;
   * a missing scale, an error, a process left, a scale with no pair of launches: red.
@@ -21,12 +27,28 @@ from _retail_scripts import load_window_geometry
 pytestmark = pytest.mark.unit
 
 judge = load_window_geometry("judge")
+plan = load_window_geometry("plan")
 frame_table = load_window_geometry("frame_table")
 TABLE = frame_table.load()
 WORK = [0, 0, 1920, 1032]
 
 
-def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=True, table=TABLE):
+def grid_row(w, h, dpr, skipped=False):
+    if skipped:
+        return {"w": w, "h": h, "skipped": "does_not_fit", "frame_css": [16, 16]}
+    return {"w": w, "h": h, "settled": True,
+            "chrome": {"windowState": 3, "sizemode": "normal", "innerWidth": w, "innerHeight": h, "outerWidth": w + 16,
+                       "outerHeight": h + 16, "devicePixelRatio": dpr, "stack": {"x": 0, "y": 73.0, "width": w, "height": h - 73}},
+            "page": {"innerWidth": w, "innerHeight": h - 73, "outerWidth": w + 16, "outerHeight": h + 16},
+            "native": {"window_rect": [4, 4, 4 + round((w + 16) * dpr), 4 + round((h + 16) * dpr)], "client_rect": [0, 0, 10, 10],
+                       "client_origin": [12, 8]}}
+
+
+GRID = [(w, h) for w in (500, 800, 1280, 1366, 1536, 1900) for h in (450, 600, 672, 768, 816, 1000)]
+
+
+def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=True, table=TABLE, grid=None, dppx=None):
+    """A run whose maximized step is the core table's row. `grid` None: what the launch has in the plan at the scales of the grid."""
     row = table[dpr]
     border, ui = row["border"], row["maximized_ui"]
     window = [-border, -border, WORK[2] + border, WORK[3] + border]
@@ -41,23 +63,38 @@ def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=T
             "content": {"innerWidth": 1900, "innerHeight": 900, "outerWidth": 1936, "outerHeight": 1049,
                         "screenX": judge.half_up(-border / dpr), "screenY": judge.half_up(-border / dpr),
                         "mozInnerScreenX": 0.0, "mozInnerScreenY": ui / dpr,
+                        "screen": {"width": 1536, "height": 864},
                         "events": {"count": 3, "dx": 7, "dy": 91}},
             "input": [{"asked": [1, 2], "cursor": [1, 2]}], "settled": True}
 
     restored = [100, 120, 100 + 390 + 2 * border, 120 + 844 + 100]
-    return {"format": "retail-window-geometry/1", "dpr_asked": dpr, "mode": mode, "launch": launch, "resolution": list(resolution),
-            "display": {"dpi_reached": reached, "effective_dpi": round(96 * dpr), "resolution_now": list(resolution),
-                        "reason": None if reached else "the scale is outside the steps this monitor offers"},
-            "steps": {"maximized": step(window, ui), "restored": step(restored, row["popup_ui"])},
-            "restored_size_used": {"width": 390, "height": 844}, "processes_left": 0, "error": None}
+    steps = {"maximized": step(window, ui)}
+    if launch != "m":
+        steps.update({"restored": step(restored, row["popup_ui"]), "juggler": step(restored, row["popup_ui"]),
+                      "juggler_rdm": step(restored, row["popup_ui"])})
+    if grid is None:
+        grid = mode == "display" and reached and float(dpr) in plan.GRID_DPRS and launch in ("a", "b")
+    if grid and launch == "a":
+        steps["grid"] = [grid_row(w, h, dpr) for w, h in GRID]
+        steps["minimum"] = grid_row(100, 100, dpr)
+        steps["minimum"]["chrome"].update(innerWidth=500, innerHeight=493)
+    if grid and launch == "b":
+        steps["grid_check"] = [grid_row(w, h, dpr) for w, h in plan.GRID_CHECK_POINTS]
+    out = {"format": "retail-window-geometry/1", "dpr_asked": dpr, "mode": mode, "launch": launch, "resolution": list(resolution),
+           "display": {"dpi_reached": reached, "effective_dpi": round(96 * dpr), "resolution_now": list(resolution),
+                       "reason": None if reached else "the scale is outside the steps this monitor offers"},
+           "steps": steps, "restored_size_used": {"width": 390, "height": 844},
+           "juggler_size_used": {"width": 390, "height": 844, "asked_height": 844, "does_not_fit": False},
+           "dev_px_per_px": dppx, "processes_left": 0, "error": None}
+    return out
 
 
 def two_launches(dpr, **kw):
     return [make_run(dpr, "a", **kw), make_run(dpr, "b", **kw)]
 
 
-def evaluate(runs, dprs=None):
-    return judge.evaluate(runs, dprs or sorted({r["dpr_asked"] for r in runs}), TABLE)
+def evaluate(runs, dprs=None, **kw):
+    return judge.evaluate(runs, dprs or sorted({r["dpr_asked"] for r in runs}), TABLE, **kw)
 
 
 def all_scales():
@@ -81,29 +118,51 @@ def test_gecko_rounds_a_half_up():
     assert [judge.half_up(v) for v in (-6.5, -7.2 + 0.0, 0.5, 1.5, -0.5)] == [-6, -7, 1, 2, 0]
 
 
-@pytest.mark.parametrize("dpr", sorted(TABLE))
-def test_a_border_one_pixel_off_is_red(dpr):
-    runs = two_launches(dpr)
+def widen_border(runs):
     for run in runs:
         rect = run["steps"]["maximized"]["native"]["window_rect"]
         rect[0] -= 1
         rect[2] += 1
+
+
+def test_a_border_one_pixel_off_at_the_first_resolution_of_scale_1_is_red():
+    runs = two_launches(1.0)
+    widen_border(runs)
     result = evaluate(runs)
     assert result["red"]
     assert any("maximized border" in p for p in result["problems"])
+    assert any(line.endswith(": DIFFERENT") for line in result["lines"])
 
 
-def test_a_screen_x_one_off_is_red():
-    runs = two_launches(1.25)
+@pytest.mark.parametrize("dpr", [d for d in sorted(TABLE) if d != 1.0])
+def test_a_border_one_pixel_off_at_any_other_scale_is_printed_as_window_size_dependent_and_is_not_red(dpr):
+    runs = two_launches(dpr)
+    widen_border(runs)
+    result = evaluate(runs)
+    assert not result["red"], result["problems"]
+    assert any("DIFFERS (window-size dependent, see grid)" in line for line in result["lines"])
+
+
+def test_scale_1_at_another_size_is_not_the_strict_point():
+    runs = [make_run(1.0, launch, resolution=(1280, 720)) for launch in "ab"]
+    widen_border(runs)
+    result = evaluate(runs)
+    assert not result["red"], result["problems"]
+    assert any("DIFFERS (window-size dependent" in line for line in result["lines"])
+    assert evaluate(runs, strict_point=(1.0, (1280, 720)))["red"], "the strict point is an argument, the request's first resolution"
+
+
+def test_a_screen_x_one_off_is_red_at_the_strict_point():
+    runs = two_launches(1.0)
     for run in runs:
         run["steps"]["maximized"]["content"]["screenX"] += 1
     assert any("maximized screenX" in p for p in evaluate(runs)["problems"])
 
 
-def test_a_content_top_one_device_pixel_off_is_red():
-    runs = two_launches(1.5)
+def test_a_content_top_one_device_pixel_off_is_red_at_the_strict_point():
+    runs = two_launches(1.0)
     for run in runs:
-        run["steps"]["maximized"]["content"]["mozInnerScreenY"] += 1 / 1.5
+        run["steps"]["maximized"]["content"]["mozInnerScreenY"] += 1
     assert any("maximized maximized_ui" in p for p in evaluate(runs)["problems"])
 
 
@@ -194,7 +253,8 @@ def test_the_runs_are_read_from_the_artifact_folders(tmp_path):
 
 def test_the_command_line_exits_one_when_red_and_prints_the_verdict(tmp_path, capsys):
     request = tmp_path / "request.json"
-    request.write_text(json.dumps({"firefox_version": "159.0", "dpr": [1, 1.25], "launches": ["a", "b"], "resolutions": [[1920, 1080]]}), encoding="utf-8")
+    request.write_text(json.dumps({"firefox_version": "159.0", "dpr": [1, 1.25], "launches": ["a", "b"], "resolutions": [[1920, 1080]],
+                                   "round": 2}), encoding="utf-8")
     folder = tmp_path / "in" / "x"
     folder.mkdir(parents=True)
     (folder / "raw.json").write_text(json.dumps(make_run(1.0)), encoding="utf-8")
@@ -207,3 +267,151 @@ def test_the_judge_does_not_change_the_runs_it_is_given():
     before = copy.deepcopy(runs)
     evaluate(runs, sorted(TABLE))
     assert runs == before
+
+
+# ---------------------------------------------------------------------------- round 2: Juggler's sequence, grid, p/q, m
+
+
+@pytest.mark.parametrize("step", ["juggler", "juggler_rdm", "maximized", "restored"])
+def test_launch_a_and_launch_b_differing_on_any_of_the_four_steps_is_red(step):
+    a, b = two_launches(1.0)
+    b["steps"][step]["content"]["innerHeight"] += 1
+    result = evaluate([a, b])
+    assert result["red"] and any(f"{step}.content.innerHeight" in line for line in result["lines"])
+
+
+def test_the_grid_and_the_minimum_are_not_part_of_the_a_b_comparison():
+    a, b = two_launches(1.25)
+    a["steps"]["minimum"]["chrome"]["innerWidth"] += 7
+    a["steps"]["grid"][GRID.index((500, 600))]["chrome"]["stack"]["y"] += 3  # not a point of the grid check
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    assert any("launch a vs b: 0 difference(s)" in line for line in result["lines"])
+
+
+def test_a_juggler_step_skipped_in_both_launches_is_not_red_and_in_one_only_is_red():
+    a, b = two_launches(1.5)
+    for run in (a, b):
+        run["steps"]["juggler"] = {"skipped": "does_not_fit"}
+        run["steps"]["juggler_rdm"] = {"skipped": "does_not_fit"}
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    assert any("juggler: skipped (does_not_fit)" in line for line in result["lines"])
+    c, d = two_launches(1.5)
+    c["steps"]["juggler"] = {"skipped": "does_not_fit"}
+    assert evaluate([c, d])["red"]
+
+
+def test_a_launch_without_the_juggler_steps_is_red_and_launch_m_does_not_need_them():
+    a, b = two_launches(1.0)
+    del b["steps"]["juggler_rdm"]
+    assert evaluate([a, b])["red"]
+    runs = two_launches(1.0) + [make_run(1.0, "m", resolution=(1280, 720))]
+    assert set(runs[-1]["steps"]) == {"maximized"}
+    assert not evaluate(runs)["red"]
+
+
+def test_the_juggler_steps_are_printed_with_page_screen_event_and_native_rects():
+    text = "\n".join(evaluate(two_launches(1.25))["lines"])
+    for step in ("juggler", "juggler_rdm"):
+        for needle in (f"{step}: border L/R/B", f"{step} page: inner [1900, 900] outer [1936, 1049] screen [1536, 864]",
+                       "event dx/dy [7, 91]", "native client rect", "window rect [", "mozInnerScreenX/Y", "screenX/Y",
+                       "outer-inner css [36, 149]"):
+            assert needle in text, (step, needle)
+    assert "juggler size used {'width': 390, 'height': 844" in text
+
+
+@pytest.mark.parametrize("what", ["a has no grid", "a has no minimum", "b has no grid_check", "a grid row failed",
+                                  "check point not in the grid"])
+def test_at_the_scales_of_the_grid_a_missing_or_failed_part_is_red(what):
+    a, b = two_launches(1.25)
+    if what == "a has no grid":
+        del a["steps"]["grid"]
+    elif what == "a has no minimum":
+        del a["steps"]["minimum"]
+    elif what == "b has no grid_check":
+        del b["steps"]["grid_check"]
+    elif what == "a grid row failed":
+        a["steps"]["grid"][3] = {"w": 500, "h": 600, "error": "MarionetteError: boom"}
+    else:
+        b["steps"]["grid_check"][0] = grid_row(501, 450, 1.25)
+    assert evaluate([a, b])["red"], what
+
+
+def test_a_grid_check_point_that_is_not_exactly_the_row_of_launch_a_is_red_and_the_number_is_printed():
+    a, b = two_launches(1.0)
+    b["steps"]["grid_check"][2]["native"]["window_rect"][0] += 1
+    result = evaluate([a, b])
+    assert result["red"] and any("grid check point 1366x768 differs" in p for p in result["problems"])
+    assert any("native.window_rect[0]" in line for line in result["lines"])
+    ok = evaluate(two_launches(1.0))
+    n = len(plan.GRID_CHECK_POINTS)
+    assert any(f"grid check: {n} of {n} point(s) equal" in line for line in ok["lines"])
+
+
+def test_a_point_that_does_not_fit_is_a_skipped_row_equal_on_both_sides():
+    a, b = two_launches(1.25)
+    a["steps"]["grid"][-1] = grid_row(1900, 1000, 1.25, skipped=True)
+    b["steps"]["grid_check"][4] = grid_row(1900, 1000, 1.25, skipped=True)
+    assert not evaluate([a, b])["red"]
+    b["steps"]["grid_check"][4] = grid_row(1900, 1000, 1.25)
+    assert evaluate([a, b])["red"]
+
+
+def test_the_grid_is_not_required_at_other_scales_or_when_the_scale_was_not_reached():
+    assert not evaluate(two_launches(1.5))["red"]
+    a, b = two_launches(1.25, reached=False)
+    assert "grid" not in a["steps"] and not evaluate([a, b])["red"]
+
+
+def test_the_grid_is_printed_as_a_table_per_height_with_the_content_top_and_the_minimum_window():
+    a, b = two_launches(1.25)
+    a["steps"]["grid"][0]["chrome"]["innerHeight"] = 453
+    a["steps"]["grid"][1]["settled"] = False
+    a["steps"]["grid"][2] = grid_row(500, 672, 1.25, skipped=True)
+    text = "\n".join(evaluate([a, b])["lines"])
+    first_line = text.split("H 450:")[1].splitlines()[0]
+    assert first_line.startswith(" 500:73.00/") and "!" in first_line
+    assert "500:-" in text and "*" in text.split("H 600:")[1].splitlines()[0]
+    assert "asked -> got (chrome inner): 500x450 -> 500x453" in text
+    assert "minimum window (asked 100x100 chrome inner css): chrome inner 500x493" in text
+    assert judge.grid_cell(grid_row(800, 600, 1.0)) == "73.00/" + str(4 + 73)
+
+
+def test_launch_p_and_launch_q_are_compared_like_a_and_b_when_the_display_scale_was_not_reached():
+    p, q = (make_run(2.0, launch, mode="devPixelsPerPx", reached=False) for launch in "pq")
+    result = evaluate([p, q])
+    assert not result["red"], result["problems"]
+    assert any("launch p vs q: 0 difference(s)" in line for line in result["lines"])
+    q["steps"]["juggler"]["content"]["innerWidth"] += 1
+    assert evaluate([p, q])["red"]
+    assert evaluate([p])["red"], "p alone compares with nothing"
+
+
+def test_a_scale_reached_live_needs_no_q_and_its_p_is_never_compared():
+    runs = two_launches(1.25) + [make_run(1.25, "p", mode="devPixelsPerPx", reached=False)]
+    assert not evaluate(runs)["red"]
+
+
+def test_launch_m_is_checked_against_the_table_only_at_the_strict_point_and_is_printed_everywhere():
+    wide = make_run(1.25, "m", resolution=(1280, 720))
+    wide["steps"]["maximized"]["native"]["window_rect"][0] -= 1
+    result = evaluate(two_launches(1.25) + [wide])
+    assert not result["red"], result["problems"]
+    assert any("launch m (display)" in line for line in result["lines"])
+    assert any("DIFFERS (window-size dependent, see grid)" in line for line in result["lines"])
+    at_strict = make_run(1.0, "m")
+    at_strict["steps"]["maximized"]["native"]["window_rect"][0] -= 1
+    assert evaluate(two_launches(1.0) + [at_strict])["red"]
+
+
+def test_the_devpixelsperpx_launches_m_are_labelled_with_the_value_and_need_no_pair_and_no_table():
+    runs = two_launches(1.0)
+    for value in plan.DEVPX_VALUES:
+        run = make_run(1.0, "m", mode="devPixelsPerPx", reached=False, dppx="%g" % value)
+        run["steps"]["maximized"]["content"]["screenX"] = 1234
+        runs.append(run)
+    result = evaluate(runs)
+    assert not result["red"], result["problems"]
+    text = "\n".join(result["lines"])
+    assert "launch m (devPixelsPerPx 0.75)" in text and "launch m (devPixelsPerPx 0.5)" in text

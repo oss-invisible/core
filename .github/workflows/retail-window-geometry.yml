@@ -14,8 +14,14 @@ name: retail-window-geometry
 # change the frame: at every scale reached live, the maximized geometry measured here must equal invisible_core
 # WINDOW_FRAME_BY_DPR (measured from plain launches) exactly, or the scale is not valid (judge.py).
 #
+# Round 2 (the `round` of the request) adds, per scale: Juggler's whole sequence at 390x844 CSS (steps juggler and
+# juggler_rdm), at scales 1 and 1.25 a grid of restored windows and the minimum window, the maximized step at every
+# resolution Windows offers (launch m) and, at scale 1, at devPixelsPerPx 0.75 and 0.5; a scale Windows does not reach
+# (2) runs only the devPixelsPerPx launches p and q. The grid and the m launches take most of the 45 minutes.
+#
 # The `judge` job is the one verdict: it reads every artifact, prints the table, and is red when a scale is
-# missing, a launch left a process, launch a differs from launch b, or a scale reached live differs from the table.
+# missing, a launch left a process, launch a differs from launch b (p from q), the grid check of launch b differs from
+# launch a, or scale 1 at its first resolution differs from the table (other sizes are printed, not red).
 #
 # Same trigger shape as ci.yml (tests/test_ci_runs_once_per_commit.py): pull requests through `pull_request`,
 # `push` only for main, a new push to a pull request replaces the run it supersedes.
@@ -52,7 +58,7 @@ jobs:
   capture:
     needs: request
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

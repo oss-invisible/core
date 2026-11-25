@@ -1,8 +1,8 @@
 """captures/WINDOW_GEOMETRY_REQUEST.json says which release, which display scales, how many launches and which resolutions.
 
-    {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"], "resolutions": [[1920, 1080], [2560, 1440]]}
+    {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"], "resolutions": [[1920, 1080], [2560, 1440]], "round": 2}
 
-A scale must be a key of invisible_core WINDOW_FRAME_BY_DPR (the judge has a row to compare with only there), the launches
+`round` is a positive integer, raised to make the workflow run again. A scale must be a key of invisible_core WINDOW_FRAME_BY_DPR (the judge has a row to compare with only there), the launches
 are at least two distinct letters (the judge compares them), and the version is a release. scripts/retail/window_geometry/
 request.py refuses anything else in the first job, before a Windows runner is started. The table is read from the source of
 the checkout by frame_table.py, without importing the package, and must be the table the package itself has.
@@ -20,10 +20,10 @@ pytestmark = pytest.mark.unit
 req = load_window_geometry("request")
 frame_table = load_window_geometry("frame_table")
 GOOD = {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"],
-        "resolutions": [[1920, 1080], [2560, 1440]]}
+        "resolutions": [[1920, 1080], [2560, 1440]], "round": 2}
 
 
-def test_the_committed_request_is_valid_and_is_the_four_scales_of_159():
+def test_the_committed_request_is_valid_and_is_the_four_scales_of_159_in_round_2():
     committed = json.loads((ROOT / "captures" / "WINDOW_GEOMETRY_REQUEST.json").read_text(encoding="utf-8"))
     assert committed == GOOD
     assert req.load(ROOT / "captures" / "WINDOW_GEOMETRY_REQUEST.json") == GOOD
@@ -66,8 +66,8 @@ def test_anything_but_a_release_version_is_refused(version):
         req.validate(dict(GOOD, firefox_version=version))
 
 
-@pytest.mark.parametrize("launches", [["a"], [], ["a", "a"], ["a", "B"], ["a", "bb"], ["a", 1], ["a", "p"], "ab", None])
-def test_launches_are_at_least_two_distinct_letters_and_not_the_derived_one(launches):
+@pytest.mark.parametrize("launches", [["a"], [], ["a", "a"], ["a", "B"], ["a", "bb"], ["a", 1], ["a", "p"], ["a", "q"], ["a", "m"], "ab", None])
+def test_launches_are_at_least_two_distinct_letters_and_not_a_reserved_one(launches):
     with pytest.raises(req.RequestError, match="launches"):
         req.validate(dict(GOOD, launches=launches))
 
@@ -93,3 +93,15 @@ def test_a_file_that_is_not_json_is_refused(tmp_path):
     path.write_text("{no", encoding="utf-8")
     with pytest.raises(req.RequestError, match="not JSON"):
         req.load(path)
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, "2", None, True, [2]])
+def test_the_round_is_a_positive_integer(value):
+    with pytest.raises(req.RequestError, match="round"):
+        req.validate(dict(GOOD, round=value))
+
+
+def test_the_request_needs_its_round_and_any_positive_integer_is_one():
+    with pytest.raises(req.RequestError, match="lacks"):
+        req.validate({k: v for k, v in GOOD.items() if k != "round"})
+    assert req.validate(dict(GOOD, round=3))["round"] == 3

@@ -1,6 +1,8 @@
 """captures/WINDOW_GEOMETRY_REQUEST.json: what the next window-geometry capture is of.
 
-    {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"], "resolutions": [[1920, 1080]]}
+    {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"], "resolutions": [[1920, 1080]], "round": 2}
+
+`round` is the number of the capture round: raising it is what makes the workflow run again (the file is its trigger).
 
     python scripts/retail/window_geometry/request.py [file]    prints firefox_version=... and dpr=[labels] (the job matrix)
 """
@@ -16,11 +18,10 @@ HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE), str(HERE.parent)]
 import capture_request  # noqa: E402
 import frame_table  # noqa: E402
+import plan  # noqa: E402
 
 REQUEST = HERE.parents[2] / "captures" / "WINDOW_GEOMETRY_REQUEST.json"
-KEYS = {"firefox_version", "dpr", "launches", "resolutions"}
-#: Launch letter of the run made with the scale as a preference (run_scale.py), never named by the request.
-DERIVED_LAUNCH = "p"
+KEYS = {"firefox_version", "dpr", "launches", "resolutions", "round"}
 
 
 class RequestError(ValueError):
@@ -49,8 +50,9 @@ def validate(request: Any, table: Dict[float, Any] = None) -> Dict[str, Any]:
     launches = request["launches"]
     if (not isinstance(launches, list) or len(set(launches)) < 2 or len(set(launches)) != len(launches)
             or any(not (isinstance(x, str) and len(x) == 1 and x in string.ascii_lowercase) for x in launches)
-            or DERIVED_LAUNCH in launches):
-        raise RequestError(f"launches must be at least two distinct lowercase letters, not {DERIVED_LAUNCH!r}")
+            or set(plan.RESERVED_LAUNCHES) & set(launches)):
+        raise RequestError(f"launches must be at least two distinct lowercase letters, none of {list(plan.RESERVED_LAUNCHES)} "
+                           "(the derived and every-resolution launches of run_scale.py)")
     resolutions = request["resolutions"]
     if not isinstance(resolutions, list) or not resolutions:
         raise RequestError("resolutions must be a non-empty list of [width, height]")
@@ -60,6 +62,8 @@ def validate(request: Any, table: Dict[float, Any] = None) -> Dict[str, Any]:
             raise RequestError(f"resolution {item!r} is not [width, height] of positive integers")
     if len({tuple(r) for r in resolutions}) != len(resolutions):
         raise RequestError("resolutions names a size twice")
+    if isinstance(request["round"], bool) or not isinstance(request["round"], int) or request["round"] < 1:
+        raise RequestError(f"round must be a positive integer, not {request['round']!r}")
     return request
 
 

@@ -9,10 +9,13 @@ in distribution/policies.json, and no MOZ_* variable but MOZ_REMOTE_ALLOW_SYSTEM
 the chrome context. Marionette is the one difference from retail-capture.yml; why it is allowed is in the header of
 .github/workflows/retail-window-geometry.yml.
 
-Two steps are recorded, each with the same fields (what the page reads, what the chrome reads, what Windows says
-about the top-level window, and a real mouse move over the content): `maximized`, and `restored`, produced by the
-line of juggler/TargetRegistry.js (setViewportSize) that calls window.resizeBy. Writes OUT/raw.json. The result is
-valid only when no process of the install folder is left.
+Steps (plan.py says which launch takes which), the first four each with the same fields (what the page reads, what the
+chrome reads, what Windows says about the top-level window, and a real mouse move over the content): `maximized`;
+`restored`, produced by the line of juggler/TargetRegistry.js (setViewportSize) that calls window.resizeBy; `juggler`,
+Juggler's whole sequence (styles on the browser and its stack, then that resizeBy) at 390x844 CSS; `juggler_rdm`, the
+same window with inRDMPane = true. Then, after clearing what Juggler's sequence set: `grid` (restored windows at chrome
+inner sizes W x H, one compact row each), `minimum` (the smallest window Firefox gives) and `grid_check` (a few grid
+points again). Writes OUT/raw.json. The result is valid only when no process of the install folder is left.
 """
 from __future__ import annotations
 
@@ -37,6 +40,7 @@ sys.path[:0] = [str(HERE), str(HERE.parent)]
 import display  # noqa: E402
 import environment  # noqa: E402
 import marionette  # noqa: E402
+import plan  # noqa: E402
 import run_retail_capture as launcher  # noqa: E402
 from native import INPUT, MONITORINFO, POINT, RECT, WINDOWPLACEMENT, api, guarded  # noqa: E402
 
@@ -79,6 +83,46 @@ return {innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWid
            availLeft: screen.availLeft, availTop: screen.availTop},
   events: {count: m.count, dx: m.dx, dy: m.dy}};"""
 CONTENT_SIZE = "return [window.outerWidth, window.outerHeight, window.innerWidth, window.innerHeight];"
+#: Juggler's whole sequence, juggler/TargetRegistry.js (setViewportSize) lines 999-1018 as they are, `this` being the
+#: tab and `width` / `height` the arguments, in chrome context on the selected browser. Left out: the stealth guard and
+#: `inRDMPane = true` (the step `juggler_rdm` sets it) and the wait for the content size (the capture waits itself).
+JUGGLER_SEQUENCE = (
+    "const width = arguments[0], height = arguments[1];\n"
+    "(function () {\n"
+    "this._linkedBrowser.style.setProperty('width', width + 'px');\n"
+    "this._linkedBrowser.style.setProperty('height', height + 'px');\n"
+    "this._linkedBrowser.style.setProperty('box-sizing', 'content-box');\n"
+    "this._linkedBrowser.closest('.browserStack').style.setProperty('overflow', 'auto');\n"
+    "this._linkedBrowser.closest('.browserStack').style.setProperty('contain', 'size');\n"
+    "this._linkedBrowser.closest('.browserStack').style.setProperty('scrollbar-width', 'none');\n"
+    "const stackRect = this._linkedBrowser.closest('.browserStack').getBoundingClientRect();\n"
+    "const toolbarTop = stackRect.y;\n"
+    "this._window.resizeBy(width - this._window.innerWidth, height + toolbarTop - this._window.innerHeight);\n"
+    "}).call({_linkedBrowser: gBrowser.selectedBrowser, _window: window});\n"
+    "return true;")
+#: What the grid and the minimum start from: every style the sequence set removed, inRDMPane back to false.
+JUGGLER_CLEAR = (
+    "const browser = gBrowser.selectedBrowser, stack = browser.closest('.browserStack');\n"
+    "for (const name of ['width', 'height', 'box-sizing']) browser.style.removeProperty(name);\n"
+    "for (const name of ['overflow', 'contain', 'scrollbar-width']) stack.style.removeProperty(name);\n"
+    "browser.browsingContext.inRDMPane = false;\n"
+    "return true;")
+RDM_ON = "gBrowser.selectedBrowser.browsingContext.inRDMPane = true; return true;"
+#: Chrome inner size to W x H CSS (a restored window): resizeBy by the difference.
+RESIZE_CHROME_INNER = ("const w = arguments[0], h = arguments[1]; window.resizeBy(w - window.innerWidth, h - window.innerHeight); "
+                       "return true;")
+FRAME_CSS = "return [window.outerWidth - window.innerWidth, window.outerHeight - window.innerHeight];"
+CHROME_ROW = """
+const s = gBrowser.selectedBrowser.closest('.browserStack').getBoundingClientRect();
+return {windowState: window.windowState, sizemode: document.documentElement.getAttribute('sizemode'),
+  innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWidth: window.outerWidth,
+  outerHeight: window.outerHeight, devicePixelRatio: window.devicePixelRatio,
+  stack: {x: s.x, y: s.y, width: s.width, height: s.height}};"""
+CONTENT_ROW = ("return {innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWidth: window.outerWidth, "
+               "outerHeight: window.outerHeight};")
+#: Settling of the grid points: held 1 s, at most 10 s.
+GRID_TIMEOUT = 10.0
+RDM_WAIT_SECONDS = 0.5
 CHROME_SIZE = "return [window.windowState === window.STATE_MAXIMIZED, window.innerWidth, window.innerHeight, window.outerWidth, window.outerHeight];"
 PAGE_READY = "return !!(window.wrappedJSObject || window).__m;"
 RESET_EVENTS = "(window.wrappedJSObject || window).__reset(); return true;"
@@ -303,11 +347,75 @@ class Session:
         _, settled = wait_stable(lambda: self.content("return [window.innerWidth, window.innerHeight];"))
         return dict(self.record(), settled=settled, size_used={"width": RESIZE_WIDTH, "height": height})
 
+    def juggler(self, work_rect: Sequence[int], scale: float) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        """(step juggler, step juggler_rdm, size used): Juggler's whole sequence at 390 x height CSS (844, or the largest
+        height the work area holds, rounded down to a multiple of 10), then the same window with inRDMPane = true."""
+        height = plan.juggler_height(work_rect, scale)
+        size = {"width": plan.JUGGLER_WIDTH, "height": height, "asked_height": plan.JUGGLER_HEIGHT,
+                "does_not_fit": height != plan.JUGGLER_HEIGHT}
+        if height is None:
+            skipped = {"skipped": "does_not_fit"}
+            return dict(skipped), dict(skipped), size
+
+        def content_size() -> Any:
+            return self.content("return [window.innerWidth, window.innerHeight];")
+
+        self.chrome(JUGGLER_SEQUENCE, [plan.JUGGLER_WIDTH, height])
+        _, settled = wait_stable(content_size)
+        first = dict(self.record(), settled=settled)
+        self.chrome(RDM_ON)
+        self.client.execute_async_script(TWO_FRAMES, context="chrome")
+        time.sleep(RDM_WAIT_SECONDS)
+        _, settled = wait_stable(content_size)
+        return first, dict(self.record(), settled=settled), size
+
+    def clear_juggler(self) -> None:
+        """Remove every style Juggler's sequence set and put inRDMPane back to false."""
+        self.chrome(JUGGLER_CLEAR)
+
+    def inner_row(self, width: int, height: int) -> Dict[str, Any]:
+        """Resize the chrome's inner size to width x height CSS, wait until it holds still (1 s hold, 10 s at most), and
+        return one compact row: what the chrome, the page and Windows say."""
+        self.chrome(RESIZE_CHROME_INNER, [width, height])
+
+        def read() -> Any:
+            chrome = self.chrome(CHROME_ROW)
+            return [chrome["innerWidth"], chrome["innerHeight"], chrome["windowState"], chrome["stack"]]
+
+        _, settled = wait_stable(read, timeout=GRID_TIMEOUT)
+        hwnd = self.hwnd()
+        native = guarded(lambda: window_record(hwnd))
+        keep = ("window_rect", "client_rect", "client_origin")
+        return {"w": width, "h": height, "settled": settled, "chrome": self.chrome(CHROME_ROW),
+                "page": self.content(CONTENT_ROW),
+                "native": {k: native[k] for k in keep} if all(k in native for k in keep) else native}
+
+    def grid(self, points: Sequence[Tuple[int, int]], scale: float, work_rect: Sequence[int]) -> List[Dict[str, Any]]:
+        """One row per point; a point whose outer size would not fit the work area is a row that says it was skipped."""
+        frame = self.chrome(FRAME_CSS)
+        rows: List[Dict[str, Any]] = []
+        failures = 0
+        for width, height in points:
+            if not plan.fits(width, height, frame, scale, work_rect):
+                rows.append({"w": width, "h": height, "skipped": "does_not_fit", "frame_css": frame})
+                continue
+            try:
+                rows.append(self.inner_row(width, height))
+                failures = 0
+            except Exception as exc:  # noqa: BLE001 - the row says what failed; the browser being gone ends the grid
+                rows.append({"w": width, "h": height, "error": f"{type(exc).__name__}: {exc}"})
+                failures += 1
+                if failures >= 3:
+                    raise
+        return rows
+
 
 def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int], display_result: Dict[str, Any],
             build: Dict[str, Any], mode: str = "display", prefs: Optional[Dict[str, Any]] = None,
-            table: Optional[launcher.ProcessTable] = None) -> Dict[str, Any]:
-    """One launch, measured. Returns the raw record; it never raises for a failure of the browser (`error` says it)."""
+            table: Optional[launcher.ProcessTable] = None,
+            steps_wanted: Sequence[str] = plan.CORE_STEPS) -> Dict[str, Any]:
+    """One launch, measured. Returns the raw record; it never raises for a failure of the browser (`error` says it).
+    `maximized` is always taken first (it gives the work area); the other steps are those of `steps_wanted`."""
     table = table or launcher.ProcessTable()
     exe = install_dir / "firefox.exe"
     marionette_port = free_port()
@@ -317,7 +425,8 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
                            "launch": launch, "resolution": list(resolution), "display": display_result,
                            "environment": guarded(lambda: environment.collect(display_result.get("effective_dpi"))),
                            "prefs_declared": {k: v for k, v in all_prefs.items() if k != "marionette.port"},
-                           "steps": {}, "error": None}
+                           "dev_px_per_px": (prefs or {}).get("layout.css.devPixelsPerPx"),
+                           "steps_planned": list(steps_wanted), "steps": {}, "error": None}
     server, process, client = PageServer(), None, marionette.Client(marionette_port)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         profile = Path(tmp) / "profile"
@@ -342,8 +451,19 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
             steps["maximized"] = session.maximized()
             native = steps["maximized"]["native"]
             scale = steps["maximized"]["chrome"]["devicePixelRatio"]
-            steps["restored"] = session.restored(native.get("work_rect") or [0, 0, 0, 0], scale)
-            raw["restored_size_used"] = steps["restored"].pop("size_used")
+            work = native.get("work_rect") or [0, 0, 0, 0]
+            if "restored" in steps_wanted:
+                steps["restored"] = session.restored(work, scale)
+                raw["restored_size_used"] = steps["restored"].pop("size_used")
+            if "juggler" in steps_wanted:
+                steps["juggler"], steps["juggler_rdm"], raw["juggler_size_used"] = session.juggler(work, scale)
+                session.clear_juggler()
+            if "grid" in steps_wanted:
+                steps["grid"] = session.grid(plan.grid_points(), scale, work)
+            if "minimum" in steps_wanted:
+                steps["minimum"] = session.inner_row(*plan.MINIMUM_ASKED)
+            if "grid_check" in steps_wanted:
+                steps["grid_check"] = session.grid(plan.GRID_CHECK_POINTS, scale, work)
             client.delete_session()
         except Exception as exc:  # noqa: BLE001 - the record says what failed
             raw["error"] = f"{type(exc).__name__}: {exc}"
@@ -372,6 +492,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--resolution", required=True, help="WxH, as asked of the display (recorded, not set)")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--mode", choices=["display", "devPixelsPerPx"], default="display")
+    ap.add_argument("--steps", default=",".join(plan.CORE_STEPS), help="comma-separated steps after `maximized`")
     args = ap.parse_args(argv)
     display.enable_dpi_awareness()
     dpi = display.effective_dpi()
@@ -379,7 +500,8 @@ def main(argv: Optional[List[str]] = None) -> int:
              "dpi_reached": dpi == round(96 * args.dpr)}
     prefs = {"layout.css.devPixelsPerPx": "%g" % args.dpr} if args.mode == "devPixelsPerPx" else {}
     raw = measure(args.install.resolve(), args.dpr, args.launch, [int(n) for n in args.resolution.split("x")], shown,
-                  json.loads(args.build.read_text(encoding="utf-8")), args.mode, prefs)
+                  json.loads(args.build.read_text(encoding="utf-8")), args.mode, prefs,
+                  steps_wanted=[n for n in args.steps.split(",") if n])
     print(write_raw(raw, args.out))
     return 0 if raw["error"] is None and raw["processes_left"] == 0 else 1
 

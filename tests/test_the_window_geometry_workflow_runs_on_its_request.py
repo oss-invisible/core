@@ -6,7 +6,7 @@ one job per display scale. Held here, on the file itself:
   * the trigger is an event of the code (a pull request or a push to main that changes the request); no schedule, no
     dispatched run;
   * a first job validates the request; the capture job is a matrix of the scales it prints, on windows-2025, TEMP and TMP
-    on D:, 30 minutes at most, `fail-fast: false`;
+    on D:, 45 minutes at most, `fail-fast: false`;
   * the browser is started only by the scripts, never by the workflow; the build is fetched by the script that verifies it;
   * the artifact is named for the version and the scale, is uploaded even when a step is red, and is kept 90 days;
   * the `judge` job needs the matrix, runs `if: always()`, downloads every artifact and runs the judge script;
@@ -61,7 +61,7 @@ def test_the_capture_is_one_job_per_scale_on_windows_2025_with_temp_on_d():
     assert job["strategy"]["fail-fast"] is False
     assert job["strategy"]["matrix"] == {"dpr": "${{ fromJSON(needs.request.outputs.dpr) }}"}
     assert job["env"]["TEMP"] == D_TEMP and job["env"]["TMP"] == D_TEMP
-    assert job["timeout-minutes"] <= 30
+    assert job["timeout-minutes"] == 45, "the grid and the every-resolution launches take most of it (run_scale.TIME_BUDGET_SECONDS)"
     assert "--dpr ${{ matrix.dpr }}" in _runs("capture")
 
 
