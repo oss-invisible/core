@@ -1,1 +1,10 @@
-[]
+[
+ {"test": "tests/test_wait_for_selector_hidden_with_no_element.py::test_hidden_with_no_element_returns_none_in_the_first_turn",
+  "os": ["linux", "windows"],
+  "defect": "wait_for_selector(state=hidden) with nothing matching polled until its timeout instead of returning null at once as stock Playwright does",
+  "fix": "oss-invisible/core@00017f65ea7c86d6c7a1971e1a4bbff35467b089",
+  "red_on_old": "oss-invisible/playwright/actions/runs/45078152951/job/137383956768",
+  "red_kind": "defect-run",
+  "pr": "oss-invisible/core#317",
+  "added": "2026-11-25"}
+]
