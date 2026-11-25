@@ -87,7 +87,7 @@ def test_the_build_is_fetched_by_the_script_that_verifies_it_and_nothing_is_inst
 def test_the_artifact_is_kept_when_a_step_is_red():
     gather, upload = STEPS[-2], STEPS[-1]
     assert gather["if"] == "always()" and upload["if"] == "always()"
-    assert upload["uses"].startswith("actions/upload-artifact@v4")
+    assert upload["uses"].startswith("actions/upload-artifact@")  # the pin is held by test_every_action_is_pinned_by_commit_sha
     assert upload["with"]["name"] == "retail-capture-${{ steps.request.outputs.firefox_version }}"
 
 
