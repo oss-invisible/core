@@ -27,14 +27,14 @@ jobs:
       # tree: the judge reads addresses, never contents. A full clone of the
       # engine series (about 5 GB) did not finish in 5 minutes (run 44708578369);
       # without trees it is about 300 MB.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
         with:
           fetch-depth: 0
           filter: tree:0
           sparse-checkout: /.github/
           sparse-checkout-cone-mode: false
       # The judge is read from main of the core, never from the judged branch.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
         with:
           repository: oss-invisible/core
           ref: main
