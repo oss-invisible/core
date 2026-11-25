@@ -67,7 +67,7 @@ return {windowState: window.windowState, maximized: window.windowState === windo
   browser: rect(gBrowser.selectedBrowser.getBoundingClientRect()),
   sizemode: document.documentElement.getAttribute('sizemode')};"""
 CONTENT_STATE = """
-const m = window.wrappedJSObject.__m;
+const m = (window.wrappedJSObject || window).__m;
 return {innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWidth: window.outerWidth,
   outerHeight: window.outerHeight, screenX: window.screenX, screenY: window.screenY, screenLeft: window.screenLeft,
   screenTop: window.screenTop, mozInnerScreenX: window.mozInnerScreenX, mozInnerScreenY: window.mozInnerScreenY,
@@ -77,8 +77,8 @@ return {innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWid
   events: {count: m.count, dx: m.dx, dy: m.dy}};"""
 CONTENT_SIZE = "return [window.outerWidth, window.outerHeight, window.innerWidth, window.innerHeight];"
 CHROME_SIZE = "return [window.windowState === window.STATE_MAXIMIZED, window.innerWidth, window.innerHeight, window.outerWidth, window.outerHeight];"
-PAGE_READY = "return !!window.wrappedJSObject.__m;"
-RESET_EVENTS = "window.wrappedJSObject.__reset(); return true;"
+PAGE_READY = "return !!(window.wrappedJSObject || window).__m;"
+RESET_EVENTS = "(window.wrappedJSObject || window).__reset(); return true;"
 TWO_FRAMES = ("const done = arguments[arguments.length - 1]; let once = false; "
               "const end = (v) => { if (!once) { once = true; done(v); } }; setTimeout(() => end(false), 2000); "
               "requestAnimationFrame(() => requestAnimationFrame(() => end(true)));")
