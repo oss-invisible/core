@@ -159,3 +159,16 @@ def test_the_marionette_exception_is_written_the_same_in_the_meta_and_in_the_wor
     workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "retail-window-geometry.yml").read_text(encoding="utf-8")
     flat = " ".join(line.lstrip("# ").strip() for line in workflow.splitlines() if line.startswith("#"))
     assert " ".join(run_scale.MARIONETTE_EXCEPTION.split()) in " ".join(flat.split())
+
+
+def test_the_one_variable_the_launch_sets_is_marionette_s_system_access():
+    env = measure.launch_env({"PATH": "x", "MOZ_FOO": "1"})
+    assert env == {"PATH": "x", "MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "1"}
+
+
+def test_marionette_s_variable_with_another_value_is_refused(tmp_path):
+    prefs = {"marionette.port": 2828}
+    profile, install = make_profile(tmp_path, prefs), tmp_path / "install"
+    measure.assert_launch(command(profile), profile, install, {"MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "1"}, prefs)
+    with pytest.raises(measure.MeasureError, match="declared launch"):
+        measure.assert_launch(command(profile), profile, install, {"MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "0"}, prefs)

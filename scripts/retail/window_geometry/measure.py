@@ -5,8 +5,9 @@
 
 The launch is `firefox.exe -no-remote -profile <fresh empty directory> -marionette <page url>`: a profile whose
 only file is a user.js with `marionette.port` (and, for the derived path, `layout.css.devPixelsPerPx`), nothing
-in distribution/policies.json, no MOZ_* variable. Marionette is the one difference from retail-capture.yml; why it
-is allowed is in the header of .github/workflows/retail-window-geometry.yml.
+in distribution/policies.json, and no MOZ_* variable but MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1, without which Marionette refuses
+the chrome context. Marionette is the one difference from retail-capture.yml; why it is allowed is in the header of
+.github/workflows/retail-window-geometry.yml.
 
 Two steps are recorded, each with the same fields (what the page reads, what the chrome reads, what Windows says
 about the top-level window, and a real mouse move over the content): `maximized`, and `restored`, produced by the
@@ -46,6 +47,8 @@ RESIZE_WIDTH, RESIZE_HEIGHT, FALLBACK_HEIGHT, FRAME_ALLOWANCE_CSS = 390, 844, 40
 HOLD_SECONDS, SETTLE_TIMEOUT, POLL_SECONDS = 1.0, 20.0, 0.25
 #: Where the mouse goes, as fractions of the content area.
 MOUSE_FRACTIONS = ((0.25, 0.3), (0.5, 0.5), (0.75, 0.7))
+#: The one variable the launch sets: Marionette refuses chrome-context script without it (Firefox 159).
+MARIONETTE_ENV = {"MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "1"}
 CLASS_NAME = "MozillaWindowClass"
 DWMWA_EXTENDED_FRAME_BOUNDS, GWL_STYLE, GWL_EXSTYLE, MONITOR_DEFAULTTONEAREST = 9, -16, -20, 2
 MOUSEEVENTF_MOVE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_VIRTUALDESK = 0x1, 0x8000, 0x4000
@@ -95,13 +98,20 @@ def launch_command(firefox_exe: Path, profile: Path, url: str) -> List[str]:
     return [str(firefox_exe), "-no-remote", "-profile", str(profile), "-marionette", url]
 
 
+def launch_env(base: Dict[str, str]) -> Dict[str, str]:
+    """The runner's environment without any MOZ_* variable, plus MARIONETTE_ENV."""
+    env = {k: v for k, v in base.items() if not k.upper().startswith("MOZ_")}
+    env.update(MARIONETTE_ENV)
+    return env
+
+
 def user_js(prefs: Dict[str, Any]) -> str:
     return "".join(f"user_pref({json.dumps(name)}, {json.dumps(value)});\n" for name, value in sorted(prefs.items()))
 
 
 def assert_launch(command: Sequence[str], profile: Path, install_dir: Path, env: Dict[str, str],
                   prefs: Dict[str, Any]) -> None:
-    """Refuse anything but the declared launch: this command, a profile of one user.js with exactly `prefs`, no policy, no MOZ_*."""
+    """Refuse anything but the declared launch: this command, a profile of one user.js with exactly `prefs`, no policy, no MOZ_* but MARIONETTE_ENV."""
     problems: List[str] = []
     if len(command) != 6 or list(command[1:5]) != ["-no-remote", "-profile", str(profile), "-marionette"]:
         problems.append(f"the command is {list(command)}")
@@ -113,7 +123,7 @@ def assert_launch(command: Sequence[str], profile: Path, install_dir: Path, env:
     for relative in launcher.FORBIDDEN_IN_INSTALL:
         if (install_dir / relative).exists():
             problems.append(f"the install folder has {relative.as_posix()}")
-    moz = sorted(k for k in env if k.upper().startswith("MOZ_"))
+    moz = sorted(k for k in env if k.upper().startswith("MOZ_") and (k, env[k]) not in MARIONETTE_ENV.items())
     if moz:
         problems.append(f"the environment sets {moz}")
     if problems:
@@ -316,8 +326,10 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
         command = launch_command(exe, profile, f"http://127.0.0.1:{server.port}/")
         raw["command"] = command
         try:
-            assert_launch(command, profile, install_dir, dict(os.environ), all_prefs)
-            process = subprocess.Popen(command, env=dict(os.environ), stdin=subprocess.DEVNULL,
+            env = launch_env(dict(os.environ))
+            raw["env_set"] = dict(MARIONETTE_ENV)
+            assert_launch(command, profile, install_dir, env, all_prefs)
+            process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             client.connect()
             client.new_session()

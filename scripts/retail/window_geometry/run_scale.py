@@ -31,7 +31,8 @@ import capture_request  # noqa: E402
 
 MARIONETTE_EXCEPTION = (
     "This capture launches retail Firefox with -marionette, unlike retail-capture.yml (plain launch), because "
-    "reproducing Juggler's resize needs chrome-privileged script: the restored window is produced by exactly the "
+    "reproducing Juggler's resize needs chrome-privileged script (and so MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1, "
+    "which Marionette requires for it; no other MOZ_* variable): the restored window is produced by exactly the "
     "line Juggler runs (TargetRegistry.js setViewportSize: window.resizeBy). Proof that Marionette does not change "
     "the frame: at every scale reached live, the maximized geometry measured here must equal invisible_core "
     "WINDOW_FRAME_BY_DPR (measured from plain launches) exactly, or the scale is not valid (judge.py).")
