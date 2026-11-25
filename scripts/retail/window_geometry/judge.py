@@ -9,6 +9,8 @@ Red when:
     (the diff is printed); the grid, the minimum and the grid check are not part of that comparison;
   * at the scales of plan.GRID_DPRS, launch a lacks its grid and minimum, launch b lacks its grid check, a grid row is
     an error, or a point of the grid check is not exactly the row of launch a at the same point;
+  * at the scales of plan.HOSTGATE_DPRS, launches a and b lack their `rdm_hostgate` step, or the collection page did not
+    post its result WITHOUT inRDMPane (a missing POST WITH inRDMPane is printed as `RDM HANG` and is a finding, not red);
   * at the FIRST resolution of scale 1 (display mode, scale reached live), the MAXIMIZED step is not exactly the row of
     invisible_core WINDOW_FRAME_BY_DPR (read from the source of this checkout): the invisible border
     (GetWindowRect width minus work-area width, halved), screenX = round-half-up(-border / dpr) and
@@ -107,6 +109,62 @@ def required_steps(run: Dict[str, Any]) -> Tuple[str, ...]:
 def step_is_complete(step: Any) -> bool:
     """A step with its window record, or one the capture says it skipped (Juggler's size did not fit the work area)."""
     return isinstance(step, dict) and ("skipped" in step or "window_rect" in (step.get("native") or {}))
+
+
+def probe_line(step_name: str, step: Dict[str, Any]) -> Optional[str]:
+    """What the page reads that can differ under responsive-design mode (page.html __probe), on one line; None without it."""
+    probe = (step.get("content") or {}).get("probe")
+    if not probe:
+        return None
+    screen, found, touch = probe.get("screen") or {}, probe.get("found") or {}, probe.get("touch") or {}
+    orientation = screen.get("orientation") or {}
+    true_queries = sorted(q for q, v in (probe.get("matches") or {}).items() if v)
+    viewport = probe.get("visualViewport")
+    return (f"    {step_name} probe: screen {screen.get('width')}x{screen.get('height')} avail {screen.get('availWidth')}x{screen.get('availHeight')} "
+            f"at {screen.get('availLeft')},{screen.get('availTop')} colorDepth {screen.get('colorDepth')} "
+            f"orientation {orientation.get('type')}/{orientation.get('angle')} dpr {probe.get('devicePixelRatio')} ; "
+            f"matchMedia width {found.get('width')} height {found.get('height')} device-width {found.get('device-width')} "
+            f"device-height {found.get('device-height')} aspect-ratio x10000 {found.get('aspect-ratio_x10000')} "
+            f"device-aspect-ratio x10000 {found.get('device-aspect-ratio_x10000')} resolution x100 {found.get('resolution_x100')} "
+            f"true {true_queries} ; touch maxTouchPoints {touch.get('maxTouchPoints')} ontouchstart {touch.get('ontouchstart')} "
+            f"TouchEvent {touch.get('touchEvent')} ; visualViewport "
+            + ("none" if viewport is None else " ".join(f"{k} {viewport[k]}" for k in sorted(viewport)))
+            + f" ; root client {(probe.get('client') or {}).get('width')}x{(probe.get('client') or {}).get('height')}")
+
+
+def hostgate_lines(run: Dict[str, Any]) -> List[str]:
+    """The two outcomes of the collection page in the tab (without, then with inRDMPane)."""
+    step = run["steps"].get("rdm_hostgate")
+    if not step:
+        return []
+    if "skipped" in step:
+        return [f"    rdm_hostgate: skipped ({step['skipped']})"]
+    lines = []
+    for key, label in (("rdm_false", "false"), ("rdm_true", "true")):
+        entry = step.get(key) or {}
+        if entry.get("posted"):
+            lines.append(f"    rdm_hostgate inRDMPane={label}: posted in {entry.get('seconds')} s, {entry.get('bytes')} bytes, "
+                         f"sha256 {entry.get('sha256')}, inRDMPane read back {entry.get('inRDMPane')}")
+        elif key == "rdm_true":
+            lines.append(f"    rdm_hostgate inRDMPane={label}: RDM HANG (no POST in {entry.get('seconds')} s, "
+                         f"inRDMPane read back {entry.get('inRDMPane')})")
+        else:
+            lines.append(f"    rdm_hostgate inRDMPane={label}: NO POST in {entry.get('seconds')} s")
+    return lines
+
+
+def hostgate_problems(runs: Iterable[Dict[str, Any]], dpr: float) -> List[str]:
+    """Red: the step is missing, or the page did not post without inRDMPane. An RDM hang is not red."""
+    problems = []
+    for run in runs:
+        step = run["steps"].get("rdm_hostgate")
+        if step is None:
+            problems.append(f"dpr {dpr:g}: launch {run['launch']} has no rdm_hostgate")
+        elif "skipped" not in step and not (step.get("rdm_false") or {}).get("posted"):
+            problems.append(f"dpr {dpr:g}: launch {run['launch']}: host-gate-2.html did not post without inRDMPane")
+        elif "skipped" not in step and "rdm_true" not in step:
+            problems.append(f"dpr {dpr:g}: launch {run['launch']}: rdm_hostgate has no run with inRDMPane")
+    return problems
 
 
 def grid_cell(row: Dict[str, Any]) -> str:
@@ -235,6 +293,11 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
             lines.append(f"    {step_name} page: inner {d['page_inner']} outer {d['page_outer']} screen {d['screen_wh']} "
                          f"event dx/dy {d['event_dxdy']} work area css {d['work_css']} native client rect {d['client_rect']} "
                          f"window rect {d['window_rect']}")
+        for step_name in required_steps(run):
+            line = probe_line(step_name, run["steps"][step_name]) if "skipped" not in run["steps"][step_name] else None
+            if line:
+                lines.append(line)
+        lines.extend(hostgate_lines(run))
         if "restored" in run["steps"]:
             lines.append(f"    restored size used {run.get('restored_size_used')}")
         if "juggler" in run["steps"]:
@@ -265,6 +328,8 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
                 more_lines, more_problems = grid_problems(first, group[1], dpr)
                 lines.extend(more_lines)
                 problems.extend(more_problems)
+                if dpr in plan.HOSTGATE_DPRS:
+                    problems.extend(hostgate_problems(group[:2], dpr))
     return {"red": bool(problems), "problems": problems, "lines": lines}
 
 

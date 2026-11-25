@@ -10,12 +10,20 @@ No browser starts and no Windows call is made. Held here:
   * the mouse points are inside the browser rectangle, from the client origin, at the scale of the window;
   * the structures handed to Windows have the sizes Windows expects, and the scale steps are relative to the recommended one;
   * the run plan: every launch at the first resolution, the first alone at the others;
-  * the launch takes only the steps asked for.
+  * the launch takes only the steps asked for;
+  * the page reads, in itself, everything that can differ under responsive-design mode (page.html __probe), and the content
+    record of every step carries it;
+  * the host-gate step: Juggler's sequence again, then the collection page loaded without and with inRDMPane, each wait for
+    the POST bounded; a result is kept in its own file (not in raw.json) with its size and sha256; a missing POST is recorded.
 """
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import json
 import re
+import threading
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -232,3 +240,131 @@ def test_the_launch_takes_the_maximized_step_always_and_the_others_only_when_ask
     for name in ("restored", "juggler", "grid", "minimum", "grid_check"):
         assert f'if "{name}" in steps_wanted:' in source, name
     assert 'steps["maximized"] = session.maximized()' in source
+
+
+PAGE_HTML = (Path(measure.__file__).parent / "page.html").read_text(encoding="utf-8")
+
+
+def test_the_page_reads_in_itself_what_can_differ_under_rdm():
+    probe = PAGE_HTML.split("window.__probe = ")[1]
+    for needle in (
+            # screen
+            "s.width", "s.height", "s.availWidth", "s.availHeight", "s.availLeft", "s.availTop", "s.colorDepth",
+            "s.orientation.type", "s.orientation.angle", "window.devicePixelRatio",
+            # media queries: the integers by binary search over min- queries, the booleans as .matches
+            "min-width: ${n}px", "min-height: ${n}px", "min-device-width: ${n}px", "min-device-height: ${n}px",
+            "min-aspect-ratio: ${n}/10000", "min-device-aspect-ratio: ${n}/10000", "min-resolution: ${n / 100}dppx",
+            "Math.ceil((lo + hi) / 2)", ".matches",
+            "(pointer: fine)", "(pointer: coarse)", "(pointer: none)", "(any-pointer: fine)", "(any-pointer: coarse)",
+            "(any-pointer: none)", "(hover: hover)", "(hover: none)", "(any-hover: hover)", "(any-hover: none)",
+            "(orientation: portrait)", "(orientation: landscape)",
+            # touch, visual viewport, the root's client size
+            "navigator.maxTouchPoints", '"ontouchstart" in window', "typeof TouchEvent",
+            "vv.width", "vv.height", "vv.scale", "vv.offsetLeft", "vv.offsetTop", "vv.pageLeft", "vv.pageTop",
+            "document.documentElement.clientWidth", "document.documentElement.clientHeight"):
+        assert needle in probe, needle
+    assert "JSON.stringify" in probe and PAGE_HTML.count("<script>") == 1 == PAGE_HTML.count("</script>")
+
+
+def test_the_content_record_of_every_step_calls_the_probe_in_the_page_itself_and_keeps_what_it_read_before():
+    state = measure.CONTENT_STATE
+    assert "probe: JSON.parse((window.wrappedJSObject || window).__probe())" in state
+    for field in ("innerWidth", "outerWidth", "screenX", "mozInnerScreenX", "mozInnerScreenY", "events: {count: m.count, dx: m.dx, dy: m.dy}"):
+        assert field in state, field
+
+
+def test_the_collection_page_is_the_cores_own_and_posts_to_the_result_path_of_the_capture_server():
+    assert measure.HOSTGATE_PAGE.is_file() and measure.HOSTGATE_PAGE.parts[-3:] == ("captures", "pages", "host-gate-2.html")
+    assert "fetch('/result' + location.search" in measure.HOSTGATE_PAGE.read_text(encoding="utf-8")
+    assert measure.HOSTGATE_TIMEOUT == 120.0
+
+
+class PostingSession(measure.Session):
+    """A session with no browser: the chrome and content calls are recorded, and `load` plays the page POSTing its result."""
+
+    def __init__(self, posts):
+        super().__init__(None, Path("."), None)
+        self.posts, self.calls = posts, []
+
+    def chrome(self, script, args=None):
+        self.calls.append(("chrome", script, args))
+        return False if script == measure.RDM_STATE else True
+
+    def content(self, script, args=None):
+        self.calls.append(("content", script, args))
+        return [390, 844]
+
+    def load(self, url):
+        self.calls.append(("load", url, None))
+        base, label = url.split("/?")
+        if self.posts.get(label):
+            request = urllib.request.Request(f"{base}/result?{label}", data=self.posts[label], method="POST")
+            threading.Thread(target=lambda: urllib.request.urlopen(request, timeout=10).read(), daemon=True).start()
+
+
+@pytest.fixture
+def instant(monkeypatch):
+    monkeypatch.setattr(measure, "wait_stable", lambda read, *a, **k: (read(), True))
+
+
+def test_the_host_gate_step_reapplies_juggler_s_sequence_then_loads_the_page_without_and_with_rdm(instant):
+    posts = {"rdmfalse": b'{"result": "plain"}', "rdmtrue": b'{"result": "under rdm"}'}
+    session = PostingSession(posts)
+    step, files = session.rdm_hostgate(844, timeout=10)
+    order = [(kind, script if kind != "load" else script.split("/?")[1]) for kind, script, _ in session.calls
+             if script not in (measure.RDM_STATE, "return [window.innerWidth, window.innerHeight];")]
+    assert order == [("chrome", measure.JUGGLER_SEQUENCE), ("chrome", measure.RDM_OFF), ("load", "rdmfalse"),
+                     ("chrome", measure.RDM_ON), ("load", "rdmtrue")]
+    assert session.calls[0][2] == [390, 844]
+    assert files == {"hostgate-rdm-false.json": posts["rdmfalse"], "hostgate-rdm-true.json": posts["rdmtrue"]}
+    for key, label in (("rdm_false", "rdmfalse"), ("rdm_true", "rdmtrue")):
+        entry = step[key]
+        assert entry["posted"] is True and entry["bytes"] == len(posts[label]) and entry["sha256"] == hashlib.sha256(posts[label]).hexdigest()
+        assert 0 <= entry["seconds"] < 10 and entry["inRDMPane"] is False
+    assert step["juggler_height"] == 844 and step["timeout_seconds"] == 10
+    assert b"result" not in json.dumps(step).encode("utf-8"), "the results are in files, not in the step"
+
+
+def test_a_page_that_never_posts_under_rdm_is_recorded_as_not_posted_after_the_timeout_and_keeps_no_file(instant):
+    session = PostingSession({"rdmfalse": b"{}", "rdmtrue": None})
+    step, files = session.rdm_hostgate(560, timeout=0.3)
+    assert step["rdm_false"]["posted"] is True and step["rdm_true"] == dict(step["rdm_true"], posted=False, bytes=0, sha256=None)
+    assert 0.3 <= step["rdm_true"]["seconds"] < 5
+    assert list(files) == ["hostgate-rdm-false.json"]
+    assert session.calls[0][2] == [390, 560], "the juggler height used"
+
+
+def test_the_host_gate_step_is_skipped_when_juggler_s_size_did_not_fit():
+    session = PostingSession({})
+    assert session.rdm_hostgate(None) == ({"skipped": "does_not_fit"}, {})
+    assert session.calls == []
+
+
+def test_the_page_is_loaded_from_the_chrome_without_waiting_and_from_the_page_when_that_fails():
+    calls = []
+
+    class Loader(measure.Session):
+        def __init__(self, fail):
+            super().__init__(None, Path("."), None)
+            self.fail = fail
+
+        def chrome(self, script, args=None):
+            calls.append(("chrome", script))
+            if self.fail:
+                raise RuntimeError("no Services")
+
+        def content(self, script, args=None):
+            calls.append(("content", script))
+
+    Loader(False).load("http://127.0.0.1:1/?x")
+    Loader(True).load("http://127.0.0.1:1/?x")
+    assert calls == [("chrome", measure.LOAD_IN_TAB), ("chrome", measure.LOAD_IN_TAB), ("content", measure.LOAD_IN_CONTENT)]
+    assert "fixupAndLoadURIString" in measure.LOAD_IN_TAB and "getSystemPrincipal" in measure.LOAD_IN_TAB
+    assert "location.assign" in measure.LOAD_IN_CONTENT
+
+
+def test_the_files_next_to_raw_json_are_written_and_not_part_of_raw_json(tmp_path):
+    raw = {"steps": {}, "_attachments": {"hostgate-rdm-false.json": b"A", "hostgate-rdm-true.json": b"B"}}
+    path = measure.write_raw(raw, tmp_path / "a")
+    assert (tmp_path / "a" / "hostgate-rdm-false.json").read_bytes() == b"A" and (tmp_path / "a" / "hostgate-rdm-true.json").read_bytes() == b"B"
+    assert "_attachments" not in json.loads(path.read_text(encoding="utf-8")) and "_attachments" in raw, "the caller's record is not changed"

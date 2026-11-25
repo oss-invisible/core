@@ -49,7 +49,8 @@ COMMAND_IN_WORDS = (
     "Per scale: set each requested resolution, then the Windows display scale (DisplayConfig -3/-4), read the "
     "effective DPI back; launch retail Firefox -no-remote -profile <fresh dir> -marionette <page>; maximize the "
     "window, move the mouse, record; run Juggler's resizeBy line; run Juggler's whole sequence at 390x844 CSS (and "
-    "again with inRDMPane); at scales 1 and 1.25 a grid of restored windows and the minimum window. Every "
+    "again with inRDMPane); at scales 1 and 1.25 a grid of restored windows and the minimum window; at scale 1, last, "
+    "the collection page host-gate-2.html without and with inRDMPane. Every "
     "resolution Windows offers: launch m, maximized only. Last, 100% scale and layout.css.devPixelsPerPx = the "
     "scale (launches p and q), and in the job of scale 1 devPixelsPerPx 0.75 and 0.5 (launch m).")
 PROOF_RULE = ("judge.py: launch a equals launch b (p equals q); at the first resolution of scale 1 the maximized step "
@@ -98,7 +99,9 @@ def run(install_dir: Path, build: Dict[str, Any], request: Dict[str, Any], dpr: 
              steps: Sequence[str] = plan.CORE_STEPS, subfolder: Optional[str] = None) -> None:
         nonlocal problems
         raw = measure.measure(install_dir, dpr, launch, resolution, shown, build, mode, prefs, steps_wanted=steps)
-        raws.append(measure.write_raw(raw, base / folder(resolution) / (subfolder or launch)))
+        written = measure.write_raw(raw, base / folder(resolution) / (subfolder or launch))
+        raws.append(written)
+        raws.extend(sorted(written.parent.glob("hostgate-*.json")))  # the host-gate results kept beside raw.json
         problems += raw["error"] is not None or raw["processes_left"] != 0
         print(f"dpr {dpr} {folder(resolution)} {subfolder or launch}: error={raw['error']} left={raw['processes_left']} "
               f"dpi_reached={shown.get('dpi_reached')} steps={sorted(raw['steps'])} t={time.monotonic() - started:.0f}s", flush=True)

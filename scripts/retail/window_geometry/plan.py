@@ -5,6 +5,7 @@ Round 2 of the capture, per job (one display scale):
   launch a (first reached resolution)  maximized, restored, juggler, juggler_rdm, and at the scales of GRID_DPRS also
                                        `grid` (restored windows at GRID_WIDTHS x GRID_HEIGHTS) and `minimum`
   launch b (same resolution)           the same four steps, and at GRID_DPRS `grid_check` (GRID_CHECK_POINTS again)
+  launches a and b at HOSTGATE_DPRS    last, `rdm_hostgate`
   launch m (every resolution Windows   `maximized` only: the maximized UI height as a function of the work area
             offers, at the job's scale)
   launch p (and q when no display      the four steps with layout.css.devPixelsPerPx = the scale, at 100% display scale
@@ -20,10 +21,12 @@ from typing import List, Optional, Sequence, Tuple
 #: The four steps every a, b, p and q launch takes (the determinism check compares exactly these).
 CORE_STEPS = ("maximized", "restored", "juggler", "juggler_rdm")
 #: Steps that are not part of the a/b determinism check.
-GRID_STEPS = ("grid", "minimum", "grid_check")
+GRID_STEPS = ("grid", "minimum", "grid_check", "rdm_hostgate")
 MAXIMIZED_ONLY = ("maximized",)
 
 GRID_DPRS = (1.0, 1.25)
+#: Scale of the `rdm_hostgate` step (launches a and b, last): host-gate-2.html in the tab without and then with inRDMPane.
+HOSTGATE_DPRS = (1.0,)
 GRID_WIDTHS = (500, 640, 800, 1000, 1100, 1200, 1280, 1300, 1366, 1400, 1440, 1500, 1536, 1600, 1700, 1800, 1900)
 GRID_HEIGHTS = (450, 500, 600, 650, 672, 700, 720, 750, 768, 800, 816, 850, 864, 900, 950, 1000)
 #: Launch b repeats these points of launch a's grid; the judge wants every one equal to launch a's row.
@@ -70,6 +73,8 @@ def steps_for(dpr: float, launch: str, launches: Sequence[str], first_reached: b
             steps += ["grid", "minimum"]
         elif len(launches) > 1 and launch == launches[1]:
             steps += ["grid_check"]
+    if first_reached and float(dpr) in HOSTGATE_DPRS and launch in launches[:2]:
+        steps.append("rdm_hostgate")  # last: it leaves the tab on another page
     return steps
 
 

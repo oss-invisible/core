@@ -65,9 +65,9 @@ def test_juggler_s_height_is_844_when_it_fits_else_the_largest_multiple_of_ten_t
 
 
 @pytest.mark.parametrize("dpr,launch,first,expected", [
-    (1.0, "a", True, [*plan.CORE_STEPS, "grid", "minimum"]),
+    (1.0, "a", True, [*plan.CORE_STEPS, "grid", "minimum", "rdm_hostgate"]),
     (1.25, "a", True, [*plan.CORE_STEPS, "grid", "minimum"]),
-    (1.0, "b", True, [*plan.CORE_STEPS, "grid_check"]),
+    (1.0, "b", True, [*plan.CORE_STEPS, "grid_check", "rdm_hostgate"]),
     (1.25, "b", True, [*plan.CORE_STEPS, "grid_check"]),
     (1.0, "a", False, list(plan.CORE_STEPS)),
     (1.5, "a", True, list(plan.CORE_STEPS)),
@@ -82,7 +82,9 @@ def test_each_launch_takes_the_steps_of_the_plan(dpr, launch, first, expected):
 def test_the_four_steps_are_the_ones_the_judge_compares_and_the_grid_steps_are_not_among_them():
     assert plan.CORE_STEPS == ("maximized", "restored", "juggler", "juggler_rdm")
     assert not set(plan.GRID_STEPS) & set(plan.CORE_STEPS)
-    assert plan.RESERVED_LAUNCHES == ("p", "q", "m")
+    assert plan.RESERVED_LAUNCHES == ("p", "q", "m") and plan.HOSTGATE_DPRS == (1.0,)
+    assert plan.steps_for(1.0, "c", ["a", "b", "c"], True) == list(plan.CORE_STEPS), "only a and b take the host-gate step"
+    assert plan.steps_for(1.0, "a", ["a", "b"], False) == list(plan.CORE_STEPS)
 
 
 # ---------------------------------------------------------------------------- the order of a job
@@ -138,7 +140,7 @@ def test_a_scale_reached_live_runs_a_and_b_then_the_derived_launch_then_m_at_eve
         ("p", (1920, 1080), "devPixelsPerPx", "1.25"),
         ("m", (1024, 768), "display", None), ("m", (1920, 1080), "display", None)]
     by_launch = {(c["launch"], c["mode"]): c["steps"] for c in fakes.calls}
-    assert by_launch[("a", "display")] == [*plan.CORE_STEPS, "grid", "minimum"]
+    assert by_launch[("a", "display")] == [*plan.CORE_STEPS, "grid", "minimum"], "the host-gate step is of scale 1 only"
     assert by_launch[("b", "display")] == [*plan.CORE_STEPS, "grid_check"]
     assert by_launch[("p", "devPixelsPerPx")] == list(plan.CORE_STEPS)
     assert all(c["steps"] == ["maximized"] for c in fakes.calls if c["launch"] == "m")
@@ -203,3 +205,31 @@ def test_the_helpers_of_the_order():
     assert not run_scale.reached({"dpi_reached": False, "resolution": {"ok": True}})
     assert run_scale.why_not({"resolution": {"ok": False, "code": -2, "current": [1, 2]}}).startswith("resolution not set (code -2")
     assert run_scale.why_not({"resolution": {"ok": True}, "reason": "no"}) == "no"
+
+
+def test_scale_1_takes_the_host_gate_step_last_on_launches_a_and_b(monkeypatch, tmp_path):
+    fakes = Fakes(monkeypatch, tmp_path)
+    run_scale.run(tmp_path, {}, REQUEST, 1.0, tmp_path)
+    by_launch = {(c["launch"], c["mode"]): c["steps"] for c in fakes.calls}
+    assert by_launch[("a", "display")] == [*plan.CORE_STEPS, "grid", "minimum", "rdm_hostgate"]
+    assert by_launch[("b", "display")] == [*plan.CORE_STEPS, "grid_check", "rdm_hostgate"]
+    assert by_launch[("p", "devPixelsPerPx")] == list(plan.CORE_STEPS)
+
+
+def test_the_host_gate_results_are_kept_beside_raw_json_and_in_the_meta_hashes(monkeypatch, tmp_path):
+    fakes = Fakes(monkeypatch, tmp_path)
+    original = fakes.measure
+
+    def with_files(*args, **kw):
+        raw = original(*args, **kw)
+        if args[2] == "a" and "rdm_hostgate" in kw["steps_wanted"]:
+            raw["_attachments"] = {"hostgate-rdm-false.json": b'{"a":1}', "hostgate-rdm-true.json": b'{"b":2}'}
+        return raw
+
+    monkeypatch.setattr(run_scale.measure, "measure", with_files)
+    run_scale.run(tmp_path, {}, REQUEST, 1.0, tmp_path)
+    folder = tmp_path / "dpr1" / "1920x1080" / "a"
+    assert (folder / "hostgate-rdm-false.json").read_bytes() == b'{"a":1}' and (folder / "hostgate-rdm-true.json").read_bytes() == b'{"b":2}'
+    assert "_attachments" not in json.loads((folder / "raw.json").read_text(encoding="utf-8"))
+    hashes = meta_of(tmp_path, "1")["raw_sha256"]
+    assert {"1920x1080/a/raw.json", "1920x1080/a/hostgate-rdm-false.json", "1920x1080/a/hostgate-rdm-true.json"} <= set(hashes)

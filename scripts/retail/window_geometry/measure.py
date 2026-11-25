@@ -15,12 +15,14 @@ chrome reads, what Windows says about the top-level window, and a real mouse mov
 Juggler's whole sequence (styles on the browser and its stack, then that resizeBy) at 390x844 CSS; `juggler_rdm`, the
 same window with inRDMPane = true. Then, after clearing what Juggler's sequence set: `grid` (restored windows at chrome
 inner sizes W x H, one compact row each), `minimum` (the smallest window Firefox gives) and `grid_check` (a few grid
-points again). Writes OUT/raw.json. The result is valid only when no process of the install folder is left.
+points again); and, last, `rdm_hostgate` (the core's collection page host-gate-2.html loaded in the tab under Juggler's
+sequence, without and then with inRDMPane, each result kept in its own file next to raw.json). Writes OUT/raw.json. The result is valid only when no process of the install folder is left.
 """
 from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import http.server
 import json
 import os
@@ -42,10 +44,14 @@ import environment  # noqa: E402
 import marionette  # noqa: E402
 import plan  # noqa: E402
 import run_retail_capture as launcher  # noqa: E402
+import capture_server  # noqa: E402
 from native import INPUT, MONITORINFO, POINT, RECT, WINDOWPLACEMENT, api, guarded  # noqa: E402
 
 FORMAT = "retail-window-geometry/1"
 PAGE = HERE / "page.html"
+#: The core's collection page, served by scripts/retail/capture_server.py (the page POSTs its result to it).
+HOSTGATE_PAGE = HERE.parents[2] / "captures" / "pages" / "host-gate-2.html"
+HOSTGATE_TIMEOUT = 120.0
 #: The size Juggler is asked for, in CSS pixels, and the fallback height when the work area is too small for it.
 RESIZE_WIDTH, RESIZE_HEIGHT, FALLBACK_HEIGHT, FRAME_ALLOWANCE_CSS = 390, 844, 400, 200
 HOLD_SECONDS, SETTLE_TIMEOUT, POLL_SECONDS = 1.0, 20.0, 0.25
@@ -81,7 +87,8 @@ return {innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWid
   devicePixelRatio: window.devicePixelRatio,
   screen: {width: screen.width, height: screen.height, availWidth: screen.availWidth, availHeight: screen.availHeight,
            availLeft: screen.availLeft, availTop: screen.availTop},
-  events: {count: m.count, dx: m.dx, dy: m.dy}};"""
+  events: {count: m.count, dx: m.dx, dy: m.dy},
+  probe: JSON.parse((window.wrappedJSObject || window).__probe())};"""
 CONTENT_SIZE = "return [window.outerWidth, window.outerHeight, window.innerWidth, window.innerHeight];"
 #: Juggler's whole sequence, juggler/TargetRegistry.js (setViewportSize) lines 999-1018 as they are, `this` being the
 #: tab and `width` / `height` the arguments, in chrome context on the selected browser. Left out: the stealth guard and
@@ -108,6 +115,12 @@ JUGGLER_CLEAR = (
     "browser.browsingContext.inRDMPane = false;\n"
     "return true;")
 RDM_ON = "gBrowser.selectedBrowser.browsingContext.inRDMPane = true; return true;"
+RDM_OFF = "gBrowser.selectedBrowser.browsingContext.inRDMPane = false; return true;"
+RDM_STATE = "return gBrowser.selectedBrowser.browsingContext.inRDMPane;"
+#: Load a URL in the selected tab from the chrome (it does not wait for the page, which may never finish).
+LOAD_IN_TAB = ("gBrowser.selectedBrowser.fixupAndLoadURIString(arguments[0], "
+               "{triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal()}); return true;")
+LOAD_IN_CONTENT = "window.location.assign(arguments[0]); return true;"
 #: Chrome inner size to W x H CSS (a restored window): resizeBy by the difference.
 RESIZE_CHROME_INNER = ("const w = arguments[0], h = arguments[1]; window.resizeBy(w - window.innerWidth, h - window.innerHeight); "
                        "return true;")
@@ -369,6 +382,46 @@ class Session:
         _, settled = wait_stable(content_size)
         return first, dict(self.record(), settled=settled), size
 
+    def load(self, url: str) -> None:
+        """Navigate the selected tab without waiting for the page: from the chrome, else from the page."""
+        try:
+            self.chrome(LOAD_IN_TAB, [url])
+        except Exception:  # noqa: BLE001 - the page's own navigation is the other way in
+            self.content(LOAD_IN_CONTENT, [url])
+
+    def rdm_hostgate(self, height: Optional[int], page: Path = HOSTGATE_PAGE, timeout: float = HOSTGATE_TIMEOUT,
+                     clock: Callable[[], float] = time.monotonic) -> Tuple[Dict[str, Any], Dict[str, bytes]]:
+        """Juggler's sequence again (390 x height), then host-gate-2.html loaded without inRDMPane and then with it. Waits for
+        the page's POST (`timeout` s). Returns (the step: per run whether it posted, the seconds, the size and sha256 of the
+        result; the result files by name, kept next to raw.json and not in it)."""
+        if height is None:
+            return {"skipped": "does_not_fit"}, {}
+        step: Dict[str, Any] = {"juggler_height": height, "timeout_seconds": timeout}
+        files: Dict[str, bytes] = {}
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            http, tls, recorder = capture_server.start(page, Path(tmp))
+            try:
+                self.chrome(JUGGLER_SEQUENCE, [plan.JUGGLER_WIDTH, height])
+                wait_stable(lambda: self.content("return [window.innerWidth, window.innerHeight];"))
+                for rdm in (False, True):
+                    label = "rdm" + str(rdm).lower()
+                    self.chrome(RDM_ON if rdm else RDM_OFF)
+                    recorder.result_event.clear()
+                    started = clock()
+                    self.load(f"http://127.0.0.1:{http.server_address[1]}/?{label}")
+                    posted = recorder.result_event.wait(timeout)
+                    entry: Dict[str, Any] = {"posted": posted, "seconds": round(clock() - started, 1), "bytes": 0, "sha256": None,
+                                             "inRDMPane": guarded(lambda: self.chrome(RDM_STATE))}
+                    result = Path(tmp) / f"{label}.json"
+                    if posted and result.is_file():
+                        data = result.read_bytes()
+                        entry.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+                        files[f"hostgate-{label[:3]}-{label[3:]}.json"] = data
+                    step[f"{label[:3]}_{label[3:]}"] = entry
+            finally:
+                capture_server.stop(http, tls)
+        return step, files
+
     def clear_juggler(self) -> None:
         """Remove every style Juggler's sequence set and put inRDMPane back to false."""
         self.chrome(JUGGLER_CLEAR)
@@ -464,6 +517,8 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
                 steps["minimum"] = session.inner_row(*plan.MINIMUM_ASKED)
             if "grid_check" in steps_wanted:
                 steps["grid_check"] = session.grid(plan.GRID_CHECK_POINTS, scale, work)
+            if "rdm_hostgate" in steps_wanted:
+                steps["rdm_hostgate"], raw["_attachments"] = session.rdm_hostgate((raw.get("juggler_size_used") or {}).get("height"))
             client.delete_session()
         except Exception as exc:  # noqa: BLE001 - the record says what failed
             raw["error"] = f"{type(exc).__name__}: {exc}"
@@ -478,6 +533,9 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
 
 def write_raw(raw: Dict[str, Any], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
+    raw = dict(raw)
+    for name, data in (raw.pop("_attachments", None) or {}).items():  # files kept beside raw.json, not in it
+        (out_dir / name).write_bytes(data)
     path = out_dir / "raw.json"
     path.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path

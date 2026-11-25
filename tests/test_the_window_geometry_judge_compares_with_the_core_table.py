@@ -44,6 +44,28 @@ def grid_row(w, h, dpr, skipped=False):
                        "client_origin": [12, 8]}}
 
 
+def probe(dpr):
+    """What page.html's __probe returns, as the content script parses it."""
+    return {"screen": {"width": 1536, "height": 864, "availWidth": 1536, "availHeight": 825, "availLeft": 0, "availTop": 0,
+                       "colorDepth": 24, "orientation": {"type": "landscape-primary", "angle": 0}},
+            "devicePixelRatio": dpr,
+            "found": {"width": 1900, "height": 900, "device-width": 1536, "device-height": 864, "aspect-ratio_x10000": 21111,
+                      "device-aspect-ratio_x10000": 17777, "resolution_x100": round(dpr * 100)},
+            "matches": {"(width: 1900px)": True, "(pointer: fine)": True, "(pointer: coarse)": False, "(hover: hover)": True,
+                        "(orientation: landscape)": True},
+            "touch": {"maxTouchPoints": 0, "ontouchstart": False, "touchEvent": "undefined"},
+            "visualViewport": {"width": 1900, "height": 900, "scale": 1, "offsetLeft": 0, "offsetTop": 0, "pageLeft": 0, "pageTop": 0},
+            "client": {"width": 1900, "height": 900}}
+
+
+def hostgate_step(false_posted=True, true_posted=True):
+    def entry(posted):
+        return {"posted": posted, "seconds": 14.2 if posted else 120.0, "bytes": 31234 if posted else 0,
+                "sha256": "ab" * 32 if posted else None, "inRDMPane": False}
+
+    return {"juggler_height": 844, "timeout_seconds": 120.0, "rdm_false": entry(false_posted), "rdm_true": entry(true_posted)}
+
+
 GRID = [(w, h) for w in (500, 800, 1280, 1366, 1536, 1900) for h in (450, 600, 672, 768, 816, 1000)]
 
 
@@ -64,7 +86,7 @@ def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=T
                         "screenX": judge.half_up(-border / dpr), "screenY": judge.half_up(-border / dpr),
                         "mozInnerScreenX": 0.0, "mozInnerScreenY": ui / dpr,
                         "screen": {"width": 1536, "height": 864},
-                        "events": {"count": 3, "dx": 7, "dy": 91}},
+                        "events": {"count": 3, "dx": 7, "dy": 91}, "probe": probe(dpr)},
             "input": [{"asked": [1, 2], "cursor": [1, 2]}], "settled": True}
 
     restored = [100, 120, 100 + 390 + 2 * border, 120 + 844 + 100]
@@ -80,6 +102,8 @@ def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=T
         steps["minimum"]["chrome"].update(innerWidth=500, innerHeight=493)
     if grid and launch == "b":
         steps["grid_check"] = [grid_row(w, h, dpr) for w, h in plan.GRID_CHECK_POINTS]
+    if grid and float(dpr) in plan.HOSTGATE_DPRS and launch in ("a", "b"):
+        steps["rdm_hostgate"] = hostgate_step()
     out = {"format": "retail-window-geometry/1", "dpr_asked": dpr, "mode": mode, "launch": launch, "resolution": list(resolution),
            "display": {"dpi_reached": reached, "effective_dpi": round(96 * dpr), "resolution_now": list(resolution),
                        "reason": None if reached else "the scale is outside the steps this monitor offers"},
@@ -415,3 +439,80 @@ def test_the_devpixelsperpx_launches_m_are_labelled_with_the_value_and_need_no_p
     assert not result["red"], result["problems"]
     text = "\n".join(result["lines"])
     assert "launch m (devPixelsPerPx 0.75)" in text and "launch m (devPixelsPerPx 0.5)" in text
+
+
+# ---------------------------------------------------------------------------- what an RDM page can read, and the host-gate page
+
+
+def test_the_probe_of_the_page_is_printed_for_the_four_steps_on_one_line_each():
+    text = "\n".join(evaluate(two_launches(1.25))["lines"])
+    for step in ("maximized", "restored", "juggler", "juggler_rdm"):
+        line = next(line for line in text.splitlines() if line.startswith(f"    {step} probe:"))
+        for needle in ("screen 1536x864", "avail 1536x825 at 0,0", "colorDepth 24", "orientation landscape-primary/0", "dpr 1.25",
+                       "matchMedia width 1900 height 900 device-width 1536 device-height 864", "aspect-ratio x10000 21111",
+                       "device-aspect-ratio x10000 17777", "resolution x100 125", "'(pointer: fine)'", "maxTouchPoints 0",
+                       "ontouchstart False", "TouchEvent undefined", "visualViewport height 900 offsetLeft 0", "root client 1900x900"):
+            assert needle in line, (step, needle)
+        assert "'(pointer: coarse)'" not in line, "only the queries that match are listed"
+
+
+def test_a_difference_in_what_the_page_reads_between_launch_a_and_launch_b_is_red_on_the_juggler_rdm_step():
+    a, b = two_launches(1.0)
+    b["steps"]["juggler_rdm"]["content"]["probe"]["matches"]["(pointer: coarse)"] = True
+    result = evaluate([a, b])
+    assert result["red"] and any("juggler_rdm.content.probe.matches" in line for line in result["lines"])
+
+
+def test_a_probe_missing_from_a_step_is_not_an_error_of_the_judge():
+    a, b = two_launches(1.5)
+    for run in (a, b):
+        del run["steps"]["maximized"]["content"]["probe"]
+    assert not evaluate([a, b])["red"]
+
+
+def test_the_host_gate_outcomes_are_printed_and_a_green_run_has_both_posted():
+    result = evaluate(two_launches(1.0))
+    assert not result["red"], result["problems"]
+    text = "\n".join(result["lines"])
+    assert "rdm_hostgate inRDMPane=false: posted in 14.2 s, 31234 bytes, sha256 " + "ab" * 32 in text
+    assert "rdm_hostgate inRDMPane=true: posted in 14.2 s" in text
+
+
+def test_no_post_under_rdm_is_an_rdm_hang_a_finding_and_not_red():
+    a, b = two_launches(1.0)
+    for run in (a, b):
+        run["steps"]["rdm_hostgate"] = hostgate_step(true_posted=False)
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    assert any("rdm_hostgate inRDMPane=true: RDM HANG (no POST in 120.0 s" in line for line in result["lines"])
+
+
+def test_no_post_without_rdm_is_red():
+    a, b = two_launches(1.0)
+    b["steps"]["rdm_hostgate"] = hostgate_step(false_posted=False)
+    result = evaluate([a, b])
+    assert result["red"] and any("launch b: host-gate-2.html did not post without inRDMPane" in p for p in result["problems"])
+    assert any("NO POST in" in line for line in result["lines"])
+
+
+def test_a_missing_rdm_hostgate_step_is_red_at_scale_1_and_not_asked_elsewhere():
+    a, b = two_launches(1.0)
+    del a["steps"]["rdm_hostgate"]
+    assert any("launch a has no rdm_hostgate" in p for p in evaluate([a, b])["problems"])
+    assert "rdm_hostgate" not in two_launches(1.25)[0]["steps"] and not evaluate(two_launches(1.25))["red"]
+
+
+def test_a_skipped_rdm_hostgate_is_not_red_and_is_the_same_in_the_determinism_check():
+    a, b = two_launches(1.0)
+    for run in (a, b):
+        run["steps"]["rdm_hostgate"] = {"skipped": "does_not_fit"}
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    assert any("rdm_hostgate: skipped (does_not_fit)" in line for line in result["lines"])
+
+
+def test_the_host_gate_step_is_not_part_of_the_a_b_comparison():
+    a, b = two_launches(1.0)
+    b["steps"]["rdm_hostgate"]["rdm_false"]["seconds"] = 99.0
+    b["steps"]["rdm_hostgate"]["rdm_false"]["sha256"] = "cd" * 32
+    assert not evaluate([a, b])["red"]
