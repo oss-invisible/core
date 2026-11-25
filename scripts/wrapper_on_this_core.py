@@ -347,8 +347,6 @@ def problems_in_junit(junit_paths: list[Path], files: list[str]) -> list[str]:
                 problems.append(f"{jp.name}: a testcase with no classname (not xunit2): {name}")
                 continue
             skipped = case.find("skipped")
-            if skipped is not None and skipped.get("type") == "pytest.rerun":
-                continue  # a failed attempt that was run again: its last attempt is another testcase
             total += 1
             for f in files:
                 c = _classname_of(f)
@@ -356,6 +354,8 @@ def problems_in_junit(junit_paths: list[Path], files: list[str]) -> list[str]:
                     seen.add(f)
             if case.find("failure") is not None or case.find("error") is not None:
                 problems.append(f"FAILED {cls}::{name}")
+            elif skipped is not None and skipped.get("type") == "pytest.rerun":
+                problems.append(f"RERUN {cls}::{name}: a test passed only at a later attempt is not green")
             elif skipped is not None:
                 reason = (skipped.get("message") or "").strip()
                 problems.append(f"SKIPPED {cls}::{name}: {reason}")

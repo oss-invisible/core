@@ -25,8 +25,9 @@ list of tests:
   4. Every exclusion has a witness that its reason still holds, and a witness that
      no longer holds is red naming the entry.
   5. A run is red on a failure, on a SKIPPED test, on a part that ran no file it
-     was given, and on a run that ran nothing; a failed attempt that was run again
-     is not a skip.
+     was given, and on a run that ran nothing; a test that passed only at a later
+     attempt (a testcase skipped with type `pytest.rerun`) is a problem, not a pass
+     (ci-13).
   6. The wrapper the job installs is its `main`, or, on a pull request whose body has
      the line `wrapper-ref: <branch>`, that branch (it must exist; a bad line, two
      lines or a missing branch is red; a push and a tag are always `main`). The body
@@ -348,9 +349,13 @@ def test_the_judge_is_red_on_a_failure_a_skip_a_missing_file_and_an_empty_run(tm
     assert any("code" in p for p in mod.judge_junit([ok], FILES, [0, 2]))
 
 
-def test_an_attempt_that_was_run_again_is_not_a_skip(tmp_path):
+def test_a_test_that_passed_only_at_a_later_attempt_is_a_problem(tmp_path):
+    # ci-13: it used to be dropped as "a failed attempt that was run again", so a rerun
+    # turned a red into a green. Red on the old code: judge_junit returned [].
     mod = _load_script()
-    assert mod.judge_junit([_junit(tmp_path / "r.xml", [PASS, PASS_B, RERUN])], FILES, [0]) == []
+    problems = mod.judge_junit([_junit(tmp_path / "r.xml", [PASS, PASS_B, RERUN])], FILES, [0])
+    assert len(problems) == 1
+    assert "tests.test_a::test_r" in problems[0] and "later attempt" in problems[0]
 
 
 SECONDS = Path(__file__).resolve().parents[1] / "scripts" / "wrapper_test_seconds.json"
