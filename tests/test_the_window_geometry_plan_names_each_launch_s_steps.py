@@ -6,8 +6,10 @@ measurement are replaced by fakes that record what was asked). Held here:
   * a point fits when its outer size (inner plus the frame of the window, in CSS, at the scale) is inside the work area;
   * Juggler's height is 844 when the work area holds it plus the frame, else the largest multiple of 10 that fits, and None
     (the step is skipped and says so) when even 200 does not;
-  * launch a takes the four steps plus the grid and the minimum, launch b the four plus the grid check, only at the scales of
-    the grid and only at the first reached resolution; every other launch takes the four steps;
+  * the second Juggler call (juggler2) is 414 wide at the largest height <= 896 that fits, 50 lower when that is the first
+    call's height, and is skipped when the first call does not fit;
+  * launch a takes the six core steps plus the grid and the minimum, launch b the six plus the grid check, only at the scales of
+    the grid and only at the first reached resolution; every other launch takes the six core steps;
   * a job at a scale Windows reaches: a and b at the first resolution, p, m at every offered resolution (and, at scale 1,
     m at devPixelsPerPx 0.75 and 0.5); at a scale it does not reach: p and q only, no display launch, no m;
   * the every-resolution launches stop when the time budget is spent, and say so.
@@ -79,8 +81,22 @@ def test_each_launch_takes_the_steps_of_the_plan(dpr, launch, first, expected):
     assert plan.steps_for(dpr, launch, ["a", "b", "c"], first) == expected
 
 
-def test_the_four_steps_are_the_ones_the_judge_compares_and_the_grid_steps_are_not_among_them():
-    assert plan.CORE_STEPS == ("maximized", "restored", "juggler", "juggler_rdm")
+def test_the_juggler2_height_is_the_largest_that_fits_up_to_896_and_never_the_first_calls():
+    assert plan.juggler2_height(WORK, 1.0) == 896 and plan.juggler_height(WORK, 1.0) == 844
+    assert plan.juggler2_height([0, 0, 800, 120 + 896], 1.0) == 896
+    assert plan.juggler2_height([0, 0, 800, 120 + 870], 1.0) == 870, "more than 844, fits: not rounded to the first call"
+    assert plan.juggler2_height([0, 0, 800, 120 + 844], 1.0) == 840, "the work area holds 844: the second call is 840"
+    assert plan.juggler2_height(WORK, 1.25) == 650, "700 is the first call's too: 50 less"
+    assert plan.juggler2_height(WORK, 1.5) == 510 and plan.juggler2_height(WORK, 2.0) == 340
+    for scale in (1.0, 1.25, 1.5, 2.0):
+        first, second = plan.juggler_height(WORK, scale), plan.juggler2_height(WORK, scale)
+        assert first != second and second <= 896
+    assert plan.juggler2_height([0, 0, 800, 300], 1.0) is None
+    assert (plan.JUGGLER2_WIDTH, plan.JUGGLER2_MAX_HEIGHT, plan.JUGGLER2_GAP) == (414, 896, 50)
+
+
+def test_the_core_steps_are_the_ones_the_judge_compares_and_the_grid_steps_are_not_among_them():
+    assert plan.CORE_STEPS == ("maximized", "restored", "juggler", "juggler_rdm", "juggler2", "juggler_back")
     assert not set(plan.GRID_STEPS) & set(plan.CORE_STEPS)
     assert plan.RESERVED_LAUNCHES == ("p", "q", "m") and plan.HOSTGATE_DPRS == (1.0,)
     assert plan.steps_for(1.0, "c", ["a", "b", "c"], True) == list(plan.CORE_STEPS), "only a and b take the host-gate step"

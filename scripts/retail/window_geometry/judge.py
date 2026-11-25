@@ -4,8 +4,8 @@
 
 Red when:
   * a scale of the request has no run, a run has an error or leaves a process of the install folder alive, a run lacks
-    a step of its launch (a, b, p, q: maximized, restored, juggler, juggler_rdm; m: maximized);
-  * launch a differs from launch b (launch p from q) at a resolution that has both, on any number of the four steps
+    a step of its launch (a, b, p, q: maximized, restored, juggler, juggler_rdm, juggler2, juggler_back; m: maximized);
+  * launch a differs from launch b (launch p from q) at a resolution that has both, on any number of those steps
     (the diff is printed); the grid, the minimum and the grid check are not part of that comparison;
   * at the scales of plan.GRID_DPRS, launch a lacks its grid and minimum, launch b lacks its grid check, a grid row is
     an error, or a point of the grid check does not show what launch a shows at that point (content top, size mode);
@@ -109,6 +109,16 @@ def required_steps(run: Dict[str, Any]) -> Tuple[str, ...]:
 def step_is_complete(step: Any) -> bool:
     """A step with its window record, or one the capture says it skipped (Juggler's size did not fit the work area)."""
     return isinstance(step, dict) and ("skipped" in step or "window_rect" in (step.get("native") or {}))
+
+
+def chrome_line(step_name: str, step: Dict[str, Any]) -> str:
+    """What the chrome says about the window after the step: its inner size, the content top (the stack's y, CSS), the size
+    mode and the window state (does Juggler's sequence leave the window maximized or restored?), and Windows' own rects."""
+    chrome, native = step["chrome"], step["native"]
+    stack = chrome.get("stack") or {}
+    return (f"    {step_name} chrome: inner {chrome.get('innerWidth')}x{chrome.get('innerHeight')} stack y {stack.get('y')} "
+            f"sizemode {chrome.get('sizemode')} windowState {chrome.get('windowState')} maximized {chrome.get('maximized')} "
+            f"native window rect {native.get('window_rect')} client rect {native.get('client_rect')}")
 
 
 def probe_line(step_name: str, step: Dict[str, Any]) -> Optional[str]:
@@ -302,6 +312,7 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
             lines.append(f"    {step_name} page: inner {d['page_inner']} outer {d['page_outer']} screen {d['screen_wh']} "
                          f"event dx/dy {d['event_dxdy']} work area css {d['work_css']} native client rect {d['client_rect']} "
                          f"window rect {d['window_rect']}")
+            lines.append(chrome_line(step_name, step))
         for step_name in required_steps(run):
             line = probe_line(step_name, run["steps"][step_name]) if "skipped" not in run["steps"][step_name] else None
             if line:
@@ -311,6 +322,9 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
             lines.append(f"    restored size used {run.get('restored_size_used')}")
         if "juggler" in run["steps"]:
             lines.append(f"    juggler size used {run.get('juggler_size_used')}")
+        for name in ("juggler2", "juggler_back"):
+            if name in run["steps"]:
+                lines.append(f"    {name} size used {run.get(name + '_size_used')}")
         lines.extend(grid_lines(run))
     display_groups: Dict[Tuple[float, tuple], List[Dict[str, Any]]] = {}
     derived_groups: Dict[Tuple[float, tuple], List[Dict[str, Any]]] = {}

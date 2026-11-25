@@ -1,6 +1,6 @@
 """captures/WINDOW_GEOMETRY_REQUEST.json: what the next window-geometry capture is of.
 
-    {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"], "resolutions": [[1920, 1080]], "round": 2}
+    {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"], "resolutions": [[1920, 1080]], "round": 4}
 
 `round` is the number of the capture round: raising it is what makes the workflow run again (the file is its trigger).
 

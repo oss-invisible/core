@@ -10,6 +10,14 @@ from types import SimpleNamespace
 from typing import Any, List
 
 LONG = ctypes.c_int32  # a Win32 LONG is 32 bits on every platform
+DWORD = ULONG = ctypes.c_uint32  # wintypes.DWORD is c_ulong: 64 bits on Linux
+WORD = WCHAR = ctypes.c_uint16  # WORD and WCHAR are 16 bits; ctypes.c_wchar is 32 bits on Linux
+
+
+def wide_text(units: Any) -> str:
+    """The text of a WCHAR array (UTF-16 code units) up to its terminating zero."""
+    data = b"".join(int(u).to_bytes(2, "little") for u in units)
+    return data.decode("utf-16-le", errors="replace").split("\0", 1)[0]
 
 
 class RECT(ctypes.Structure):
@@ -24,7 +32,7 @@ class POINT(ctypes.Structure):
 
 
 class MONITORINFO(ctypes.Structure):
-    _fields_ = [("cbSize", w.DWORD), ("rcMonitor", RECT), ("rcWork", RECT), ("dwFlags", w.DWORD)]
+    _fields_ = [("cbSize", DWORD), ("rcMonitor", RECT), ("rcWork", RECT), ("dwFlags", DWORD)]
 
 
 class WINDOWPLACEMENT(ctypes.Structure):
@@ -33,24 +41,24 @@ class WINDOWPLACEMENT(ctypes.Structure):
 
 
 class LUID(ctypes.Structure):
-    _fields_ = [("LowPart", w.DWORD), ("HighPart", LONG)]
+    _fields_ = [("LowPart", DWORD), ("HighPart", LONG)]
 
 
 class DEVMODEW(ctypes.Structure):
-    _fields_ = [("dmDeviceName", w.WCHAR * 32), ("dmSpecVersion", w.WORD), ("dmDriverVersion", w.WORD),
-                ("dmSize", w.WORD), ("dmDriverExtra", w.WORD), ("dmFields", w.DWORD),
-                ("dmPositionX", LONG), ("dmPositionY", LONG), ("dmDisplayOrientation", w.DWORD),
-                ("dmDisplayFixedOutput", w.DWORD), ("dmColor", ctypes.c_int16), ("dmDuplex", ctypes.c_int16),
+    _fields_ = [("dmDeviceName", WCHAR * 32), ("dmSpecVersion", WORD), ("dmDriverVersion", WORD),
+                ("dmSize", WORD), ("dmDriverExtra", WORD), ("dmFields", DWORD),
+                ("dmPositionX", LONG), ("dmPositionY", LONG), ("dmDisplayOrientation", DWORD),
+                ("dmDisplayFixedOutput", DWORD), ("dmColor", ctypes.c_int16), ("dmDuplex", ctypes.c_int16),
                 ("dmYResolution", ctypes.c_int16), ("dmTTOption", ctypes.c_int16), ("dmCollate", ctypes.c_int16),
-                ("dmFormName", w.WCHAR * 32), ("dmLogPixels", w.WORD), ("dmBitsPerPel", w.DWORD),
-                ("dmPelsWidth", w.DWORD), ("dmPelsHeight", w.DWORD), ("dmDisplayFlags", w.DWORD),
-                ("dmDisplayFrequency", w.DWORD), ("dmICMMethod", w.DWORD), ("dmICMIntent", w.DWORD),
-                ("dmMediaType", w.DWORD), ("dmDitherType", w.DWORD), ("dmReserved1", w.DWORD),
-                ("dmReserved2", w.DWORD), ("dmPanningWidth", w.DWORD), ("dmPanningHeight", w.DWORD)]
+                ("dmFormName", WCHAR * 32), ("dmLogPixels", WORD), ("dmBitsPerPel", DWORD),
+                ("dmPelsWidth", DWORD), ("dmPelsHeight", DWORD), ("dmDisplayFlags", DWORD),
+                ("dmDisplayFrequency", DWORD), ("dmICMMethod", DWORD), ("dmICMIntent", DWORD),
+                ("dmMediaType", DWORD), ("dmDitherType", DWORD), ("dmReserved1", DWORD),
+                ("dmReserved2", DWORD), ("dmPanningWidth", DWORD), ("dmPanningHeight", DWORD)]
 
 
 class MOUSEINPUT(ctypes.Structure):
-    _fields_ = [("dx", LONG), ("dy", LONG), ("mouseData", w.DWORD), ("dwFlags", w.DWORD), ("time", w.DWORD),
+    _fields_ = [("dx", LONG), ("dy", LONG), ("mouseData", DWORD), ("dwFlags", DWORD), ("time", DWORD),
                 ("dwExtraInfo", ctypes.c_size_t)]
 
 
@@ -60,7 +68,7 @@ class _INPUTUNION(ctypes.Union):
 
 class INPUT(ctypes.Structure):
     _anonymous_ = ("u",)
-    _fields_ = [("type", w.DWORD), ("u", _INPUTUNION)]
+    _fields_ = [("type", DWORD), ("u", _INPUTUNION)]
 
 
 class LOGFONTW(ctypes.Structure):
@@ -68,7 +76,7 @@ class LOGFONTW(ctypes.Structure):
                 ("lfWeight", LONG), ("lfItalic", ctypes.c_ubyte), ("lfUnderline", ctypes.c_ubyte),
                 ("lfStrikeOut", ctypes.c_ubyte), ("lfCharSet", ctypes.c_ubyte), ("lfOutPrecision", ctypes.c_ubyte),
                 ("lfClipPrecision", ctypes.c_ubyte), ("lfQuality", ctypes.c_ubyte),
-                ("lfPitchAndFamily", ctypes.c_ubyte), ("lfFaceName", w.WCHAR * 32)]
+                ("lfPitchAndFamily", ctypes.c_ubyte), ("lfFaceName", WCHAR * 32)]
 
 
 class NONCLIENTMETRICSW(ctypes.Structure):
@@ -80,8 +88,8 @@ class NONCLIENTMETRICSW(ctypes.Structure):
 
 
 class RTL_OSVERSIONINFOW(ctypes.Structure):
-    _fields_ = [("dwOSVersionInfoSize", w.ULONG), ("dwMajorVersion", w.ULONG), ("dwMinorVersion", w.ULONG),
-                ("dwBuildNumber", w.ULONG), ("dwPlatformId", w.ULONG), ("szCSDVersion", w.WCHAR * 128)]
+    _fields_ = [("dwOSVersionInfoSize", ULONG), ("dwMajorVersion", ULONG), ("dwMinorVersion", ULONG),
+                ("dwBuildNumber", ULONG), ("dwPlatformId", ULONG), ("szCSDVersion", WCHAR * 128)]
 
 
 def api() -> SimpleNamespace:

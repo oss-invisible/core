@@ -9,12 +9,14 @@ in distribution/policies.json, and no MOZ_* variable but MOZ_REMOTE_ALLOW_SYSTEM
 the chrome context. Marionette is the one difference from retail-capture.yml; why it is allowed is in the header of
 .github/workflows/retail-window-geometry.yml.
 
-Steps (plan.py says which launch takes which), the first four each with the same fields (what the page reads, what the
+Steps (plan.py says which launch takes which), the six core steps each with the same fields (what the page reads, what the
 chrome reads, what Windows says about the top-level window, and a real mouse move over the content): `maximized`;
 `restored`, produced by the line of juggler/TargetRegistry.js (setViewportSize) that calls window.resizeBy; `juggler`,
 Juggler's whole sequence (styles on the browser and its stack, then that resizeBy) at 390x844 CSS; `juggler_rdm`, the
-same window with inRDMPane = true. Then, after clearing what Juggler's sequence set: `grid` (restored windows at chrome
-inner sizes W x H, one compact row each), `minimum` (the smallest window Firefox gives) and `grid_check` (a few grid
+same window with inRDMPane = true; `juggler2`, a second call in a row (inRDMPane back to false, the styles kept) at
+414 x the largest height <= 896 that fits (50 less when that is the first call's height); `juggler_back`, Juggler's
+sequence with the content size of the maximized window (is it maximized again, or restored at that size?). Then, after clearing what Juggler's sequence set: `grid` (restored windows at
+chrome inner sizes W x H, one compact row each), `minimum` (the smallest window Firefox gives) and `grid_check` (a few grid
 points again); and, last, `rdm_hostgate` (the core's collection page host-gate-2.html loaded in the tab under Juggler's
 sequence, without and then with inRDMPane, each result kept in its own file next to raw.json). Writes OUT/raw.json. The result is valid only when no process of the install folder is left.
 """
@@ -370,17 +372,44 @@ class Session:
             skipped = {"skipped": "does_not_fit"}
             return dict(skipped), dict(skipped), size
 
-        def content_size() -> Any:
-            return self.content("return [window.innerWidth, window.innerHeight];")
-
-        self.chrome(JUGGLER_SEQUENCE, [plan.JUGGLER_WIDTH, height])
-        _, settled = wait_stable(content_size)
-        first = dict(self.record(), settled=settled)
+        first = self.juggler_call(plan.JUGGLER_WIDTH, height)
         self.chrome(RDM_ON)
         self.client.execute_async_script(TWO_FRAMES, context="chrome")
         time.sleep(RDM_WAIT_SECONDS)
-        _, settled = wait_stable(content_size)
+        _, settled = wait_stable(self.content_size)
         return first, dict(self.record(), settled=settled), size
+
+    def content_size(self) -> Any:
+        return self.content("return [window.innerWidth, window.innerHeight];")
+
+    def juggler_call(self, width: int, height: int) -> Dict[str, Any]:
+        """One call of Juggler's whole sequence (as it is, on whatever the window and the styles are now), then the full
+        record of the window once the content size holds still."""
+        self.chrome(JUGGLER_SEQUENCE, [width, height])
+        _, settled = wait_stable(self.content_size)
+        return dict(self.record(), settled=settled)
+
+    def juggler_again(self, work_rect: Sequence[int], scale: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """(step juggler2, size used): the second call in a row, right after `juggler_rdm` with inRDMPane put back to false
+        and the styles of the first call kept (Juggler does not clear them between calls): 414 x plan.juggler2_height."""
+        height = plan.juggler2_height(work_rect, scale)
+        size = {"width": plan.JUGGLER2_WIDTH, "height": height, "max_height": plan.JUGGLER2_MAX_HEIGHT}
+        self.chrome(RDM_OFF)
+        if height is None:
+            return {"skipped": "does_not_fit"}, size
+        return self.juggler_call(plan.JUGGLER2_WIDTH, height), size
+
+    def juggler_back(self, maximized: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """(step juggler_back, size used): Juggler's sequence with the content size the maximized window gave the page
+        (its innerWidth x innerHeight in step `maximized`), to see whether the window goes back to maximized or stays
+        restored at that size. Adds `window_state` (the chrome's windowState, sizemode, maximized flag)."""
+        content = maximized["content"]
+        size = {"width": content["innerWidth"], "height": content["innerHeight"], "from_step": "maximized"}
+        step = self.juggler_call(size["width"], size["height"])
+        chrome = step["chrome"]
+        step["window_state"] = {"windowState": chrome.get("windowState"), "sizemode": chrome.get("sizemode"),
+                                "maximized": chrome.get("maximized")}
+        return step, size
 
     def load(self, url: str) -> None:
         """Navigate the selected tab without waiting for the page: from the chrome, else from the page."""
@@ -510,6 +539,10 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
             # restored step, from a compact window, and measured that route instead.
             if "juggler" in steps_wanted:
                 steps["juggler"], steps["juggler_rdm"], raw["juggler_size_used"] = session.juggler(work, scale)
+                if "juggler2" in steps_wanted:
+                    steps["juggler2"], raw["juggler2_size_used"] = session.juggler_again(work, scale)
+                if "juggler_back" in steps_wanted:
+                    steps["juggler_back"], raw["juggler_back_size_used"] = session.juggler_back(steps["maximized"])
                 session.clear_juggler()
             if "restored" in steps_wanted:
                 steps["restored"] = session.restored(work, scale)

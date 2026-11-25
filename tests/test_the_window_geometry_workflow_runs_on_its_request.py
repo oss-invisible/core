@@ -75,7 +75,7 @@ def test_the_browser_is_started_by_the_scripts_and_the_build_by_the_script_that_
 
 def test_the_artifact_is_named_for_version_and_scale_and_kept_when_a_step_is_red():
     upload = JOBS["capture"]["steps"][-1]
-    assert upload["uses"].startswith("actions/upload-artifact@v4")
+    assert upload["uses"].startswith("actions/upload-artifact@")
     assert upload["if"] == "always()"
     assert upload["with"]["name"] == "retail-window-geometry-${{ needs.request.outputs.firefox_version }}-dpr${{ matrix.dpr }}"
     assert upload["with"]["retention-days"] == 90
@@ -84,7 +84,7 @@ def test_the_artifact_is_named_for_version_and_scale_and_kept_when_a_step_is_red
 def test_the_judge_waits_for_the_matrix_runs_always_and_reads_every_artifact():
     job = JOBS["judge"]
     assert job["needs"] == ["request", "capture"] and job["if"] == "always()"
-    download = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/download-artifact@v4"))
+    download = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/download-artifact@"))
     assert download["with"]["pattern"] == "retail-window-geometry-*"
     assert "judge.py --in judge-in" in _runs("judge")
 
@@ -101,7 +101,9 @@ def test_every_script_it_runs_exists_and_every_action_is_pinned_like_retail_capt
     assert scripts == {"window_geometry/request.py", "firefox_build.py", "window_geometry/run_scale.py", "window_geometry/judge.py"}
     for name in scripts:
         assert (ROOT / "scripts" / "retail" / name).is_file(), name
-    pinned = set(re.findall(r"uses: (actions/[\w-]+@v\d+)", (WORKFLOWS / "retail-capture.yml").read_text(encoding="utf-8")))
+    pinned = set(re.findall(r"uses: (actions/[\w-]+@[0-9a-f]{40})", (WORKFLOWS / "retail-capture.yml").read_text(encoding="utf-8")))
     used = set(re.findall(r"uses: (actions/[\w-]+@\S+)", TEXT))
-    assert used - pinned == {"actions/download-artifact@v4"}, "an action pinned differently from retail-capture.yml"
+    assert all(re.fullmatch(r"actions/[\w-]+@[0-9a-f]{40}", u) for u in used), "every action is pinned by commit SHA"
+    only_here = {u.split("@")[0] for u in used - pinned}
+    assert only_here == {"actions/download-artifact"}, "an action pinned differently from retail-capture.yml"
 

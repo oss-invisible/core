@@ -5,7 +5,7 @@ table of the package itself:
   * launch a equal to launch b and a maximized step equal to WINDOW_FRAME_BY_DPR at every scale: green;
   * the border one pixel off, screenX off, the content top off: red at the first resolution of scale 1 only, naming what
     differs; at any other scale or size the difference is printed as window-size dependent and is not red;
-  * launch a different from launch b on one number of any of the four steps (maximized, restored, juggler, juggler_rdm): red,
+  * launch a different from launch b on one number of any of the six steps (maximized, restored, juggler, juggler_rdm, juggler2, juggler_back): red,
     with the number printed; the grid, the minimum and the grid check are not in that comparison;
   * at the scales of the grid, launch a must have its grid and minimum, launch b its grid check, and every point of the check
     must be exactly launch a's row at that point;
@@ -93,7 +93,8 @@ def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=T
     steps = {"maximized": step(window, ui)}
     if launch != "m":
         steps.update({"restored": step(restored, row["popup_ui"]), "juggler": step(restored, row["popup_ui"]),
-                      "juggler_rdm": step(restored, row["popup_ui"])})
+                      "juggler_rdm": step(restored, row["popup_ui"]), "juggler2": step(restored, row["popup_ui"]),
+                      "juggler_back": dict(step(restored, row["popup_ui"]), window_state={"windowState": 3, "sizemode": "normal", "maximized": False})})
     if grid is None:
         grid = mode == "display" and reached and float(dpr) in plan.GRID_DPRS and launch in ("a", "b")
     if grid and launch == "a":
@@ -109,6 +110,8 @@ def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=T
                        "reason": None if reached else "the scale is outside the steps this monitor offers"},
            "steps": steps, "restored_size_used": {"width": 390, "height": 844},
            "juggler_size_used": {"width": 390, "height": 844, "asked_height": 844, "does_not_fit": False},
+           "juggler2_size_used": {"width": 414, "height": 896, "max_height": 896},
+           "juggler_back_size_used": {"width": 1900, "height": 900, "from_step": "maximized"},
            "dev_px_per_px": dppx, "processes_left": 0, "error": None}
     return out
 
@@ -296,8 +299,8 @@ def test_the_judge_does_not_change_the_runs_it_is_given():
 # ---------------------------------------------------------------------------- round 2: Juggler's sequence, grid, p/q, m
 
 
-@pytest.mark.parametrize("step", ["juggler", "juggler_rdm", "maximized", "restored"])
-def test_launch_a_and_launch_b_differing_on_any_of_the_four_steps_is_red(step):
+@pytest.mark.parametrize("step", ["juggler", "juggler_rdm", "juggler2", "juggler_back", "maximized", "restored"])
+def test_launch_a_and_launch_b_differing_on_any_of_the_six_steps_is_red(step):
     a, b = two_launches(1.0)
     b["steps"][step]["content"]["innerHeight"] += 1
     result = evaluate([a, b])
@@ -326,9 +329,10 @@ def test_a_juggler_step_skipped_in_both_launches_is_not_red_and_in_one_only_is_r
     assert evaluate([c, d])["red"]
 
 
-def test_a_launch_without_the_juggler_steps_is_red_and_launch_m_does_not_need_them():
+@pytest.mark.parametrize("step", ["juggler_rdm", "juggler2", "juggler_back"])
+def test_a_launch_without_one_of_the_juggler_steps_is_red_and_launch_m_does_not_need_them(step):
     a, b = two_launches(1.0)
-    del b["steps"]["juggler_rdm"]
+    del b["steps"][step]
     assert evaluate([a, b])["red"]
     runs = two_launches(1.0) + [make_run(1.0, "m", resolution=(1280, 720))]
     assert set(runs[-1]["steps"]) == {"maximized"}
@@ -337,12 +341,31 @@ def test_a_launch_without_the_juggler_steps_is_red_and_launch_m_does_not_need_th
 
 def test_the_juggler_steps_are_printed_with_page_screen_event_and_native_rects():
     text = "\n".join(evaluate(two_launches(1.25))["lines"])
-    for step in ("juggler", "juggler_rdm"):
+    for step in ("juggler", "juggler_rdm", "juggler2", "juggler_back"):
         for needle in (f"{step}: border L/R/B", f"{step} page: inner [1900, 900] outer [1936, 1049] screen [1536, 864]",
                        "event dx/dy [7, 91]", "native client rect", "window rect [", "mozInnerScreenX/Y", "screenX/Y",
                        "outer-inner css [36, 149]"):
             assert needle in text, (step, needle)
     assert "juggler size used {'width': 390, 'height': 844" in text
+    assert "juggler2 size used {'width': 414, 'height': 896" in text
+    assert "juggler_back size used {'width': 1900, 'height': 900, 'from_step': 'maximized'}" in text
+
+
+def test_the_juggler_steps_print_the_chrome_inner_size_stack_y_size_mode_and_window_state():
+    text = "\n".join(evaluate(two_launches(1.25))["lines"])
+    for step in ("juggler", "juggler2", "juggler_back"):
+        line = next(line for line in text.splitlines() if line.startswith(f"    {step} chrome:"))
+        for needle in ("inner ", "stack y ", "sizemode ", "windowState ", "native window rect [", "client rect ["):
+            assert needle in line, (step, needle)
+
+
+def test_a_juggler_back_that_does_not_end_maximized_in_one_launch_only_is_red():
+    a, b = two_launches(1.0)
+    assert a["steps"]["juggler_back"]["chrome"]["windowState"] == 1, "launch a: maximized again"
+    b["steps"]["juggler_back"]["chrome"]["windowState"] = 3
+    b["steps"]["juggler_back"]["chrome"]["sizemode"] = "normal"
+    result = evaluate([a, b])
+    assert result["red"] and any("juggler_back.chrome.windowState" in line for line in result["lines"])
 
 
 @pytest.mark.parametrize("what", ["a has no grid", "a has no minimum", "b has no grid_check", "a grid row failed",

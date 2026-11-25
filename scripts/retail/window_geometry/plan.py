@@ -1,14 +1,14 @@
 """What each launch of the window-geometry capture measures, and which points of the grids fit (pure: no browser, no Windows).
 
-Round 2 of the capture, per job (one display scale):
+Round 4 of the capture, per job (one display scale):
 
-  launch a (first reached resolution)  maximized, restored, juggler, juggler_rdm, and at the scales of GRID_DPRS also
-                                       `grid` (restored windows at GRID_WIDTHS x GRID_HEIGHTS) and `minimum`
-  launch b (same resolution)           the same four steps, and at GRID_DPRS `grid_check` (GRID_CHECK_POINTS again)
+  launch a (first reached resolution)  maximized, restored, juggler, juggler_rdm, juggler2, juggler_back, and at the scales
+                                       of GRID_DPRS also `grid` (restored windows at GRID_WIDTHS x GRID_HEIGHTS) and `minimum`
+  launch b (same resolution)           the same six steps, and at GRID_DPRS `grid_check` (GRID_CHECK_POINTS again)
   launches a and b at HOSTGATE_DPRS    last, `rdm_hostgate`
   launch m (every resolution Windows   `maximized` only: the maximized UI height as a function of the work area
             offers, at the job's scale)
-  launch p (and q when no display      the four steps with layout.css.devPixelsPerPx = the scale, at 100% display scale
+  launch p (and q when no display      the six steps with layout.css.devPixelsPerPx = the scale, at 100% display scale
             launch could be made)
   launch m with devPixelsPerPx 0.75    `maximized` only, in the job of scale 1 (CSS screens 2560x1440 and 3840x2160)
   and 0.5
@@ -18,8 +18,10 @@ from __future__ import annotations
 import math
 from typing import List, Optional, Sequence, Tuple
 
-#: The four steps every a, b, p and q launch takes (the determinism check compares exactly these).
-CORE_STEPS = ("maximized", "restored", "juggler", "juggler_rdm")
+#: The steps every a, b, p and q launch takes (the determinism check compares exactly these). In the browser they run
+#: in this order except `restored`, which runs after the Juggler steps: maximized, juggler, juggler_rdm, (inRDMPane
+#: back to false, styles kept) juggler2, juggler_back, (styles cleared) restored.
+CORE_STEPS = ("maximized", "restored", "juggler", "juggler_rdm", "juggler2", "juggler_back")
 #: Steps that are not part of the a/b determinism check.
 GRID_STEPS = ("grid", "minimum", "grid_check", "rdm_hostgate")
 MAXIMIZED_ONLY = ("maximized",)
@@ -43,6 +45,9 @@ RESERVED_LAUNCHES = ("p", "q", "m")
 #: (chrome 73 CSS at most 85, plus the borders) with some slack; a smaller work area gets the largest height that fits.
 JUGGLER_WIDTH, JUGGLER_HEIGHT = 390, 844
 JUGGLER_FRAME_CSS, JUGGLER_MIN_HEIGHT = 120, 200
+#: The second Juggler call in a row (step `juggler2`): a phone of another size, 414 wide and at most 896 high, and
+#: when it asks for the very height of the first call it is JUGGLER2_GAP lower, so the two calls always differ.
+JUGGLER2_WIDTH, JUGGLER2_MAX_HEIGHT, JUGGLER2_GAP = 414, 896, 50
 
 
 def grid_points() -> List[Tuple[int, int]]:
@@ -55,14 +60,24 @@ def fits(width: int, height: int, frame_css: Sequence[float], scale: float, work
     return outer_w <= work_rect[2] - work_rect[0] and outer_h <= work_rect[3] - work_rect[1]
 
 
-def juggler_height(work_rect: Sequence[int], scale: float) -> Optional[int]:
-    """844 when the work area holds it plus the frame; else the largest height that fits, rounded down to a multiple of
-    10; None when even JUGGLER_MIN_HEIGHT does not fit (the step is then skipped and says so)."""
+def juggler_height(work_rect: Sequence[int], scale: float, wanted: int = JUGGLER_HEIGHT) -> Optional[int]:
+    """`wanted` (844) when the work area holds it plus the frame; else the largest height that fits, rounded down to a
+    multiple of 10; None when even JUGGLER_MIN_HEIGHT does not fit (the step is then skipped and says so)."""
     available = (work_rect[3] - work_rect[1]) / scale - JUGGLER_FRAME_CSS
-    if available >= JUGGLER_HEIGHT:
-        return JUGGLER_HEIGHT
+    if available >= wanted:
+        return wanted
     height = int(math.floor(available / 10.0)) * 10
     return height if height >= JUGGLER_MIN_HEIGHT else None
+
+
+def juggler2_height(work_rect: Sequence[int], scale: float) -> Optional[int]:
+    """The height of the second call: the largest <= 896 that fits by the rule of `juggler_height`; when that is the
+    first call's height, 50 less; None when the first call's does not fit either (the step is then skipped)."""
+    first = juggler_height(work_rect, scale)
+    second = juggler_height(work_rect, scale, JUGGLER2_MAX_HEIGHT)
+    if first is None or second is None:
+        return None
+    return first - JUGGLER2_GAP if second == first else second
 
 
 def steps_for(dpr: float, launch: str, launches: Sequence[str], first_reached: bool) -> List[str]:

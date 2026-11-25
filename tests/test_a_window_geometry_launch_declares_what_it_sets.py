@@ -8,7 +8,10 @@ No browser starts and no Windows call is made. Held here:
     and its stack, then the resizeBy), without inRDMPane (the step juggler_rdm sets it); what clears it removes every style set;
   * a wait ends only when the value is ready and has not moved for the hold time, and says so when it never settles;
   * the mouse points are inside the browser rectangle, from the client origin, at the scale of the window;
-  * the structures handed to Windows have the sizes Windows expects, and the scale steps are relative to the recommended one;
+  * the structures handed to Windows have the sizes Windows expects on every OS (a WCHAR is 16 bits there, not the 32 bits
+    of ctypes.c_wchar on Linux), and the scale steps are relative to the recommended one;
+  * the second Juggler call and the call back to the maximized size: the same sequence verbatim, inRDMPane put back to false
+    between the calls with the styles kept, the sizes asked, and the window state recorded;
   * the run plan: every launch at the first resolution, the first alone at the others;
   * the launch takes only the steps asked for;
   * the page reads, in itself, everything that can differ under responsive-design mode (page.html __probe), and the content
@@ -144,10 +147,25 @@ def test_the_structures_handed_to_windows_have_the_sizes_it_expects():
     assert ctypes.sizeof(native.WINDOWPLACEMENT) == 44
     assert ctypes.sizeof(native.MONITORINFO) == 40
     assert ctypes.sizeof(native.LOGFONTW) == 92
+    assert ctypes.sizeof(native.NONCLIENTMETRICSW) == 504
+    assert ctypes.sizeof(native.RTL_OSVERSIONINFOW) == 276
     assert ctypes.sizeof(native.RECT) == 16 and ctypes.sizeof(native.LUID) == 8
     assert ctypes.sizeof(display._ScaleGet) == 32 and ctypes.sizeof(display._ScaleSet) == 24
     if ctypes.sizeof(ctypes.c_void_p) == 8:
         assert ctypes.sizeof(native.INPUT) == 40
+
+
+def test_a_wchar_array_of_a_structure_is_16_bit_units_on_every_os_and_its_text_decodes_as_utf_16():
+    assert ctypes.sizeof(native.WCHAR) == 2
+    dm = native.DEVMODEW()
+    assert ctypes.sizeof(dm.dmDeviceName) == 64 and ctypes.sizeof(dm.dmFormName) == 64
+    name = "\\\\.\\DISPLAY1"
+    units = [ord(c) for c in name] + [0, 0x41]
+    for index, unit in enumerate(units):
+        dm.dmDeviceName[index] = unit
+    assert native.wide_text(dm.dmDeviceName) == name
+    surrogate_pair = [0xD83D, 0xDE00, 0]
+    assert native.wide_text(surrogate_pair) == "\U0001F600"
 
 
 def test_the_scale_steps_are_relative_to_the_recommended_one():
@@ -237,7 +255,7 @@ def test_the_grid_resize_asks_for_the_chrome_inner_size_by_a_difference_and_the_
 
 def test_the_launch_takes_the_maximized_step_always_and_the_others_only_when_asked():
     source = (Path(measure.__file__)).read_text(encoding="utf-8")
-    for name in ("restored", "juggler", "grid", "minimum", "grid_check"):
+    for name in ("restored", "juggler", "juggler2", "juggler_back", "grid", "minimum", "grid_check"):
         assert f'if "{name}" in steps_wanted:' in source, name
     assert 'steps["maximized"] = session.maximized()' in source
 
@@ -332,6 +350,58 @@ def test_a_page_that_never_posts_under_rdm_is_recorded_as_not_posted_after_the_t
     assert 0.3 <= step["rdm_true"]["seconds"] < 5
     assert list(files) == ["hostgate-rdm-false.json"]
     assert session.calls[0][2] == [390, 560], "the juggler height used"
+
+
+class RecordingSession(measure.Session):
+    """A session with no browser: records the chrome scripts (with their arguments) and the records taken, in order."""
+
+    def __init__(self):
+        super().__init__(None, Path("."), None)
+        self.calls = []
+
+    def chrome(self, script, args=None):
+        self.calls.append((script, args))
+        return True
+
+    def content(self, script, args=None):
+        return [1, 1]
+
+    def record(self):
+        self.calls.append(("record", None))
+        return {"chrome": {"windowState": 3, "sizemode": "normal", "maximized": False}, "native": {}, "content": {}}
+
+
+def test_the_second_juggler_call_puts_inrdmpane_back_to_false_keeps_the_styles_and_runs_the_same_sequence(instant):
+    session = RecordingSession()
+    step, size = session.juggler_again([0, 0, 1920, 1032], 1.0)
+    assert session.calls == [(measure.RDM_OFF, None), (measure.JUGGLER_SEQUENCE, [414, 896]), ("record", None)]
+    assert measure.JUGGLER_CLEAR not in [c[0] for c in session.calls], "Juggler does not clear its styles between calls"
+    assert size == {"width": 414, "height": 896, "max_height": 896} and step["settled"] is True
+
+
+def test_the_second_juggler_call_differs_from_the_first_in_height_and_is_skipped_when_nothing_fits(instant):
+    session = RecordingSession()
+    _, size = session.juggler_again([0, 0, 1920, 1032], 1.25)
+    assert size["height"] == 650 and session.calls[1][1] == [414, 650]
+    skipped = RecordingSession()
+    step, size = skipped.juggler_again([0, 0, 800, 300], 1.0)
+    assert step == {"skipped": "does_not_fit"} and size["height"] is None and skipped.calls == [(measure.RDM_OFF, None)]
+
+
+def test_the_call_back_asks_for_the_content_size_the_maximized_step_gave_the_page_and_records_the_window_state(instant):
+    session = RecordingSession()
+    step, size = session.juggler_back({"content": {"innerWidth": 1905, "innerHeight": 903}})
+    assert session.calls == [(measure.JUGGLER_SEQUENCE, [1905, 903]), ("record", None)]
+    assert size == {"width": 1905, "height": 903, "from_step": "maximized"}
+    assert step["window_state"] == {"windowState": 3, "sizemode": "normal", "maximized": False}
+
+
+def test_a_launch_runs_the_juggler_steps_in_order_then_clears_the_styles_then_the_restored_step():
+    source = (Path(measure.__file__)).read_text(encoding="utf-8")
+    order = [source.index(text) for text in ("session.juggler(work, scale)", "session.juggler_again(work, scale)",
+                                             "session.juggler_back(steps[\"maximized\"])", "session.clear_juggler()",
+                                             "session.restored(work, scale)")]
+    assert order == sorted(order)
 
 
 def test_the_host_gate_step_is_skipped_when_juggler_s_size_did_not_fit():
