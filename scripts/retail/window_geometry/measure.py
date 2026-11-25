@@ -1,0 +1,376 @@
+"""One measurement: retail Firefox, one window, maximized and then resized by exactly Juggler's call.
+
+    python scripts/retail/window_geometry/measure.py --install DIR --build build.json --dpr 1 --launch a \
+        --resolution 1920x1080 --out DIR [--mode devPixelsPerPx]
+
+The launch is `firefox.exe -no-remote -profile <fresh empty directory> -marionette <page url>`: a profile whose
+only file is a user.js with `marionette.port` (and, for the derived path, `layout.css.devPixelsPerPx`), nothing
+in distribution/policies.json, no MOZ_* variable. Marionette is the one difference from retail-capture.yml; why it
+is allowed is in the header of .github/workflows/retail-window-geometry.yml.
+
+Two steps are recorded, each with the same fields (what the page reads, what the chrome reads, what Windows says
+about the top-level window, and a real mouse move over the content): `maximized`, and `restored`, produced by the
+line of juggler/TargetRegistry.js (setViewportSize) that calls window.resizeBy. Writes OUT/raw.json. The result is
+valid only when no process of the install folder is left.
+"""
+from __future__ import annotations
+
+import argparse
+import ctypes
+import http.server
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import traceback
+from ctypes import wintypes as w
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+HERE = Path(__file__).resolve().parent
+sys.path[:0] = [str(HERE), str(HERE.parent)]
+import display  # noqa: E402
+import environment  # noqa: E402
+import marionette  # noqa: E402
+import run_retail_capture as launcher  # noqa: E402
+from native import INPUT, MONITORINFO, POINT, RECT, WINDOWPLACEMENT, api, guarded  # noqa: E402
+
+FORMAT = "retail-window-geometry/1"
+PAGE = HERE / "page.html"
+#: The size Juggler is asked for, in CSS pixels, and the fallback height when the work area is too small for it.
+RESIZE_WIDTH, RESIZE_HEIGHT, FALLBACK_HEIGHT, FRAME_ALLOWANCE_CSS = 390, 844, 400, 200
+HOLD_SECONDS, SETTLE_TIMEOUT, POLL_SECONDS = 1.0, 20.0, 0.25
+#: Where the mouse goes, as fractions of the content area.
+MOUSE_FRACTIONS = ((0.25, 0.3), (0.5, 0.5), (0.75, 0.7))
+CLASS_NAME = "MozillaWindowClass"
+DWMWA_EXTENDED_FRAME_BOUNDS, GWL_STYLE, GWL_EXSTYLE, MONITOR_DEFAULTTONEAREST = 9, -16, -20, 2
+MOUSEEVENTF_MOVE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_VIRTUALDESK = 0x1, 0x8000, 0x4000
+SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 76, 77, 78, 79
+
+#: Juggler's line (juggler/TargetRegistry.js, setViewportSize), with `width` and `height` as arguments.
+JUGGLER_RESIZE = (
+    "const width = arguments[0], height = arguments[1];\n"
+    "const stackRect = gBrowser.selectedBrowser.closest('.browserStack').getBoundingClientRect(); "
+    "const toolbarTop = stackRect.y; "
+    "window.resizeBy(width - window.innerWidth, height + toolbarTop - window.innerHeight);\n"
+    "return true;")
+CHROME_STATE = """
+const rect = (r) => ({x: r.x, y: r.y, width: r.width, height: r.height});
+return {windowState: window.windowState, maximized: window.windowState === window.STATE_MAXIMIZED,
+  screenX: window.screenX, screenY: window.screenY, outerWidth: window.outerWidth, outerHeight: window.outerHeight,
+  innerWidth: window.innerWidth, innerHeight: window.innerHeight, devicePixelRatio: window.devicePixelRatio,
+  stack: rect(gBrowser.selectedBrowser.closest('.browserStack').getBoundingClientRect()),
+  browser: rect(gBrowser.selectedBrowser.getBoundingClientRect()),
+  sizemode: document.documentElement.getAttribute('sizemode')};"""
+CONTENT_STATE = """
+const m = window.wrappedJSObject.__m;
+return {innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWidth: window.outerWidth,
+  outerHeight: window.outerHeight, screenX: window.screenX, screenY: window.screenY, screenLeft: window.screenLeft,
+  screenTop: window.screenTop, mozInnerScreenX: window.mozInnerScreenX, mozInnerScreenY: window.mozInnerScreenY,
+  devicePixelRatio: window.devicePixelRatio,
+  screen: {width: screen.width, height: screen.height, availWidth: screen.availWidth, availHeight: screen.availHeight,
+           availLeft: screen.availLeft, availTop: screen.availTop},
+  events: {count: m.count, dx: m.dx, dy: m.dy}};"""
+CONTENT_SIZE = "return [window.outerWidth, window.outerHeight, window.innerWidth, window.innerHeight];"
+CHROME_SIZE = "return [window.windowState === window.STATE_MAXIMIZED, window.innerWidth, window.innerHeight, window.outerWidth, window.outerHeight];"
+PAGE_READY = "return !!window.wrappedJSObject.__m;"
+RESET_EVENTS = "window.wrappedJSObject.__reset(); return true;"
+TWO_FRAMES = ("const done = arguments[arguments.length - 1]; let once = false; "
+              "const end = (v) => { if (!once) { once = true; done(v); } }; setTimeout(() => end(false), 2000); "
+              "requestAnimationFrame(() => requestAnimationFrame(() => end(true)));")
+
+
+class MeasureError(Exception):
+    """The measurement could not be taken as asked."""
+
+
+# --------------------------------------------------------------------------- the launch
+
+
+def launch_command(firefox_exe: Path, profile: Path, url: str) -> List[str]:
+    return [str(firefox_exe), "-no-remote", "-profile", str(profile), "-marionette", url]
+
+
+def user_js(prefs: Dict[str, Any]) -> str:
+    return "".join(f"user_pref({json.dumps(name)}, {json.dumps(value)});\n" for name, value in sorted(prefs.items()))
+
+
+def assert_launch(command: Sequence[str], profile: Path, install_dir: Path, env: Dict[str, str],
+                  prefs: Dict[str, Any]) -> None:
+    """Refuse anything but the declared launch: this command, a profile of one user.js with exactly `prefs`, no policy, no MOZ_*."""
+    problems: List[str] = []
+    if len(command) != 6 or list(command[1:5]) != ["-no-remote", "-profile", str(profile), "-marionette"]:
+        problems.append(f"the command is {list(command)}")
+    names = sorted(p.name for p in profile.iterdir())
+    if names != ["user.js"]:
+        problems.append(f"the profile holds {names}, not just user.js")
+    elif (profile / "user.js").read_text(encoding="utf-8") != user_js(prefs):
+        problems.append("user.js is not exactly the declared prefs")
+    for relative in launcher.FORBIDDEN_IN_INSTALL:
+        if (install_dir / relative).exists():
+            problems.append(f"the install folder has {relative.as_posix()}")
+    moz = sorted(k for k in env if k.upper().startswith("MOZ_"))
+    if moz:
+        problems.append(f"the environment sets {moz}")
+    if problems:
+        raise MeasureError("not the declared launch: " + "; ".join(problems))
+
+
+class PageServer:
+    """Serves page.html on 127.0.0.1 and nothing else."""
+
+    def __init__(self, page: Path = PAGE) -> None:
+        body = page.read_bytes()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                ok = self.path.split("?")[0] == "/"
+                self.send_response(200 if ok else 404)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body) if ok else 0))
+                self.end_headers()
+                if ok:
+                    self.wfile.write(body)
+
+            def log_message(self, *args: Any) -> None:
+                pass
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+# --------------------------------------------------------------------------- waiting
+
+
+def wait_stable(read: Callable[[], Any], ready: Callable[[Any], bool] = lambda v: True, hold: float = HOLD_SECONDS,
+                timeout: float = SETTLE_TIMEOUT, poll: float = POLL_SECONDS, clock: Callable[[], float] = time.monotonic,
+                sleep: Callable[[float], None] = time.sleep) -> Tuple[Any, bool]:
+    """Poll `read` until it is `ready` and has not changed for `hold` seconds. Returns (last value, settled)."""
+    start = clock()
+    last, since = None, start
+    while clock() - start <= timeout:
+        now = read()
+        if now != last:
+            last, since = now, clock()
+        if ready(now) and clock() - since >= hold:
+            return now, True
+        sleep(poll)
+    return last, False
+
+
+# --------------------------------------------------------------------------- Windows
+
+
+def find_window(pids: Sequence[int]) -> Optional[int]:
+    """The visible top-level window of class MozillaWindowClass owned by one of `pids`."""
+    a, found = api(), []
+
+    @ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+    def visit(hwnd: int, _: int) -> bool:
+        pid, name = w.DWORD(), ctypes.create_unicode_buffer(64)
+        a.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        a.user32.GetClassNameW(hwnd, name, 64)
+        if pid.value in pids and name.value == CLASS_NAME and a.user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+        return True
+
+    a.user32.EnumWindows(visit, 0)
+    return found[0] if found else None
+
+
+def window_record(hwnd: int) -> Dict[str, Any]:
+    """What Windows says about the top-level window, in device pixels."""
+    a = api()
+
+    def rect_of(fn: Callable[[Any, Any], Any]) -> List[int]:
+        r = RECT()
+        fn(hwnd, ctypes.byref(r))
+        return r.list()
+
+    frame = RECT()
+    hresult = a.dwm.DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(frame), ctypes.sizeof(frame))
+    origin, placement, info = POINT(0, 0), WINDOWPLACEMENT(), MONITORINFO()
+    a.user32.ClientToScreen(hwnd, ctypes.byref(origin))
+    placement.length = ctypes.sizeof(placement)
+    a.user32.GetWindowPlacement(hwnd, ctypes.byref(placement))
+    info.cbSize = ctypes.sizeof(info)
+    a.user32.GetMonitorInfoW(a.user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), ctypes.byref(info))
+    return {"window_rect": rect_of(a.user32.GetWindowRect), "extended_frame_bounds": frame.list(),
+            "extended_frame_bounds_hresult": hresult, "client_rect": rect_of(a.user32.GetClientRect),
+            "client_origin": [origin.x, origin.y],
+            "placement": {"showCmd": placement.showCmd, "rcNormalPosition": placement.rcNormalPosition.list()},
+            "dpi": a.user32.GetDpiForWindow(hwnd),
+            "style": a.user32.GetWindowLongPtrW(hwnd, GWL_STYLE) & 0xFFFFFFFF,
+            "exstyle": a.user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & 0xFFFFFFFF,
+            "monitor_rect": info.rcMonitor.list(), "work_rect": info.rcWork.list()}
+
+
+def mouse_points(chrome: Dict[str, Any], native: Dict[str, Any]) -> List[Tuple[int, int]]:
+    """Screen points (device pixels) inside the content area: the browser's rect in the chrome, scaled, from the client origin."""
+    ox, oy = native["client_origin"]
+    rect, scale = chrome["browser"], chrome["devicePixelRatio"]
+    return [(round(ox + (rect["x"] + fx * rect["width"]) * scale), round(oy + (rect["y"] + fy * rect["height"]) * scale))
+            for fx, fy in MOUSE_FRACTIONS]
+
+
+def move_mouse(points: Sequence[Tuple[int, int]], pause: float = 0.2) -> List[Dict[str, Any]]:
+    """Real absolute mouse moves with SendInput; reports where the cursor was after each."""
+    a, out = api(), []
+    vx, vy = a.user32.GetSystemMetrics(SM_XVIRTUALSCREEN), a.user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+    vw, vh = a.user32.GetSystemMetrics(SM_CXVIRTUALSCREEN), a.user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+    for x, y in points:
+        item = INPUT(type=0)
+        item.mi.dx, item.mi.dy = round((x - vx) * 65535 / (vw - 1)), round((y - vy) * 65535 / (vh - 1))
+        item.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+        sent = a.user32.SendInput(1, ctypes.byref(item), ctypes.sizeof(INPUT))
+        time.sleep(pause)
+        at = POINT()
+        a.user32.GetCursorPos(ctypes.byref(at))
+        out.append({"asked": [x, y], "sent": sent, "cursor": [at.x, at.y]})
+    return out
+
+
+# --------------------------------------------------------------------------- the steps
+
+
+class Session:
+    """One running browser: its Marionette client and the install folder whose processes are its own."""
+
+    def __init__(self, client: marionette.Client, install_dir: Path, table: launcher.ProcessTable) -> None:
+        self.client, self.install_dir, self.table = client, install_dir, table
+
+    def chrome(self, script: str, args: Optional[list] = None) -> Any:
+        return self.client.execute_script(script, args, context="chrome")
+
+    def content(self, script: str, args: Optional[list] = None) -> Any:
+        return self.client.execute_script(script, args, context="content")
+
+    def hwnd(self) -> int:
+        hwnd = find_window(self.table.under(self.install_dir))
+        if hwnd is None:
+            raise MeasureError("no visible MozillaWindowClass window of the launched firefox")
+        return hwnd
+
+    def record(self) -> Dict[str, Any]:
+        """The full record of the window as it is now, then a real mouse move over the content and what the page saw."""
+        chrome = self.chrome(CHROME_STATE)
+        hwnd = self.hwnd()
+        native = guarded(lambda: window_record(hwnd))
+        api().user32.SetForegroundWindow(hwnd)
+        self.content(RESET_EVENTS)
+        moves = move_mouse(mouse_points(chrome, native))
+        self.client.execute_async_script(TWO_FRAMES, context="content")
+        return {"chrome": chrome, "native": native, "input": moves, "content": self.content(CONTENT_STATE)}
+
+    def maximized(self) -> Dict[str, Any]:
+        self.chrome("window.maximize(); return true;")
+
+        def read() -> Any:
+            return [self.chrome(CHROME_SIZE), self.content(CONTENT_SIZE)]
+
+        _, settled = wait_stable(read, ready=lambda v: v[0][0] is True)
+        return dict(self.record(), settled=settled)
+
+    def restored(self, work_rect: Sequence[int], scale: float) -> Dict[str, Any]:
+        """Juggler's resize. 390x844 CSS of content when the work area holds it plus a frame, else 390x400."""
+        height = RESIZE_HEIGHT if (work_rect[3] - work_rect[1]) / scale >= RESIZE_HEIGHT + FRAME_ALLOWANCE_CSS else FALLBACK_HEIGHT
+        self.chrome(JUGGLER_RESIZE, [RESIZE_WIDTH, height])
+        _, settled = wait_stable(lambda: self.content("return [window.innerWidth, window.innerHeight];"))
+        return dict(self.record(), settled=settled, size_used={"width": RESIZE_WIDTH, "height": height})
+
+
+def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int], display_result: Dict[str, Any],
+            build: Dict[str, Any], mode: str = "display", prefs: Optional[Dict[str, Any]] = None,
+            table: Optional[launcher.ProcessTable] = None) -> Dict[str, Any]:
+    """One launch, measured. Returns the raw record; it never raises for a failure of the browser (`error` says it)."""
+    table = table or launcher.ProcessTable()
+    exe = install_dir / "firefox.exe"
+    marionette_port = free_port()
+    all_prefs = dict(prefs or {}, **{"marionette.port": marionette_port})
+    raw: Dict[str, Any] = {"format": FORMAT, "firefox_version": build.get("firefox_version"), "build_id": build.get("build_id"),
+                           "installer_sha256": build.get("installer_sha256"), "dpr_asked": dpr, "mode": mode,
+                           "launch": launch, "resolution": list(resolution), "display": display_result,
+                           "environment": guarded(lambda: environment.collect(display_result.get("effective_dpi"))),
+                           "prefs_declared": {k: v for k, v in all_prefs.items() if k != "marionette.port"},
+                           "steps": {}, "error": None}
+    server, process, client = PageServer(), None, marionette.Client(marionette_port)
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        profile = Path(tmp) / "profile"
+        profile.mkdir()
+        (profile / "user.js").write_text(user_js(all_prefs), encoding="utf-8")
+        command = launch_command(exe, profile, f"http://127.0.0.1:{server.port}/")
+        raw["command"] = command
+        try:
+            assert_launch(command, profile, install_dir, dict(os.environ), all_prefs)
+            process = subprocess.Popen(command, env=dict(os.environ), stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            client.connect()
+            client.new_session()
+            client.navigate(command[-1])
+            ready, _ = wait_stable(lambda: client.execute_script(PAGE_READY, context="content"), ready=bool, hold=0, timeout=20)
+            if not ready:
+                raise MeasureError("page.html did not load")
+            session = Session(client, install_dir, table)
+            steps = raw["steps"]
+            steps["maximized"] = session.maximized()
+            native = steps["maximized"]["native"]
+            scale = steps["maximized"]["chrome"]["devicePixelRatio"]
+            steps["restored"] = session.restored(native.get("work_rect") or [0, 0, 0, 0], scale)
+            raw["restored_size_used"] = steps["restored"].pop("size_used")
+            client.delete_session()
+        except Exception as exc:  # noqa: BLE001 - the record says what failed
+            raw["error"] = f"{type(exc).__name__}: {exc}"
+            raw["traceback"] = traceback.format_exc()[-2000:]
+        finally:
+            client.close()
+            left = launcher.end_all(table, install_dir, getattr(process, "pid", None))
+            server.close()
+    raw["processes_left"] = len(left)
+    return raw
+
+
+def write_raw(raw: Dict[str, Any], out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "raw.json"
+    path.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--install", type=Path, required=True)
+    ap.add_argument("--build", type=Path, required=True)
+    ap.add_argument("--dpr", type=float, required=True)
+    ap.add_argument("--launch", required=True)
+    ap.add_argument("--resolution", required=True, help="WxH, as asked of the display (recorded, not set)")
+    ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--mode", choices=["display", "devPixelsPerPx"], default="display")
+    args = ap.parse_args(argv)
+    display.enable_dpi_awareness()
+    dpi = display.effective_dpi()
+    shown = {"dpr": args.dpr, "effective_dpi": dpi, "resolution_now": display.current_resolution(),
+             "dpi_reached": dpi == round(96 * args.dpr)}
+    prefs = {"layout.css.devPixelsPerPx": "%g" % args.dpr} if args.mode == "devPixelsPerPx" else {}
+    raw = measure(args.install.resolve(), args.dpr, args.launch, [int(n) for n in args.resolution.split("x")], shown,
+                  json.loads(args.build.read_text(encoding="utf-8")), args.mode, prefs)
+    print(write_raw(raw, args.out))
+    return 0 if raw["error"] is None and raw["processes_left"] == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

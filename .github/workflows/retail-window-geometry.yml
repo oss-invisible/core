@@ -1,0 +1,115 @@
+name: retail-window-geometry
+
+# The geometry of a maximized, then restored, main window of the official retail Firefox on a GitHub Windows
+# runner, at the display scales of captures/WINDOW_GEOMETRY_REQUEST.json set for real in Windows (scripts under
+# scripts/retail/window_geometry/). It runs when a pull request or a push to main changes that file, and never by
+# hand or on a schedule. One job per scale, one browser at a time, one runner each: the account runs at most
+# 20 jobs at once. The raw JSON files are the artifact; they are committed by hand to a private capture
+# repository afterwards, not to this one.
+#
+# MARIONETTE EXCEPTION. This capture launches retail Firefox with -marionette, unlike retail-capture.yml (plain
+# launch), because reproducing Juggler's resize needs chrome-privileged script: the restored window is produced by
+# exactly the line Juggler runs (TargetRegistry.js setViewportSize: window.resizeBy). Proof that Marionette does not
+# change the frame: at every scale reached live, the maximized geometry measured here must equal invisible_core
+# WINDOW_FRAME_BY_DPR (measured from plain launches) exactly, or the scale is not valid (judge.py).
+#
+# The `judge` job is the one verdict: it reads every artifact, prints the table, and is red when a scale is
+# missing, a launch left a process, launch a differs from launch b, or a scale reached live differs from the table.
+#
+# Same trigger shape as ci.yml (tests/test_ci_runs_once_per_commit.py): pull requests through `pull_request`,
+# `push` only for main, a new push to a pull request replaces the run it supersedes.
+on:
+  push:
+    branches: [main]
+    paths: [captures/WINDOW_GEOMETRY_REQUEST.json]
+  pull_request:
+    paths: [captures/WINDOW_GEOMETRY_REQUEST.json]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      firefox_version: ${{ steps.request.outputs.firefox_version }}
+      dpr: ${{ steps.request.outputs.dpr }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: read captures/WINDOW_GEOMETRY_REQUEST.json
+        id: request
+        run: python scripts/retail/window_geometry/request.py | tee -a "$GITHUB_OUTPUT"
+
+  capture:
+    needs: request
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        dpr: ${{ fromJSON(needs.request.outputs.dpr) }}
+    # The profile of the browser is made in TEMP: on D:, like every Windows job that launches a browser
+    # (tests/test_ci_windows_temp_is_on_d.py).
+    env:
+      TEMP: 'D:\a\_temp'
+      TMP: 'D:\a\_temp'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The official installer of the requested version, from archive.mozilla.org: sha256 against SHA256SUMS,
+      # SHA256SUMS.asc against the release signing key committed in captures/runner/, extracted with 7z.
+      # Nothing is installed.
+      - name: fetch, verify and extract the official build
+        shell: bash
+        run: python scripts/retail/firefox_build.py fetch --version "${{ needs.request.outputs.firefox_version }}" --work "$RUNNER_TEMP/ff"
+
+      # Sets each resolution and then the display scale for real, launches firefox.exe -no-remote -profile
+      # <empty directory> -marionette <page>, measures, and ends every process of the install folder.
+      - name: capture
+        shell: bash
+        run: |
+          python scripts/retail/window_geometry/run_scale.py \
+            --install "$RUNNER_TEMP/ff/extracted/core" --build "$RUNNER_TEMP/ff/build.json" \
+            --request captures/WINDOW_GEOMETRY_REQUEST.json --dpr ${{ matrix.dpr }} --out "$RUNNER_TEMP/out"
+
+      - name: keep the build record beside the results
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          if [ -f "$RUNNER_TEMP/ff/build.json" ]; then cp "$RUNNER_TEMP/ff/build.json" "$RUNNER_TEMP/out/build.json"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retail-window-geometry-${{ needs.request.outputs.firefox_version }}-dpr${{ matrix.dpr }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: warn
+          retention-days: 90
+
+  judge:
+    needs: [request, capture]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: retail-window-geometry-*
+          path: judge-in
+      - name: the verdict
+        run: python scripts/retail/window_geometry/judge.py --in judge-in --request captures/WINDOW_GEOMETRY_REQUEST.json

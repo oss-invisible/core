@@ -20,3 +20,15 @@ def load(name: str) -> ModuleType:
         return importlib.import_module(name)
     finally:
         sys.path.remove(str(RETAIL))
+
+
+WINDOW_GEOMETRY = RETAIL / "window_geometry"
+
+
+def load_window_geometry(name: str) -> ModuleType:
+    """A module of scripts/retail/window_geometry/ (they import each other, and scripts/retail, by plain name)."""
+    sys.path.insert(0, str(WINDOW_GEOMETRY))
+    try:
+        return importlib.import_module(name)
+    finally:
+        sys.path.remove(str(WINDOW_GEOMETRY))
