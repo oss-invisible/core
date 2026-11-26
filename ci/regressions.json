@@ -1,10 +1,28 @@
 [
- {"test": "tests/test_wait_for_selector_hidden_with_no_element.py::test_hidden_with_no_element_returns_none_in_the_first_turn",
-  "os": ["linux", "windows"],
+ {
+  "test": "tests/test_wait_for_selector_hidden_with_no_element.py::test_hidden_with_no_element_returns_none_in_the_first_turn",
+  "os": [
+   "linux",
+   "windows"
+  ],
   "defect": "wait_for_selector(state=hidden) with nothing matching polled until its timeout instead of returning null at once as stock Playwright does",
   "fix": "oss-invisible/core@00017f65ea7c86d6c7a1971e1a4bbff35467b089",
   "red_on_old": "oss-invisible/playwright/actions/runs/45078152951/job/137383956768",
   "red_kind": "defect-run",
   "pr": "oss-invisible/core#317",
-  "added": "2026-11-25"}
+  "added": "2026-11-25"
+ },
+ {
+  "test": "tests/test_wrapper_job_needed.py::test_a_change_of_the_package_alone_needs_the_job_and_did_not_on_the_old_rule",
+  "os": [
+   "linux",
+   "windows"
+  ],
+  "defect": "a core pull request that changed only src/ skipped wrapper-on-this-core, so a change that broke the wrapper's unit tests was green (core #328)",
+  "fix": "oss-invisible/core@6ad0768480e53e85627d1df1005db5a94aa8b41f",
+  "red_on_old": "oss-invisible/core/actions/runs/45707646288",
+  "red_kind": "defect-run",
+  "pr": "oss-invisible/core#330",
+  "added": "2026-11-26"
+ }
 ]
