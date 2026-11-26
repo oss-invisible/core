@@ -52,9 +52,12 @@ pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[1]
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 SCRIPT = ROOT / "scripts" / "wrapper_on_this_core.py"
+NEEDED = ROOT / "scripts" / "wrapper_job_needed.py"
 JOB = "wrapper-on-this-core"
+UNIT_JOB = "wrapper-unit-on-this-core"
 JOB_FILES = (".github/workflows/ci.yml", "scripts/wrapper_on_this_core.py",
-             "scripts/wrapper_test_seconds.json", "tests/test_the_wrapper_job_runs_on_the_core.py")
+             "scripts/wrapper_test_seconds.json", "scripts/wrapper_job_needed.py",
+             "tests/test_the_wrapper_job_runs_on_the_core.py", "tests/test_wrapper_job_needed.py")
 
 
 def _load_script():
@@ -104,11 +107,13 @@ def job_problems(spec: dict) -> list[str]:
         if not any((x.get("with") or {}).get("fetch-depth") == 0 for x in selector["steps"]):
             out.append("`wrapper-job-needed` does not fetch the history it diffs")
         text = str(decide.get("run", ""))
-        for needle, what in (('"push"', "a push to main"), ("release/*", "a release/* head branch"),
-                             ("git diff --name-only", "a diff of the pull request")) + tuple(
-                                 (f, f"a change of {f}") for f in JOB_FILES):
-            if needle not in text:
-                out.append(f"the job does not run on {what}")
+        # The rules (a push, release/*, the body, src/, pyproject.toml, the locks, the job's own files) are in the script, held by
+        # tests/test_wrapper_job_needed.py and, run for real on a diff, below.
+        if "scripts/wrapper_job_needed.py" not in text:
+            out.append("`wrapper-job-needed` does not decide with scripts/wrapper_job_needed.py")
+        for name in ("EVENT", "HEAD_REF", "BASE_SHA", "HEAD_SHA", "PR_BODY"):
+            if name not in (decide.get("env") or {}):
+                out.append(f"`wrapper-job-needed` does not give the script {name}")
         if "label" in text or "labels" in str(decide.get("env", "")):
             out.append("the job still looks at a label")
     on = spec.get("on") or {}
@@ -167,12 +172,90 @@ def job_problems(spec: dict) -> list[str]:
     return out
 
 
+def unit_job_problems(spec: dict) -> list[str]:
+    """`wrapper-unit-on-this-core`: the wrapper's required unit suite, run as the wrapper's own unit job runs it, judged by the wrapper's main."""
+    jobs = spec.get("jobs") or {}
+    job = jobs.get(UNIT_JOB)
+    if not isinstance(job, dict):
+        return [f"ci.yml has no job `{UNIT_JOB}`"]
+    out = []
+    other = jobs.get(JOB) or {}
+    if _flat(job.get("if")) != _flat(other.get("if")) or job.get("needs") != other.get("needs"):
+        out.append(f"`{UNIT_JOB}` does not run under the `if:` and the `needs:` of `{JOB}`")
+    legs = sorted((m.get("os"), m.get("runner")) for m in ((job.get("strategy") or {}).get("matrix") or {}).get("include") or [])
+    if legs != [("linux", "ubuntu-24.04"), ("windows", "windows-2022")]:
+        out.append(f"the legs are {legs}, not one on Linux and one on Windows")
+    env = job.get("env") or {}
+    if str(env.get("INVISIBLE_CORE_PIN")) != "allow" or str(env.get("INVISIBLE_CORE_AUTOFIX")) != "off":
+        out.append("the pin is not left alone (INVISIBLE_CORE_PIN=allow, INVISIBLE_CORE_AUTOFIX=off)")
+    if env.get("TEMP") != other.get("env", {}).get("TEMP") or env.get("TMP") != other.get("env", {}).get("TMP"):
+        out.append("TEMP and TMP are not those of the other wrapper job (D:\\a\\_temp on Windows)")
+    steps = job.get("steps") or []
+    chooser = [s for s in steps if "wrapper_on_this_core.py wrapper-ref" in str(s.get("run", ""))]
+    checkouts = [s for s in steps if (s.get("with") or {}).get("repository") == "oss-invisible/playwright"]
+    if (len(checkouts) != 1 or len(chooser) != 1 or not chooser[0].get("id")
+            or _bare(checkouts[0]["with"].get("ref")) != f"steps.{chooser[0]['id']}.outputs.ref"
+            or steps.index(chooser[0]) > steps.index(checkouts[0])):
+        out.append("the wrapper is not checked out once, at the ref the `wrapper-ref` step chooses")
+    elif not any(f'"${k}"' in str(chooser[0].get("run", ""))
+                 for k, v in (chooser[0].get("env") or {}).items() if "github.event.pull_request.body" in str(v)):
+        out.append("the body of the pull request does not reach the chooser through `env:`")
+    for s in steps:
+        if re.search(r"\$\{\{[^}]*pull_request\.body", str(s.get("run", ""))):
+            out.append("the body of the pull request is interpolated in a `run:`")
+    text = "\n".join(str(s.get("run", "")) for s in steps)
+    install = next((str(s.get("run", "")) for s in steps if 'pip install -e ".[dev]"' in str(s.get("run", ""))), "")
+    lines = [line.strip() for line in install.splitlines()]
+    first_core = next((i for i, line in enumerate(lines) if line == "python -m pip install ."), None)
+    wrapper_line = next((i for i, line in enumerate(lines) if 'pip install -e ".[dev]"' in line), None)
+    over = next((i for i, line in enumerate(lines) if line == "python -m pip install --force-reinstall --no-deps ."), None)
+    if wrapper_line is None:
+        out.append("the wrapper is not installed with its dev extra")
+    elif first_core is None or first_core > wrapper_line or over is None or over < wrapper_line:
+        out.append("this core is not installed before the wrapper and again over its pin")
+    if ('ci_verdict.py args --required ci/required-suites.json --suite "wrapper.unit.all.$SUITE_OS" --os "$SUITE_OS" --with-marker'
+            not in text):
+        out.append("the selection is not the one the wrapper's `ci_verdict.py args` prints for wrapper.unit.all.<os>")
+    run_step = next((s for s in steps if "-m pytest" in str(s.get("run", ""))), {})
+    for needle, what in (("-p no:rerunfailures", "pytest does not run with -p no:rerunfailures"),
+                         ("--junitxml=", "pytest writes no junit"), ('"${ARGS[@]}"', "pytest does not take the selection of `args`"),
+                         ("-o addopts=''", "pytest keeps the addopts of the wrapper")):
+        if needle not in str(run_step.get("run", "")):
+            out.append(what)
+    if (run_step.get("env") or {}).get("SUITE_OS") is None or _bare(run_step["env"]["SUITE_OS"]) != "matrix.os":
+        out.append("the suite of a leg is not named by its os (SUITE_OS from the matrix)")
+    if run_step.get("working-directory") != "wrapper":
+        out.append("pytest does not run in the wrapper's checkout")
+    judge = next((s for s in steps if "ci_verdict.py\" judge" in str(s.get("run", ""))), None)
+    if judge is None:
+        out.append("nothing judges the junit with ci_verdict.py")
+    else:
+        jt = str(judge["run"])
+        if judge.get("working-directory") != "wrapper" or judge.get("if") != "always()":
+            out.append("the judge does not run (always) in the wrapper's checkout")
+        for needle, what in (("git show origin/main:scripts/ci_verdict.py", "the judge is not the wrapper main's ci_verdict.py"),
+                             ("git show origin/main:ci/required-suites.json", "the list is not the wrapper main's required-suites.json"),
+                             ('--main-required "$RUNNER_TEMP/main/required-suites.json"', "the judge is not told the list of main"),
+                             ('--suite "wrapper.unit.all.$SUITE_OS"', "the judge does not judge wrapper.unit.all.<os>"),
+                             ('--junit "$RUNNER_TEMP/unit-junit.xml"', "the judge does not read the junit of the run")):
+            if needle not in jt:
+                out.append(what)
+        if "--required ci/required-suites.json" not in jt:
+            out.append("the judge does not read the row of the wrapper's checkout")
+    if not any("fetch" in str(s.get("run", "")) and "origin main" in str(s.get("run", "")) and s.get("working-directory") == "wrapper"
+               for s in steps):
+        out.append("the wrapper's origin/main is not fetched for the judge")
+    return out
+
+
 def gate_problems(spec: dict) -> list[str]:
     jobs = spec.get("jobs") or {}
     job, gate = jobs.get(JOB) or {}, jobs.get("gate") or {}
     out = []
     if JOB not in (gate.get("needs") or []):
         out.append(f"`gate` does not need `{JOB}`")
+    if UNIT_JOB not in (gate.get("needs") or []):
+        out.append(f"`gate` does not need `{UNIT_JOB}`")
     if "wrapper-job-needed" not in (gate.get("needs") or []):
         out.append("`gate` does not need `wrapper-job-needed`")
     steps = gate.get("steps") or []
@@ -180,13 +263,16 @@ def gate_problems(spec: dict) -> list[str]:
     if _bare(env.get("WRAPPER_JOB_REQUIRED", "")) != _bare(job.get("if", "")):
         out.append("`gate` decides whether the job was required by another condition than the job's own `if`")
     run = "\n".join(str(s.get("run", "")) for s in steps)
-    required = re.search(r'if \[ "\$WRAPPER_JOB_REQUIRED" = "true" \]; then\s+'
-                         r'test "\$\{\{ needs\.wrapper-on-this-core\.result \}\}" = "success"\s+'
-                         r'else\s+test "\$\{\{ needs\.wrapper-on-this-core\.result \}\}" = "skipped"\s+fi', run)
+    block = re.search(r'if \[ "\$WRAPPER_JOB_REQUIRED" = "true" \]; then(.*?)\belse\b(.*?)\bfi\b', run, re.DOTALL)
+    required = block and all(
+        f'test "${{{{ needs.{name}.result }}}}" = "success"' in block.group(1)
+        and f'test "${{{{ needs.{name}.result }}}}" = "skipped"' in block.group(2)
+        and f'test "${{{{ needs.{name}.result }}}}" = "success"' not in block.group(2)
+        for name in (JOB, UNIT_JOB))
     if 'test "${{ needs.wrapper-job-needed.result }}" = "success"' not in run:
         out.append("`gate` does not demand that the decision was made (a failed decision reads as a skip)")
     if not required:
-        out.append("`gate` does not demand success where the job is required and a skip elsewhere")
+        out.append("`gate` does not demand success of both wrapper jobs where they are required and a skip elsewhere")
     return out
 
 
@@ -212,7 +298,9 @@ jobs:
 def test_the_workflow_before_this_job_is_caught():
     old = yaml.safe_load(OLD_CI)
     assert job_problems(old) == [f"ci.yml has no job `{JOB}`"]
+    assert unit_job_problems(old) == [f"ci.yml has no job `{UNIT_JOB}`"]
     assert f"`gate` does not need `{JOB}`" in gate_problems(old)
+    assert f"`gate` does not need `{UNIT_JOB}`" in gate_problems(old)
 
 
 def test_a_job_that_runs_on_less_is_caught():
@@ -244,6 +332,56 @@ def test_the_core_ci_runs_the_wrapper_tests_on_this_core():
 
 def test_the_single_verdict_requires_it_where_it_applies_and_only_there():
     assert gate_problems(_spec()) == []
+
+
+# ------------------------------------- the wrapper's whole unit suite, on this core (ci-12)
+
+def test_the_core_ci_runs_the_wrappers_unit_suite_on_this_core():
+    assert unit_job_problems(_spec()) == []
+    job = _spec()["jobs"][UNIT_JOB]
+    assert sorted(m["os"] for m in job["strategy"]["matrix"]["include"]) == ["linux", "windows"]
+    assert job["needs"] == ["wrapper-job-needed"]
+    assert _flat(job["if"]) == "needs.wrapper-job-needed.outputs.run=='true'"
+
+
+def test_a_unit_job_that_selects_judges_or_installs_otherwise_is_caught():
+    def broken(edit):
+        spec = _spec()
+        edit(spec["jobs"][UNIT_JOB])
+        return unit_job_problems(spec)
+
+    def step(job, needle):
+        return next(s for s in job["steps"] if needle in str(s.get("run", "")))
+
+    assert any("-p no:rerunfailures" in p for p in broken(lambda j: step(j, "-m pytest").update(
+        run=step(j, "-m pytest")["run"].replace("-p no:rerunfailures", ""))))
+    assert any("junit" in p for p in broken(lambda j: step(j, "-m pytest").update(
+        run=step(j, "-m pytest")["run"].replace("--junitxml=", "--junit-prefix="))))
+    assert any("selection" in p for p in broken(lambda j: step(j, "ci_verdict.py args").update(
+        run=step(j, "ci_verdict.py args")["run"].replace("wrapper.unit.all.", "wrapper.unit.udp."))))
+    assert any("main's ci_verdict" in p for p in broken(lambda j: step(j, "judge").update(
+        run=step(j, "judge")["run"].replace("git show origin/main:scripts/ci_verdict.py", "cat scripts/ci_verdict.py"))))
+    assert any("list of main" in p or "required-suites" in p for p in broken(lambda j: step(j, "judge").update(
+        run=step(j, "judge")["run"].replace("--main-required", "--ignored"))))
+    assert any("`if:`" in p for p in broken(lambda j: j.update({"if": "github.event_name == 'push'"})))
+    assert any("legs" in p for p in broken(lambda j: j["strategy"]["matrix"].update(include=j["strategy"]["matrix"]["include"][:1])))
+    assert any("pin" in p for p in broken(lambda j: j["env"].update(INVISIBLE_CORE_AUTOFIX="on")))
+    assert any("ref" in p for p in broken(lambda j: next(
+        s for s in j["steps"] if (s.get("with") or {}).get("repository") == "oss-invisible/playwright")["with"].update(ref="main")))
+
+
+def test_the_gate_reads_a_required_skip_of_the_unit_job_as_red():
+    spec = _spec()
+    assert gate_problems(spec) == []
+    spec["jobs"]["gate"]["needs"] = [n for n in spec["jobs"]["gate"]["needs"] if n != UNIT_JOB]
+    assert any(UNIT_JOB in p for p in gate_problems(spec))
+    spec = _spec()
+    for s in spec["jobs"]["gate"]["steps"]:
+        if "run" in s:
+            s["run"] = s["run"].replace(
+                'test "${{ needs.wrapper-unit-on-this-core.result }}" = "success"',
+                'test "${{ needs.wrapper-unit-on-this-core.result }}" = "skipped"', 1)
+    assert gate_problems(spec), "a gate that takes a skip of the unit job where it is required is not caught"
 
 
 # --------------------------------------------------------------- the list of tests
@@ -527,7 +665,7 @@ def _decide_script() -> str:
     return step["run"]
 
 
-def _decide(tmp_path, event, head_ref, changed, body=""):
+def _decide(tmp_path, event, head_ref, changed, body="", script_text=None):
     """Runs the `decide` step in a throwaway repo where the head commit changes ``changed``."""
     import shutil
     import subprocess
@@ -542,13 +680,18 @@ def _decide(tmp_path, event, head_ref, changed, body=""):
         return subprocess.run(list(cmd), cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
 
     run(*git, "init", "-q")
+    # the checkout of a run has the script: the step runs it from `scripts/`, with the interpreter of this test
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "wrapper_job_needed.py").write_text(NEEDED.read_text(encoding="utf-8"), encoding="utf-8")
     (repo / "keep.txt").write_text("a", encoding="utf-8")
     run(*git, "add", "-A")
     run(*git, "commit", "-q", "-m", "base")
     base = run("git", "rev-parse", "HEAD")
     for rel in changed:
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
-        (repo / rel).write_text("b", encoding="utf-8")
+        # the script itself, when it is one of the changed files, stays the script (with one more line): the step runs it
+        body_of_rel = NEEDED.read_text(encoding="utf-8") + "\n# changed\n" if rel == "scripts/wrapper_job_needed.py" else "b"
+        (repo / rel).write_text(body_of_rel, encoding="utf-8")
     (repo / "keep.txt").write_text("b", encoding="utf-8")
     run(*git, "add", "-A")
     run(*git, "commit", "-q", "-m", "head")
@@ -556,9 +699,10 @@ def _decide(tmp_path, event, head_ref, changed, body=""):
     out = tmp_path / "out.txt"
     out.write_text("", encoding="utf-8")
     script = tmp_path / "decide.sh"
-    script.write_text(_decide_script(), encoding="utf-8", newline="\n")
+    step = script_text if script_text is not None else _decide_script().replace("python3 ", f'"{Path(sys.executable).as_posix()}" ')
+    script.write_text(step, encoding="utf-8", newline="\n")
     env = dict(__import__("os").environ, EVENT=event, HEAD_REF=head_ref, BASE_SHA=base, HEAD_SHA=head, PR_BODY=body,
-               RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(out))
+               RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(out), GITHUB_STEP_SUMMARY=str(tmp_path / "summary.md"))
     done = subprocess.run([bash, str(script)], cwd=repo, env=env, capture_output=True, text=True)
     return done, out.read_text(encoding="utf-8").strip()
 
@@ -567,8 +711,11 @@ def test_the_job_is_needed_on_a_push_a_release_branch_and_a_change_of_the_job_on
     for n, (event, head_ref, changed, expected) in enumerate([
             ("push", "", [], "run=true"),
             ("pull_request", "release/65.72.0", [], "run=true"),
-            ("pull_request", "fix/x", ["src/other.py", "docs/a.md"], "run=false"),
-            ("pull_request", "fix/x", ["tests/test_other.py", "scripts/other.py"], "run=false")]
+            ("pull_request", "fix/x", ["docs/a.md", "README.md"], "run=false"),
+            ("pull_request", "fix/x", ["tests/test_other.py", "scripts/other.py"], "run=false"),
+            # what the installed core is made of (ci-12): the package, its build and dependencies
+            ("pull_request", "fix/x", ["src/invisible_core/x.py", "docs/a.md"], "run=true"),
+            ("pull_request", "fix/x", ["pyproject.toml"], "run=true")]
             + [("pull_request", "fix/x", [f], "run=true") for f in JOB_FILES]):
         done, out = _decide(tmp_path / str(n), event, head_ref, changed)
         assert done.returncode == 0, done.stderr
@@ -582,6 +729,7 @@ def test_a_diff_that_cannot_be_read_is_red_not_not_needed(tmp_path):
     assert done.returncode == 0 and out == "run=false"
     # the same step, with a base that does not exist
     script = tmp_path / "x" / "decide.sh"
+    assert "wrapper_job_needed.py" in script.read_text(encoding="utf-8")
     env = dict(__import__("os").environ, EVENT="pull_request", HEAD_REF="fix/x", BASE_SHA="0" * 40,
                HEAD_SHA="1" * 40, RUNNER_TEMP=str(tmp_path / "x"), GITHUB_OUTPUT=str(tmp_path / "x" / "out2.txt"))
     bad = subprocess.run([__import__("shutil").which("bash"), str(script)], cwd=tmp_path / "x" / "repo",
@@ -836,7 +984,7 @@ def test_the_wrapper_checkout_takes_the_ref_from_the_step_that_chooses_it():
     # the wrapper is checked out here and nowhere else in the workflow
     others = [name for name, j in spec["jobs"].items() for s in j.get("steps") or []
               if (s.get("with") or {}).get("repository") == "oss-invisible/playwright"]
-    assert others == [JOB]
+    assert others == [JOB, UNIT_JOB]
     assert job_problems(spec) == []
 
 
@@ -890,6 +1038,6 @@ def test_a_pull_request_that_declares_a_wrapper_branch_makes_the_job_needed(tmp_
                                           ("wrapper-ref: feat/x\n", "run=true"),
                                           ("a\r\nwrapper-ref: feat/x\r\n", "run=true"),
                                           ("see wrapper-ref: feat/x\n", "run=false")]):
-        done, out = _decide(tmp_path / str(n), "pull_request", "fix/x", ["src/other.py"], body=body)
+        done, out = _decide(tmp_path / str(n), "pull_request", "fix/x", ["docs/other.md"], body=body)
         assert done.returncode == 0, done.stderr
         assert out == expected, (body, out)
