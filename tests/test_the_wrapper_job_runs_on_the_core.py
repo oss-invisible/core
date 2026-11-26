@@ -716,10 +716,21 @@ def test_the_job_is_needed_on_a_push_a_release_branch_and_a_change_of_the_job_on
             # what the installed core is made of (ci-12): the package, its build and dependencies
             ("pull_request", "fix/x", ["src/invisible_core/x.py", "docs/a.md"], "run=true"),
             ("pull_request", "fix/x", ["pyproject.toml"], "run=true")]
-            + [("pull_request", "fix/x", [f], "run=true") for f in JOB_FILES]):
+            + [("pull_request", "fix/x", [f], "run=true") for f in JOB_FILES]
+            # a merge group (the merge queue): the files between its base and its head, the same rule as a pull request
+            + [("merge_group", "", ["src/invisible_core/x.py"], "run=true"),
+               ("merge_group", "", ["pyproject.toml"], "run=true"),
+               ("merge_group", "", ["docs/a.md", "README.md"], "run=false"),
+               ("merge_group", "", ["tests/test_other.py", "scripts/other.py"], "run=false")]
+            + [("merge_group", "", [f], "run=true") for f in JOB_FILES]):
         done, out = _decide(tmp_path / str(n), event, head_ref, changed)
         assert done.returncode == 0, done.stderr
         assert out == expected, (event, head_ref, changed, out)
+
+
+def test_an_event_the_decision_does_not_know_is_red_not_not_needed(tmp_path):
+    done, out = _decide(tmp_path / "x", "workflow_dispatch", "", ["src/invisible_core/x.py"])
+    assert done.returncode != 0 and out == ""
 
 
 def test_a_diff_that_cannot_be_read_is_red_not_not_needed(tmp_path):

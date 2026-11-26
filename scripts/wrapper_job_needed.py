@@ -6,20 +6,27 @@ seen by nobody unless the core's own round runs the wrapper on the new core. The
 (`wrapper-on-this-core`, `wrapper-unit-on-this-core`) are REQUIRED, and a skip of them is red in `gate`, when:
 
   * the event is a push (to main: the workflow only runs on main);
-  * the head branch of the pull request is `release/*`;
+  * the head branch of the pull request is `release/*` (a merge group has no head branch: it is the pull request's,
+    judged on its own run);
   * the pull request body declares a wrapper branch (a line `wrapper-ref: <branch>`; the grammar is judged by the
-    job that chooses the branch, which is red on a bad line);
+    job that chooses the branch, which is red on a bad line; a merge group has no body, and the wrapper of a queue
+    run is main);
   * the change touches what the installed core is made of: anything under `src/` (the package: the wheel is
     `packages = ["src/invisible_core"]`), `pyproject.toml` (its dependencies, its version, its build), or a lock file
     of the repository root (`*.lock`, `pylock*.toml`, `requirements*.txt`, `constraints*.txt`: none exists today, and
     the day one does, it counts);
   * the change touches the jobs themselves (JOB_FILES: this file, ci.yml, the scripts and tests of the jobs).
 
+A merge group (the merge queue) is decided from the files between its `merge_group.base_sha` and `head_sha`, with the
+SAME file rule as a pull request (the last two reasons). An event this script does not know is exit 1 with no output,
+never "not needed".
+
 Any other pull request (docs, tests of the core, scripts that are not the jobs') is "not needed", with its reason in
 the step summary, and the single verdict (`gate`) knows a skip is the right state there.
 
     wrapper_job_needed.py        reads EVENT, HEAD_REF, BASE_SHA, HEAD_SHA and PR_BODY from the environment (the body
-                                 is untrusted: it never goes through an interpolation), asks git for the files of
+                                 is untrusted: it never goes through an interpolation; BASE_SHA and HEAD_SHA are the
+                                 pull request's or the merge group's), asks git for the files of
                                  `BASE_SHA...HEAD_SHA`, writes `run=true|false` to $GITHUB_OUTPUT and the reason to
                                  $GITHUB_STEP_SUMMARY. A diff that cannot be read is exit 1, never "nothing changed".
 """
@@ -46,6 +53,14 @@ CORE_FILES = ("pyproject.toml",)
 #: Lock and pin files of the repository root (a file with no `/` in its path).
 LOCK_PATTERNS = ("*.lock", "pylock*.toml", "requirements*.txt", "constraints*.txt")
 
+#: The events that are decided from a diff. A push always runs; anything else is red.
+DIFF_EVENTS = ("pull_request", "merge_group")
+
+
+class UnknownEvent(Exception):
+    """An event this script has no rule for."""
+
+
 _DECLARATION = re.compile(r"^wrapper-ref[ \t]*:", re.IGNORECASE | re.MULTILINE)
 
 
@@ -60,15 +75,19 @@ def core_change(path: str) -> str | None:
     return None
 
 
-def decide(event: str, head_ref: str, body: str | None, changed: list[str] | None) -> tuple[bool, str]:
-    """(needed, reason). `changed` is the list of files of a pull request; a push does not look at it."""
+def decide(event: str, head_ref: str = "", body: str | None = None, changed: list[str] | None = None) -> tuple[bool, str]:
+    """(needed, reason). `changed` is the list of files of a pull request or a merge group; a push does not look at it.
+    A merge group asks for the files only (its head branch and body are the pull request's). Raises UnknownEvent."""
     if event == "push":
         return True, "a push to main"
+    if event not in DIFF_EVENTS:
+        raise UnknownEvent(f"the event `{event}` has no rule: it is not known whether the wrapper job is needed")
     reasons: list[str] = []
-    if (head_ref or "").startswith("release/"):
-        reasons.append(f"the head branch `{head_ref}` is a release branch")
-    if _DECLARATION.search((body or "").replace("\r\n", "\n").replace("\r", "\n")):
-        reasons.append("the pull request declares a wrapper branch (`wrapper-ref:`)")
+    if event == "pull_request":
+        if (head_ref or "").startswith("release/"):
+            reasons.append(f"the head branch `{head_ref}` is a release branch")
+        if _DECLARATION.search((body or "").replace("\r\n", "\n").replace("\r", "\n")):
+            reasons.append("the pull request declares a wrapper branch (`wrapper-ref:`)")
     for path in changed or []:
         if path in JOB_FILES:
             reasons.append(f"`{path}` is a file of the job itself")
@@ -92,6 +111,10 @@ def _changed_files(base: str, head: str) -> list[str]:
 def main() -> int:
     event = os.environ.get("EVENT", "")
     changed = None
+    if event not in ("push", *DIFF_EVENTS):
+        print(f"wrapper-job-needed: RED: the event `{event}` has no rule: it is not known whether the wrapper job is needed",
+              file=sys.stderr)
+        return 1
     if event != "push":
         base, head = os.environ.get("BASE_SHA", ""), os.environ.get("HEAD_SHA", "")
         try:

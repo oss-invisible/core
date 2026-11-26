@@ -11,6 +11,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue: GitHub builds the merge result on a branch of its own and asks for the
+  # required checks on it. A queue run is judged as a pull request is: every job that must gate
+  # a merge runs, and `gate` is the one verdict (tests/test_ci_is_ready_for_the_merge_queue.py).
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -19,9 +24,11 @@ permissions:
 # Anywhere else (a push to main, a tag, a manual run) the group is unique to the
 # run (`github.run_id`) and nothing is cancelled: the run of every commit of
 # main must finish, and a pending run of main must not be replaced either (a
-# group with a fixed name drops the older pending run, cancel or not).
+# group with a fixed name drops the older pending run, cancel or not). A merge
+# group run is keyed on its own ref (one branch per queue entry) and is never
+# cancelled: a run of the queue that was started must finish.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'merge_group' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Engine and GeoIP downloads go through the release API with this token.
@@ -622,12 +629,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
         with:
           fetch-depth: 0
+      # The rule is scripts/wrapper_job_needed.py, one for every event: a push, a pull request,
+      # a merge group; an event it does not know is red. The base and the head are the pull
+      # request's or the merge group's. The body is untrusted: it reaches the script through
+      # `env:` and a file, never through an interpolation in `run:`.
       - id: decide
         env:
           EVENT: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           PR_BODY: ${{ github.event.pull_request.body }}
         # The rules, and why, are in scripts/wrapper_job_needed.py (tested by tests/test_wrapper_job_needed.py). A diff that
         # cannot be read is red there, never "nothing changed". The body is untrusted: it comes through `env:` only.
@@ -693,7 +704,9 @@ jobs:
           EVENT: ${{ github.event_name }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr_body.txt"
+          # A merge group has no pull request body (the declaration was read on the pull
+          # request's own run): its wrapper is main, said by the script.
+          if [ "$EVENT" = "merge_group" ]; then : > "$RUNNER_TEMP/pr_body.txt"; else printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr_body.txt"; fi
           python scripts/wrapper_on_this_core.py wrapper-ref --event "$EVENT" --body-file "$RUNNER_TEMP/pr_body.txt"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
         with:
@@ -704,11 +717,11 @@ jobs:
         run: |
           # The list of main is what main's copy of the script computes on THIS wrapper
           # tree. A base that cannot be read is red, not "main has nothing".
-          if [ "${{ github.event_name }}" = "push" ]; then
-            BASE="${{ github.event.before }}"
-          else
-            BASE="origin/main"
-          fi
+          case "${{ github.event_name }}" in
+            push) BASE="${{ github.event.before }}" ;;
+            pull_request|merge_group) BASE="origin/main" ;;
+            *) echo "event ${{ github.event_name }}: it is not known what main has" >&2; exit 1 ;;
+          esac
           if ! git rev-parse --verify -q "$BASE^{commit}" > /dev/null; then
             echo "cannot read $BASE: it is not known what main has" >&2
             exit 1
@@ -853,7 +866,9 @@ jobs:
           EVENT: ${{ github.event_name }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr_body.txt"
+          # A merge group has no pull request body (the declaration was read on the pull
+          # request's own run): its wrapper is main, said by the script.
+          if [ "$EVENT" = "merge_group" ]; then : > "$RUNNER_TEMP/pr_body.txt"; else printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr_body.txt"; fi
           python scripts/wrapper_on_this_core.py wrapper-ref --event "$EVENT" --body-file "$RUNNER_TEMP/pr_body.txt"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
         with:
@@ -945,10 +960,11 @@ jobs:
           # The decision itself must have been made: without it the job below would
           # read as "not needed" and a skip would pass.
           test "${{ needs.wrapper-job-needed.result }}" = "success"
-          # Required on a release pull request, on a push to main and on a pull
-          # request that touches the job: green, and a job that did not run there is
-          # red, never "skipped, so fine". Any other pull request has no reason to
-          # run it, and a skip is its right state.
+          # Required on a release pull request, on a push to main, on a pull
+          # request or a merge group that touches the job: green, and a job that did
+          # not run there is red, never "skipped, so fine". Any other pull request or
+          # merge group has no reason to run it, and a skip is its right state. The
+          # gate names no event: it follows what wrapper-job-needed decided.
           if [ "$WRAPPER_JOB_REQUIRED" = "true" ]; then
             test "${{ needs.wrapper-on-this-core.result }}" = "success"
             test "${{ needs.wrapper-unit-on-this-core.result }}" = "success"
