@@ -168,8 +168,15 @@ class WindowFrame(NamedTuple):
     #: screen on three sides. The same for a restored window.
     border: int
     #: A popup: from the window top, border included, to the content top.
+    #: A MODEL, not a retail 159 capture: the values come from Firefox 151
+    #: measured on a workbench (a different build, not the official retail
+    #: 159.0), and stay a model until round 5 of the window-geometry capture
+    #: (retail-window-geometry.yml, the `popup` and `popup_pos` steps) measures
+    #: them on retail 159.
     popup_ui: int
-    #: Where a popup opened without left/top is put, on both axes.
+    #: Where a popup opened without left/top is put, on both axes. A MODEL
+    #: like popup_ui: Firefox 151 measured on a workbench, not a retail 159
+    #: capture, until round 5 of the window-geometry capture measures it.
     popup_position: int
     #: Chrome height above the content with the normal density, maximized or
     #: restored (chrome_height_device). A maximized window's chrome height,
@@ -190,12 +197,14 @@ def _frame(border: int, popup_ui: int, scale: float) -> WindowFrame:
         restored_position=RESTORED_POSITION)
 
 
-#: The window frame per display scale. The resize border and the popup frame
-#: were measured on retail Firefox on Windows 11, lending the display scale (the
-#: workbench's scripts/window_geometry/scales.py): a page reads screenX,
-#: outerWidth - availWidth and mozInnerScreenY in one line each. The border is
-#: the same for a restored and a maximized window, confirmed live at all four
-#: scales (8/9/11/13). In device pixels the four rows are one rule; every CSS
+#: The window frame per display scale. The resize border was measured on retail
+#: Firefox on Windows 11, lending the display scale (the workbench's
+#: scripts/window_geometry/scales.py): a page reads screenX, outerWidth -
+#: availWidth and mozInnerScreenY in one line each. The border is the same for
+#: a restored and a maximized window, confirmed live at all four scales
+#: (8/9/11/13). The popup frame (popup_ui, popup_position) is NOT a retail 159
+#: measure: it is a MODEL from Firefox 151 measured on a workbench, until round 5
+#: of the window-geometry capture measures it on retail 159. In device pixels the four rows are one rule; every CSS
 #: value is the device value divided by the scale with Gecko's rounding, done
 #: by the engine.
 #:

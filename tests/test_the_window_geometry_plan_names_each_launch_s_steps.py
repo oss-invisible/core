@@ -8,8 +8,10 @@ measurement are replaced by fakes that record what was asked). Held here:
     (the step is skipped and says so) when even 200 does not;
   * the second Juggler call (juggler2) is 414 wide at the largest height <= 896 that fits, 50 lower when that is the first
     call's height, and is skipped when the first call does not fit;
-  * launch a takes the six core steps plus the grid and the minimum, launch b the six plus the grid check, only at the scales of
-    the grid and only at the first reached resolution; every other launch takes the six core steps;
+  * launch a and launch b take the six core steps and the thirteen steps of round 5 (plan.ROUND5_STEPS), at the first reached
+    resolution; launch a also the grid and the minimum, launch b the grid check, only at the scales of the grid; every other
+    launch takes the six core steps; p and q take the round 5 steps only when no display launch could be made (they are then
+    the pair that is compared);
   * a job at a scale Windows reaches: a and b at the first resolution, p, m at every offered resolution (and, at scale 1,
     m at devPixelsPerPx 0.75 and 0.5); at a scale it does not reach: p and q only, no display launch, no m;
   * the every-resolution launches stop when the time budget is spent, and say so.
@@ -67,14 +69,14 @@ def test_juggler_s_height_is_844_when_it_fits_else_the_largest_multiple_of_ten_t
 
 
 @pytest.mark.parametrize("dpr,launch,first,expected", [
-    (1.0, "a", True, [*plan.CORE_STEPS, "grid", "minimum", "rdm_hostgate"]),
-    (1.25, "a", True, [*plan.CORE_STEPS, "grid", "minimum"]),
-    (1.0, "b", True, [*plan.CORE_STEPS, "grid_check", "rdm_hostgate"]),
-    (1.25, "b", True, [*plan.CORE_STEPS, "grid_check"]),
+    (1.0, "a", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid", "minimum", "rdm_hostgate"]),
+    (1.25, "a", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid", "minimum"]),
+    (1.0, "b", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid_check", "rdm_hostgate"]),
+    (1.25, "b", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid_check"]),
     (1.0, "a", False, list(plan.CORE_STEPS)),
-    (1.5, "a", True, list(plan.CORE_STEPS)),
-    (1.5, "b", True, list(plan.CORE_STEPS)),
-    (2.0, "a", True, list(plan.CORE_STEPS)),
+    (1.5, "a", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS]),
+    (1.5, "b", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS]),
+    (2.0, "a", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS]),
     (1.0, "c", True, list(plan.CORE_STEPS)),
 ])
 def test_each_launch_takes_the_steps_of_the_plan(dpr, launch, first, expected):
@@ -101,6 +103,10 @@ def test_the_core_steps_are_the_ones_the_judge_compares_and_the_grid_steps_are_n
     assert plan.RESERVED_LAUNCHES == ("p", "q", "m") and plan.HOSTGATE_DPRS == (1.0,)
     assert plan.steps_for(1.0, "c", ["a", "b", "c"], True) == list(plan.CORE_STEPS), "only a and b take the host-gate step"
     assert plan.steps_for(1.0, "a", ["a", "b"], False) == list(plan.CORE_STEPS)
+    assert not set(plan.ROUND5_STEPS) & set(plan.CORE_STEPS) and not set(plan.ROUND5_STEPS) & set(plan.GRID_STEPS)
+    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS
+    assert plan.derived_steps(True) == list(plan.CORE_STEPS), "p beside a display pair is not compared"
+    assert plan.derived_steps(False) == list(plan.COMPARED_STEPS), "p and q are the pair when no display launch could be made"
 
 
 # ---------------------------------------------------------------------------- the order of a job
@@ -141,7 +147,7 @@ class Fakes:
 
 
 REQUEST = {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"],
-           "resolutions": [[1920, 1080], [2560, 1440]], "round": 2}
+           "resolutions": [[1920, 1080], [2560, 1440]], "round": 5}
 
 
 def meta_of(tmp_path, dpr_label):
@@ -156,9 +162,9 @@ def test_a_scale_reached_live_runs_a_and_b_then_the_derived_launch_then_m_at_eve
         ("p", (1920, 1080), "devPixelsPerPx", "1.25"),
         ("m", (1024, 768), "display", None), ("m", (1920, 1080), "display", None)]
     by_launch = {(c["launch"], c["mode"]): c["steps"] for c in fakes.calls}
-    assert by_launch[("a", "display")] == [*plan.CORE_STEPS, "grid", "minimum"], "the host-gate step is of scale 1 only"
-    assert by_launch[("b", "display")] == [*plan.CORE_STEPS, "grid_check"]
-    assert by_launch[("p", "devPixelsPerPx")] == list(plan.CORE_STEPS)
+    assert by_launch[("a", "display")] == [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid", "minimum"], "the host-gate step is of scale 1 only"
+    assert by_launch[("b", "display")] == [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid_check"]
+    assert by_launch[("p", "devPixelsPerPx")] == list(plan.CORE_STEPS), "p beside a display pair takes no round 5 step"
     assert all(c["steps"] == ["maximized"] for c in fakes.calls if c["launch"] == "m")
     meta = meta_of(tmp_path, "1.25")
     assert "2560x1440" in meta["skipped_resolutions"] and "resolution not set" in meta["skipped_resolutions"]["2560x1440"]
@@ -179,14 +185,15 @@ def test_the_other_scales_do_not_run_the_devpixelsperpx_m_launches(monkeypatch, 
     fakes = Fakes(monkeypatch, tmp_path)
     run_scale.run(tmp_path, {}, REQUEST, 1.5, tmp_path)
     assert not [c for c in fakes.calls if c["mode"] == "devPixelsPerPx" and c["launch"] == "m"]
-    assert {tuple(c["steps"]) for c in fakes.calls if c["launch"] in ("a", "b", "p")} == {plan.CORE_STEPS}, "no grid at 1.5"
+    assert {tuple(c["steps"]) for c in fakes.calls if c["launch"] in ("a", "b")} == {plan.COMPARED_STEPS}, "no grid at 1.5"
+    assert [c["steps"] for c in fakes.calls if c["launch"] == "p"] == [list(plan.CORE_STEPS)]
 
 
 def test_a_scale_windows_does_not_reach_runs_p_and_q_only(monkeypatch, tmp_path):
     fakes = Fakes(monkeypatch, tmp_path)
     assert run_scale.run(tmp_path, {}, REQUEST, 2.0, tmp_path) == 0
     assert fakes.summary() == [("p", (1920, 1080), "devPixelsPerPx", "2"), ("q", (1920, 1080), "devPixelsPerPx", "2")]
-    assert all(c["steps"] == list(plan.CORE_STEPS) for c in fakes.calls)
+    assert all(c["steps"] == list(plan.COMPARED_STEPS) for c in fakes.calls), "p and q are the pair: the round 5 steps too"
     meta = meta_of(tmp_path, "2")
     assert set(meta["skipped_resolutions"]) >= {"1920x1080", "1024x768", "2560x1440"} and meta["seconds"] >= 0
 
@@ -227,8 +234,8 @@ def test_scale_1_takes_the_host_gate_step_last_on_launches_a_and_b(monkeypatch, 
     fakes = Fakes(monkeypatch, tmp_path)
     run_scale.run(tmp_path, {}, REQUEST, 1.0, tmp_path)
     by_launch = {(c["launch"], c["mode"]): c["steps"] for c in fakes.calls}
-    assert by_launch[("a", "display")] == [*plan.CORE_STEPS, "grid", "minimum", "rdm_hostgate"]
-    assert by_launch[("b", "display")] == [*plan.CORE_STEPS, "grid_check", "rdm_hostgate"]
+    assert by_launch[("a", "display")] == [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid", "minimum", "rdm_hostgate"]
+    assert by_launch[("b", "display")] == [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid_check", "rdm_hostgate"]
     assert by_launch[("p", "devPixelsPerPx")] == list(plan.CORE_STEPS)
 
 

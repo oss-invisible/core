@@ -35,8 +35,10 @@ import plan  # noqa: E402
 import request as request_file  # noqa: E402
 import capture_request  # noqa: E402
 
-#: The job has 45 minutes (the workflow); the launches that matter run first, the every-resolution launches stop here.
-TIME_BUDGET_SECONDS = 34 * 60
+#: The job has 60 minutes (the workflow; round 5 added about two minutes of fullscreen, popups and iframes to each of the two
+#: launches that compare, and to p and q at a scale Windows does not reach); the launches that matter run first, the
+#: every-resolution launches stop here, leaving the minutes the setup, the last launch and the upload need.
+TIME_BUDGET_SECONDS = 49 * 60
 
 MARIONETTE_EXCEPTION = (
     "This capture launches retail Firefox with -marionette, unlike retail-capture.yml (plain launch), because "
@@ -50,12 +52,18 @@ COMMAND_IN_WORDS = (
     "Per scale: set each requested resolution, then the Windows display scale (DisplayConfig -3/-4), read the "
     "effective DPI back; launch retail Firefox -no-remote -profile <fresh dir> -marionette <page>; maximize the "
     "window, move the mouse, record; run Juggler's resizeBy line; run Juggler's whole sequence at 390x844 CSS (and "
-    "again with inRDMPane); at scales 1 and 1.25 a grid of restored windows and the minimum window; at scale 1, last, "
+    "again with inRDMPane), a second and a third call at 414 CSS wide (the same size twice) and a call back to the maximized content size; "
+    "from the maximized window, before any Juggler call, element fullscreen by a real click and F11-style fullscreen, "
+    "a same-origin and a cross-site iframe, and two popups opened by a real click; after the second call, the same "
+    "call again, the fullscreen steps and the iframes on the window Juggler left; at scales 1 and 1.25 a grid of "
+    "restored windows and the minimum window; at scale 1, last, "
     "the collection page host-gate-2.html without and with inRDMPane. Every "
     "resolution Windows offers: launch m, maximized only. Last, 100% scale and layout.css.devPixelsPerPx = the "
     "scale (launches p and q), and in the job of scale 1 devPixelsPerPx 0.75 and 0.5 (launch m).")
-PROOF_RULE = ("judge.py: launch a equals launch b (p equals q); at every scale reached live the maximized step "
-              "equals WINDOW_FRAME_BY_DPR and declared_maximized_ui; the grid check of launch b equals the rows of launch a.")
+PROOF_RULE = ("judge.py: launch a equals launch b (p equals q) on every step, the fullscreen, popup and iframe steps among them; "
+              "a step of round 5 is a record, skipped, or not possible with its reason; at every scale reached live the "
+              "maximized step equals WINDOW_FRAME_BY_DPR and declared_maximized_ui; the grid check of launch b equals the rows "
+              "of launch a.")
 
 
 def sha256(path: Path) -> str:
@@ -131,7 +139,8 @@ def run(install_dir: Path, build: Dict[str, Any], request: Dict[str, Any], dpr: 
     derived["dpr"] = dpr
     shown_by_resolution["derived"] = derived
     for launch in derived_launches(bool(accepted)):
-        take(first_resolution, launch, derived, "devPixelsPerPx", {"layout.css.devPixelsPerPx": "%g" % dpr})
+        take(first_resolution, launch, derived, "devPixelsPerPx", {"layout.css.devPixelsPerPx": "%g" % dpr},
+             steps=plan.derived_steps(bool(accepted)))
     if float(dpr) == 1.0:
         for value in plan.DEVPX_VALUES:
             label = plan.devpx_label(value)

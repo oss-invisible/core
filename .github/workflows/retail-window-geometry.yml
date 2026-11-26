@@ -17,13 +17,23 @@ name: retail-window-geometry
 # Round 2 (the `round` of the request) adds, per scale: Juggler's whole sequence at 390x844 CSS (steps juggler and
 # juggler_rdm), at scales 1 and 1.25 a grid of restored windows and the minimum window, the maximized step at every
 # resolution Windows offers (launch m) and, at scale 1, at devPixelsPerPx 0.75 and 0.5; a scale Windows does not reach
-# (2) runs only the devPixelsPerPx launches p and q. The grid and the m launches take most of the 45 minutes.
+# (2) runs only the devPixelsPerPx launches p and q. The grid and the m launches take most of the job.
 # Round 4 adds to every a, b, p and q launch two more calls of Juggler's sequence in a row (steps juggler2, at 414 CSS
 # wide, and juggler_back, at the content size of the maximized window), a few seconds per launch.
+# Round 5 adds to launches a and b (p and q at a scale Windows does not reach) thirteen steps (plan.ROUND5_STEPS): on the
+# maximized window, before any Juggler call, element fullscreen entered by a real click (SendInput on a button whose handler
+# calls requestFullscreen: Marionette cannot give the user activation) and left by exitFullscreen, F11-style fullscreen
+# (window.fullScreen), a same-origin and a cross-site iframe (both local) and two popups opened by a real click (width and
+# height; and with left and top); after juggler2, the same Juggler call again at exactly its size, the fullscreen steps and
+# the iframes on the window Juggler left. Every step's content record carries the page's probe (screen.pixelDepth included).
+# These steps add about two minutes to each of the two compared launches (about four per job), so the job has 60 minutes (it had 45) and
+# run_scale.TIME_BUDGET_SECONDS is 49 minutes (it was 34).
 #
 # The `judge` job is the one verdict: it reads every artifact, prints the table, and is red when a scale is
-# missing, a launch left a process, launch a differs from launch b (p from q), the grid check of launch b differs from
-# launch a, or a scale reached live differs from what the core declares (border, screenX and the bar the density rule gives at the measured availHeight).
+# missing, a launch left a process, launch a differs from launch b (p from q) on any step, the round 5 ones included (a
+# round 5 step is a record, skipped, or not possible with its reason, which the judge prints; a missing one is red), the
+# grid check of launch b differs from launch a, or a scale reached live differs from what the core declares (border,
+# screenX and the bar the density rule gives at the measured availHeight).
 #
 # Same trigger shape as ci.yml (tests/test_ci_runs_once_per_commit.py): pull requests through `pull_request`,
 # `push` only for main, a new push to a pull request replaces the run it supersedes.
@@ -60,7 +70,7 @@ jobs:
   capture:
     needs: request
     runs-on: windows-2025
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

@@ -8,6 +8,9 @@ what the core declares (frame_table.py reads the checked-out constants.py with t
     the bar of a maximized window is judged at the measured availHeight (1.5 at 672 CSS: 109 green, 127 red);
   * launch a different from launch b on one number of any of the six steps (maximized, restored, juggler, juggler_rdm, juggler2, juggler_back): red,
     with the number printed; the grid, the minimum and the grid check are not in that comparison;
+  * round 5: the two launches that are compared (a and b; p and q) also need the thirteen steps of plan.ROUND5_STEPS (fullscreen,
+    F11-style fullscreen, iframes, popups, the repeated Juggler call), compare equal on each, and print each; a step recorded
+    as not possible is complete only with a reason, which is printed; a missing step is red;
   * at the scales of the grid, launch a must have its grid and minimum, launch b its grid check, and every point of the check
     must be exactly launch a's row at that point;
   * launch p must equal launch q (the derived path at a scale Windows did not reach);
@@ -48,7 +51,7 @@ def grid_row(w, h, dpr, skipped=False):
 def probe(dpr):
     """What page.html's __probe returns, as the content script parses it."""
     return {"screen": {"width": 1536, "height": 864, "availWidth": 1536, "availHeight": 825, "availLeft": 0, "availTop": 0,
-                       "colorDepth": 24, "orientation": {"type": "landscape-primary", "angle": 0}},
+                       "colorDepth": 24, "pixelDepth": 24, "orientation": {"type": "landscape-primary", "angle": 0}},
             "devicePixelRatio": dpr,
             "found": {"width": 1900, "height": 900, "device-width": 1536, "device-height": 864, "aspect-ratio_x10000": 21111,
                       "device-aspect-ratio_x10000": 17777, "resolution_x100": round(dpr * 100)},
@@ -57,6 +60,42 @@ def probe(dpr):
             "touch": {"maxTouchPoints": 0, "ontouchstart": False, "touchEvent": "undefined"},
             "visualViewport": {"width": 1900, "height": 900, "scale": 1, "offsetLeft": 0, "offsetTop": 0, "pageLeft": 0, "pageTop": 0},
             "client": {"width": 1900, "height": 900}}
+
+
+def popup_step(features="width=500,height=400", dpr=1.0):
+    """What a popup step holds: the popup window's own rects, the mouse it was given, its page's record (no chrome record)."""
+    return {"features": features, "windows_opened": 1, "settled": True, "closed": True,
+            "native": {"window_rect": [100, 80, 100 + round(516 * dpr), 80 + round(540 * dpr)], "client_rect": [0, 0, round(500 * dpr), round(400 * dpr)],
+                       "client_origin": [108, 152], "work_rect": WORK, "dpi": round(96 * dpr)},
+            "input": [{"asked": [300, 400], "cursor": [300, 400]}],
+            "content": {"innerWidth": 500, "innerHeight": 400, "outerWidth": 516, "outerHeight": 540, "screenX": 100, "screenY": 80,
+                        "screenLeft": 100, "screenTop": 80, "mozInnerScreenX": 108.0, "mozInnerScreenY": 152.0, "devicePixelRatio": dpr,
+                        "screen": {"width": 1536, "height": 864, "pixelDepth": 24}, "events": {"count": 3, "dx": 108, "dy": 72},
+                        "probe": probe(dpr)}}
+
+
+def frame_state(dpr):
+    return {"innerWidth": 300, "innerHeight": 120, "outerWidth": 1936, "outerHeight": 1049, "screenX": -7, "screenY": -7,
+            "mozInnerScreenX": 10.0, "mozInnerScreenY": 200.0, "devicePixelRatio": dpr,
+            "events": {"count": 3, "dx": 7, "dy": 91}, "probe": probe(dpr)}
+
+
+def round5_steps(step, rect, ui, dpr):
+    """The thirteen steps of round 5 of a launch whose window is `rect` with `ui` device pixels of chrome."""
+    steps = {}
+    for name in plan.ROUND5_STEPS:
+        if name.startswith("popup"):
+            steps[name] = popup_step("left=100,top=80,width=500,height=400" if name == "popup_pos" else "width=500,height=400", dpr)
+        elif name.startswith("iframes"):
+            steps[name] = dict(step(rect, ui), frames={n: {"kind": n, "rect": {"x": 10, "y": 60, "width": 300, "height": 120},
+                                                           "input": [{"asked": [5, 6], "cursor": [5, 6]}], "state": frame_state(dpr)}
+                                                       for n in ("same", "cross")})
+        elif name.startswith(("fullscreen", "f11")):
+            steps[name] = dict(step(rect, ui), fullscreen={"window_fullScreen": name.endswith("_in"), "windowState": 4,
+                                                           "document_fullscreen": name.startswith("fullscreen") and name.endswith("_in")})
+        else:
+            steps[name] = step(rect, ui)
+    return steps
 
 
 def hostgate_step(false_posted=True, true_posted=True):
@@ -99,6 +138,7 @@ def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=T
         steps.update({"restored": step(restored, frame.popup_ui), "juggler": step(restored, frame.popup_ui),
                       "juggler_rdm": step(restored, frame.popup_ui), "juggler2": step(restored, frame.popup_ui),
                       "juggler_back": dict(step(restored, frame.popup_ui), window_state={"windowState": 3, "sizemode": "normal", "maximized": False})})
+        steps.update(round5_steps(step, restored, frame.popup_ui, dpr))
     if grid is None:
         grid = mode == "display" and reached and float(dpr) in plan.GRID_DPRS and launch in ("a", "b")
     if grid and launch == "a":
@@ -502,7 +542,7 @@ def test_the_probe_of_the_page_is_printed_for_the_four_steps_on_one_line_each():
     text = "\n".join(evaluate(two_launches(1.25))["lines"])
     for step in ("maximized", "restored", "juggler", "juggler_rdm"):
         line = next(line for line in text.splitlines() if line.startswith(f"    {step} probe:"))
-        for needle in ("screen 1536x864", "avail 1536x825 at 0,0", "colorDepth 24", "orientation landscape-primary/0", "dpr 1.25",
+        for needle in ("screen 1536x864", "avail 1536x825 at 0,0", "colorDepth 24 pixelDepth 24", "orientation landscape-primary/0", "dpr 1.25",
                        "matchMedia width 1900 height 900 device-width 1536 device-height 864", "aspect-ratio x10000 21111",
                        "device-aspect-ratio x10000 17777", "resolution x100 125", "'(pointer: fine)'", "maxTouchPoints 0",
                        "ontouchstart False", "TouchEvent undefined", "visualViewport height 900 offsetLeft 0", "root client 1900x900"):
@@ -570,3 +610,174 @@ def test_the_host_gate_step_is_not_part_of_the_a_b_comparison():
     b["steps"]["rdm_hostgate"]["rdm_false"]["seconds"] = 99.0
     b["steps"]["rdm_hostgate"]["rdm_false"]["sha256"] = "cd" * 32
     assert not evaluate([a, b])["red"]
+
+
+# ---------------------------------------------------------------------------- round 5: fullscreen, popups, iframes, the repeated call
+
+
+def test_the_thirteen_steps_of_round_5_are_named_in_the_order_they_run_and_compared_with_the_six_core_steps():
+    assert plan.ROUND5_STEPS == ("fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out", "iframes_max", "popup",
+                                 "popup_pos", "juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out", "f11_res_in",
+                                 "f11_res_out", "iframes_juggler")
+    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS and len(set(plan.COMPARED_STEPS)) == 19
+    a, b = two_launches(1.0)
+    assert set(a["steps"]) >= set(plan.COMPARED_STEPS)
+
+
+@pytest.mark.parametrize("step", plan.ROUND5_STEPS)
+def test_a_launch_compared_with_another_that_lacks_a_round_5_step_is_red_and_names_it(step):
+    a, b = two_launches(1.25)
+    del b["steps"][step]
+    result = evaluate([a, b])
+    assert result["red"] and any(step in p and "launch b" in p for p in result["problems"]), result["problems"]
+
+
+def test_the_round_5_steps_are_not_asked_of_a_launch_that_is_compared_with_nothing_or_of_launch_m():
+    alone = make_run(1.25, "a", resolution=(1280, 720))
+    other = two_launches(1.25)
+    for name in plan.ROUND5_STEPS:
+        del alone["steps"][name]
+    result = evaluate(other + [alone])
+    assert not result["red"], result["problems"]
+    p_alone = make_run(1.25, "p", mode="devPixelsPerPx", reached=False)
+    for name in plan.ROUND5_STEPS:
+        del p_alone["steps"][name]
+    assert not evaluate(other + [p_alone])["red"], "p beside a display pair is not compared"
+    assert judge.required_steps({"launch": "m"}, True) == plan.MAXIMIZED_ONLY
+
+
+def test_p_and_q_at_a_scale_windows_did_not_reach_are_the_pair_and_need_the_round_5_steps():
+    p = make_run(2.0, "p", mode="devPixelsPerPx", reached=False)
+    q = make_run(2.0, "q", mode="devPixelsPerPx", reached=False)
+    assert not evaluate([p, q])["red"]
+    del q["steps"]["popup_pos"]
+    assert evaluate([p, q])["red"]
+
+
+def test_which_runs_are_compared_is_the_first_two_launches_of_a_resolution_and_of_the_derived_path():
+    a, b = two_launches(1.0)
+    c = make_run(1.0, "c")
+    p, q = make_run(1.0, "p", mode="devPixelsPerPx", reached=False), make_run(1.0, "q", mode="devPixelsPerPx", reached=False)
+    m = make_run(1.0, "m", resolution=(1280, 720))
+    other_size = make_run(1.0, "a", resolution=(1280, 720))
+    ids = judge.compared_runs([a, b, c, p, q, m, other_size])
+    assert ids == {id(a), id(b), id(p), id(q)}
+
+
+def bump(run, step, path):
+    """Add 1 to (or flip) the number at `path` of a step, e.g. frames.cross.state.screenX or native.window_rect.0."""
+    *parents, last = path.split(".")
+    node = run["steps"][step]
+    for key in parents:
+        node = node[int(key)] if key.isdigit() else node[key]
+    index = int(last) if last.isdigit() else last
+    node[index] = (not node[index]) if isinstance(node[index], bool) else node[index] + 1
+
+
+@pytest.mark.parametrize("step,path,printed", [
+    ("popup", "content.innerWidth", "popup.content.innerWidth"),
+    ("popup_pos", "native.window_rect.0", "popup_pos.native.window_rect[0]"),
+    ("iframes_max", "frames.cross.state.screenX", "iframes_max.frames.cross.state.screenX"),
+    ("iframes_juggler", "frames.same.input.0.cursor.0", "iframes_juggler.frames.same.input[0].cursor[0]"),
+    ("fullscreen_max_in", "chrome.windowState", "fullscreen_max_in.chrome.windowState"),
+    ("f11_res_out", "fullscreen.window_fullScreen", "f11_res_out.fullscreen.window_fullScreen"),
+    ("juggler2_repeat", "content.outerHeight", "juggler2_repeat.content.outerHeight"),
+    ("fullscreen_res_in", "native.window_rect.1", "fullscreen_res_in.native.window_rect[1]")])
+def test_launch_a_and_launch_b_differing_on_a_round_5_step_is_red_and_the_number_is_printed(step, path, printed):
+    a, b = two_launches(1.0)
+    bump(b, step, path)
+    result = evaluate([a, b])
+    assert result["red"] and any(line.strip().startswith(printed + ":") for line in result["lines"]), result["lines"][-6:]
+
+
+def test_a_step_not_possible_with_a_reason_is_green_when_both_launches_say_it_and_the_reason_is_printed():
+    a, b = two_launches(1.5)
+    for run in (a, b):
+        run["steps"]["popup"] = {"not_possible": "no popup window opened after a real click on the button"}
+        run["steps"]["fullscreen_max_in"] = {"not_possible": "document.fullscreenElement stayed null after a real click on the button"}
+        run["steps"]["fullscreen_max_out"] = {"not_possible": "element fullscreen was not entered"}
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    text = "\n".join(result["lines"])
+    assert "popup: NOT POSSIBLE (no popup window opened after a real click on the button)" in text
+    assert "fullscreen_max_in: NOT POSSIBLE (document.fullscreenElement stayed null after a real click on the button)" in text
+    assert "popup_pos page:" in text, "the other popup is still printed"
+
+
+def test_a_step_not_possible_in_one_launch_only_is_red_and_one_without_a_reason_is_red():
+    a, b = two_launches(1.5)
+    b["steps"]["popup_pos"] = {"not_possible": "no popup window opened after a real click on the button"}
+    result = evaluate([a, b])
+    assert result["red"] and any("launch a and b differ" in p for p in result["problems"]), result["problems"]
+    for reason in ("", "   ", None, 3):
+        c, d = two_launches(1.5)
+        for run in (c, d):
+            run["steps"]["iframes_max"] = {"not_possible": reason}
+        result = evaluate([c, d])
+        assert result["red"] and any("iframes_max" in p for p in result["problems"]), reason
+
+
+def test_a_round_5_step_skipped_in_both_launches_is_green_and_in_one_only_is_red():
+    a, b = two_launches(1.5)
+    for run in (a, b):
+        for name in ("juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out", "f11_res_in", "f11_res_out", "iframes_juggler"):
+            run["steps"][name] = {"skipped": "does_not_fit"}
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    assert any("iframes_juggler: skipped (does_not_fit)" in line for line in result["lines"])
+    c, d = two_launches(1.5)
+    c["steps"]["f11_res_in"] = {"skipped": "does_not_fit"}
+    assert evaluate([c, d])["red"]
+
+
+def test_every_round_5_step_is_printed_with_what_it_recorded():
+    text = "\n".join(evaluate(two_launches(1.25))["lines"])
+    lines = text.splitlines()
+    for name in plan.ROUND5_STEPS:
+        assert any(line.startswith(f"    {name}") for line in lines), name
+    for name in ("popup", "popup_pos"):
+        line = next(line for line in lines if line.startswith(f"    {name} (window.open features"))
+        for needle in ("native window rect [", "client rect [", "client origin [108, 152]", "window top to client top 72",
+                       "core MODEL popup_ui", "not judged: Firefox 151 on a workbench", "border L/R/B"):
+            assert needle in line, (name, needle)
+        page = next(line for line in lines if line.startswith(f"    {name} page:"))
+        for needle in ("inner [500, 400]", "outer [516, 540]", "screenX/Y [100, 80]", "mozInnerScreenX/Y [108.0, 152.0]",
+                       "events(count,dx,dy) [3, 108, 72]"):
+            assert needle in page, (name, needle)
+    assert "features 'left=100,top=80,width=500,height=400'" in text and "features 'width=500,height=400'" in text
+    for step in ("iframes_max", "iframes_juggler"):
+        for frame in ("same", "cross"):
+            line = next(line for line in lines if line.startswith(f"    {step} frame {frame} ("))
+            for needle in ("rect css {", "inner [300, 120]", "outer [1936, 1049]", "screenX/Y [-7, -7]", "mozInnerScreenX/Y [10.0, 200.0]",
+                           "dpr 1.25", "events(count,dx,dy) [3, 7, 91]", "mouse asked/cursor [([5, 6], [5, 6])]"):
+                assert needle in line, (step, frame, needle)
+            assert any(other.startswith(f"    {step} frame {frame} probe:") for other in lines)
+    assert "fullscreen_max_in fullscreen: {'window_fullScreen': True" in text and "'document_fullscreen': True" in text
+    assert "f11_res_out fullscreen: {'window_fullScreen': False" in text
+
+
+def test_the_repeated_juggler_call_is_printed_against_the_second_call_and_is_not_judged():
+    a, b = two_launches(1.0)
+    for run in (a, b):
+        run["steps"]["juggler2_repeat"]["content"]["outerHeight"] -= 8
+        rect = run["steps"]["juggler2_repeat"]["native"]["window_rect"]
+        run["steps"]["juggler2_repeat"]["native"]["window_rect"] = rect[:3] + [rect[3] - 8]
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    line = next(line for line in result["lines"] if line.startswith("    juggler2_repeat minus juggler2:"))
+    assert "page outer css [0, -8]" in line and "window rect size dev [0, -8]" in line and "position dev [0, 0]" in line
+    a["juggler2_repeat_size_used"] = {"width": 414, "height": 896, "same_as": "juggler2"}
+    assert any("juggler2_repeat size used {'width': 414, 'height': 896, 'same_as': 'juggler2'}" in other
+               for other in evaluate([a, b])["lines"])
+    skipped = [make_run(1.0, "a"), make_run(1.0, "b")]
+    for run in skipped:
+        run["steps"]["juggler2"] = {"skipped": "does_not_fit"}
+        run["steps"]["juggler2_repeat"] = {"skipped": "does_not_fit"}
+    assert not any(other.startswith("    juggler2_repeat minus") for other in evaluate(skipped)["lines"])
+
+
+def test_pixel_depth_is_in_the_probe_line_of_every_step_that_has_a_page_record():
+    text = "\n".join(evaluate(two_launches(1.0))["lines"])
+    for name in plan.COMPARED_STEPS:
+        line = next(line for line in text.splitlines() if line.startswith(f"    {name} probe:"))
+        assert "pixelDepth 24" in line, name

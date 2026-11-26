@@ -18,7 +18,18 @@ same window with inRDMPane = true; `juggler2`, a second call in a row (inRDMPane
 sequence with the content size of the maximized window (is it maximized again, or restored at that size?). Then, after clearing what Juggler's sequence set: `grid` (restored windows at
 chrome inner sizes W x H, one compact row each), `minimum` (the smallest window Firefox gives) and `grid_check` (a few grid
 points again); and, last, `rdm_hostgate` (the core's collection page host-gate-2.html loaded in the tab under Juggler's
-sequence, without and then with inRDMPane, each result kept in its own file next to raw.json). Writes OUT/raw.json. The result is valid only when no process of the install folder is left.
+sequence, without and then with inRDMPane, each result kept in its own file next to raw.json).
+
+Round 5 adds to launches a and b (p and q where no display launch could be made), in this order (plan.ROUND5_STEPS): on the
+maximized window, before any Juggler call, element fullscreen entered by a REAL click (SendInput on #fs, whose handler calls
+requestFullscreen; Marionette cannot give the user activation) and left by document.exitFullscreen() (`fullscreen_max_in`,
+`fullscreen_max_out`), F11-style fullscreen by window.fullScreen in the chrome (`f11_max_in`, `f11_max_out`), the main page with a
+same-origin and a cross-site iframe, each recording its own content record after real mouse moves over it (`iframes_max`), and two
+popups opened by a real click on #open, the second with left and top (`popup`, `popup_pos`; the popup page records its content
+record and Windows' rects of its window are kept; it is closed); then, after `juggler2`, `juggler2_repeat` (Juggler's sequence
+again at exactly juggler2's size), the same four fullscreen steps (`fullscreen_res_*`, `f11_res_*`) and the iframes
+(`iframes_juggler`) on the window Juggler left. A step this browser did not allow is `{"not_possible": reason}`.
+Writes OUT/raw.json. The result is valid only when no process of the install folder is left.
 """
 from __future__ import annotations
 
@@ -45,12 +56,16 @@ import display  # noqa: E402
 import environment  # noqa: E402
 import marionette  # noqa: E402
 import plan  # noqa: E402
+import surfaces  # noqa: E402
 import run_retail_capture as launcher  # noqa: E402
 import capture_server  # noqa: E402
 from native import INPUT, MONITORINFO, POINT, RECT, WINDOWPLACEMENT, api, guarded  # noqa: E402
 
 FORMAT = "retail-window-geometry/1"
 PAGE = HERE / "page.html"
+#: What PageServer serves, by path: the main page, the script every page runs, and the page of an iframe and of a popup.
+SERVED = {"/": ("page.html", "text/html; charset=utf-8"), "/page.js": ("page.js", "text/javascript; charset=utf-8"),
+          "/surface.html": ("surface.html", "text/html; charset=utf-8")}
 #: The core's collection page, served by scripts/retail/capture_server.py (the page POSTs its result to it).
 HOSTGATE_PAGE = HERE.parents[2] / "captures" / "pages" / "host-gate-2.html"
 HOSTGATE_TIMEOUT = 120.0
@@ -64,6 +79,7 @@ MARIONETTE_ENV = {"MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "1"}
 CLASS_NAME = "MozillaWindowClass"
 DWMWA_EXTENDED_FRAME_BOUNDS, GWL_STYLE, GWL_EXSTYLE, MONITOR_DEFAULTTONEAREST = 9, -16, -20, 2
 MOUSEEVENTF_MOVE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_VIRTUALDESK = 0x1, 0x8000, 0x4000
+MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP = 0x2, 0x4
 SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 76, 77, 78, 79
 
 #: Juggler's line (juggler/TargetRegistry.js, setViewportSize), with `width` and `height` as arguments.
@@ -190,31 +206,42 @@ def assert_launch(command: Sequence[str], profile: Path, install_dir: Path, env:
 
 
 class PageServer:
-    """Serves page.html on 127.0.0.1 and nothing else."""
+    """Serves the pages of SERVED on 127.0.0.1 and nothing else (and on ::1 at the same port when `also_ipv6`, for a page reached
+    as `localhost`)."""
 
-    def __init__(self, page: Path = PAGE) -> None:
-        body = page.read_bytes()
+    def __init__(self, folder: Path = HERE, also_ipv6: bool = False) -> None:
+        files = {path: ((folder / name).read_bytes(), kind) for path, (name, kind) in SERVED.items()}
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
-                ok = self.path.split("?")[0] == "/"
-                self.send_response(200 if ok else 404)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body) if ok else 0))
+                served = files.get(self.path.split("?")[0])
+                body = served[0] if served else b""
+                self.send_response(200 if served else 404)
+                self.send_header("Content-Type", served[1] if served else "text/plain")
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                if ok:
-                    self.wfile.write(body)
+                self.wfile.write(body)
 
             def log_message(self, *args: Any) -> None:
                 pass
 
-        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        class Server6(http.server.ThreadingHTTPServer):
+            address_family = socket.AF_INET6
+
+        self.httpds = [http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)]
+        self.port = self.httpds[0].server_address[1]
+        if also_ipv6:
+            try:
+                self.httpds.append(Server6(("::1", self.port), Handler))
+            except OSError:
+                pass  # no IPv6 loopback on this machine: localhost falls back to 127.0.0.1
+        for httpd in self.httpds:
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
     def close(self) -> None:
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        for httpd in self.httpds:
+            httpd.shutdown()
+            httpd.server_close()
 
 
 def free_port() -> int:
@@ -245,8 +272,8 @@ def wait_stable(read: Callable[[], Any], ready: Callable[[Any], bool] = lambda v
 # --------------------------------------------------------------------------- Windows
 
 
-def find_window(pids: Sequence[int]) -> Optional[int]:
-    """The visible top-level window of class MozillaWindowClass owned by one of `pids`."""
+def find_windows(pids: Sequence[int]) -> List[int]:
+    """Every visible top-level window of class MozillaWindowClass owned by one of `pids` (the popup is one besides the main window)."""
     a, found = api(), []
 
     @ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
@@ -259,6 +286,12 @@ def find_window(pids: Sequence[int]) -> Optional[int]:
         return True
 
     a.user32.EnumWindows(visit, 0)
+    return found
+
+
+def find_window(pids: Sequence[int]) -> Optional[int]:
+    """The first visible top-level window of class MozillaWindowClass owned by one of `pids`."""
+    found = find_windows(pids)
     return found[0] if found else None
 
 
@@ -314,14 +347,30 @@ def move_mouse(points: Sequence[Tuple[int, int]], pause: float = 0.2) -> List[Di
     return out
 
 
+def click(point: Tuple[int, int], pause: float = 0.2) -> Dict[str, Any]:
+    """A real click with SendInput: the mouse moves there, then the left button goes down and up (a page gets the user
+    activation fullscreen and a popup need). Reports where the cursor was and what SendInput took."""
+    moved = move_mouse([point], pause)[0]
+    a, sent = api(), []
+    for flag in (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP):
+        item = INPUT(type=0)
+        item.mi.dwFlags = flag
+        sent.append(a.user32.SendInput(1, ctypes.byref(item), ctypes.sizeof(INPUT)))
+        time.sleep(0.05)
+    return dict(moved, buttons_sent=sent)
+
+
 # --------------------------------------------------------------------------- the steps
 
 
 class Session:
     """One running browser: its Marionette client and the install folder whose processes are its own."""
 
-    def __init__(self, client: marionette.Client, install_dir: Path, table: launcher.ProcessTable) -> None:
+    def __init__(self, client: marionette.Client, install_dir: Path, table: launcher.ProcessTable,
+                 urls: Optional[Dict[str, str]] = None) -> None:
         self.client, self.install_dir, self.table = client, install_dir, table
+        #: The pages the surfaces load: `popup`, and the iframes `same` and `cross`.
+        self.urls = urls or {}
 
     def chrome(self, script: str, args: Optional[list] = None) -> Any:
         return self.client.execute_script(script, args, context="chrome")
@@ -335,14 +384,29 @@ class Session:
             raise MeasureError("no visible MozillaWindowClass window of the launched firefox")
         return hwnd
 
+    def windows(self) -> List[int]:
+        return find_windows(self.table.under(self.install_dir))
+
+    def native(self, hwnd: int) -> Dict[str, Any]:
+        return guarded(lambda: window_record(hwnd))
+
+    def foreground(self, hwnd: int) -> None:
+        api().user32.SetForegroundWindow(hwnd)
+
+    def click(self, point: Tuple[int, int]) -> Dict[str, Any]:
+        return click(point)
+
+    def move(self, points: Sequence[Tuple[int, int]]) -> List[Dict[str, Any]]:
+        return move_mouse(points)
+
     def record(self) -> Dict[str, Any]:
         """The full record of the window as it is now, then a real mouse move over the content and what the page saw."""
         chrome = self.chrome(CHROME_STATE)
         hwnd = self.hwnd()
-        native = guarded(lambda: window_record(hwnd))
-        api().user32.SetForegroundWindow(hwnd)
+        native = self.native(hwnd)
+        self.foreground(hwnd)
         self.content(RESET_EVENTS)
-        moves = move_mouse(mouse_points(chrome, native))
+        moves = self.move(mouse_points(chrome, native))
         self.client.execute_async_script(TWO_FRAMES, context="content")
         return {"chrome": chrome, "native": native, "input": moves, "content": self.content(CONTENT_STATE)}
 
@@ -399,6 +463,16 @@ class Session:
             return {"skipped": "does_not_fit"}, size
         return self.juggler_call(plan.JUGGLER2_WIDTH, height), size
 
+    def juggler_repeat(self, work_rect: Sequence[int], scale: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """(step juggler2_repeat, size used): Juggler's sequence once more, right after `juggler2` and at exactly its size, on
+        the window and the styles `juggler2` left. The engine's model says the outer height then shrinks by one border: measured,
+        not assumed (the judge prints the outer and window sizes of both steps)."""
+        height = plan.juggler2_height(work_rect, scale)
+        size = {"width": plan.JUGGLER2_WIDTH, "height": height, "same_as": "juggler2"}
+        if height is None:
+            return {"skipped": "does_not_fit"}, size
+        return self.juggler_call(plan.JUGGLER2_WIDTH, height), size
+
     def juggler_back(self, maximized: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """(step juggler_back, size used): Juggler's sequence with the content size the maximized window gave the page
         (its innerWidth x innerHeight in step `maximized`), to see whether the window goes back to maximized or stays
@@ -410,6 +484,163 @@ class Session:
         step["window_state"] = {"windowState": chrome.get("windowState"), "sizemode": chrome.get("sizemode"),
                                 "maximized": chrome.get("maximized")}
         return step, size
+
+    # ----- round 5: fullscreen, popups, iframes (the scripts and the points are in surfaces.py)
+
+    def surface(self, names: Sequence[str], run: Callable[[], Sequence[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+        """{name: step} from `run()`, which returns the steps in the order of `names`. A step this browser did not allow
+        (StepNotPossible, or a command Marionette answered with an error) is `{"not_possible": reason}` in each of `names`, after
+        putting the window back; a closed connection is not that: it ends the launch."""
+        try:
+            return dict(zip(names, run()))
+        except marionette.ConnectionClosed:
+            raise
+        except (surfaces.StepNotPossible, marionette.MarionetteError) as exc:
+            self.leave_surfaces()
+            reason = str(exc) if isinstance(exc, surfaces.StepNotPossible) else f"marionette: {exc}"[:300]
+            return {name: {"not_possible": reason} for name in names}
+
+    def leave_surfaces(self) -> None:
+        """Best effort after a failed step: leave fullscreen, close a popup, remove the iframes."""
+        for script, context in ((surfaces.EXIT_FULLSCREEN, "content"), (surfaces.WINDOW_FULLSCREEN_OFF, "chrome"),
+                                (surfaces.POPUP_CLOSE, "content"), (surfaces.REMOVE_FRAMES, "content")):
+            try:
+                self.client.execute_script(script, context=context)
+            except Exception:  # noqa: BLE001 - cleanup only; the next step says what is wrong
+                pass
+
+    def fullscreen_read(self) -> Any:
+        return [self.chrome(surfaces.FULLSCREEN_CHROME), self.content(surfaces.FULLSCREEN_CONTENT)]
+
+    def fullscreen_facts(self) -> Dict[str, Any]:
+        chrome, content = self.fullscreen_read()
+        return {"window_fullScreen": chrome[0], "windowState": chrome[1], "document_fullscreen": content[0]}
+
+    def element_fullscreen(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """(entered, left): a REAL click (SendInput) on #fs, whose handler calls document.documentElement.requestFullscreen();
+        the full record in fullscreen; document.exitFullscreen(); the full record once it has settled."""
+        rect = self.content(surfaces.ELEMENT_RECT, ["fs"])
+        chrome = self.chrome(CHROME_STATE)
+        hwnd = self.hwnd()
+        native = self.native(hwnd)
+        self.foreground(hwnd)
+        clicked = self.click(surfaces.region_points(chrome, native, rect, surfaces.CLICK_FRACTION)[0])
+        last, settled = wait_stable(self.fullscreen_read, ready=lambda v: v[1][0] is True, timeout=surfaces.FULLSCREEN_TIMEOUT)
+        if not (last and last[1][0] is True):
+            error = self.content(surfaces.FULLSCREEN_ERROR)
+            raise surfaces.StepNotPossible("document.fullscreenElement stayed null after a real click on the button"
+                                           + (f" (requestFullscreen rejected: {error})" if error else ""))
+        entered = dict(self.record(), settled=settled, click=clicked, fullscreen=self.fullscreen_facts())
+        self.content(surfaces.EXIT_FULLSCREEN)
+        forced = False
+        _, settled = wait_stable(self.fullscreen_read, ready=lambda v: v[1][0] is False and v[0][0] is False,
+                                 timeout=surfaces.FULLSCREEN_TIMEOUT)
+        if not settled:  # still fullscreen: force the window out so the next step starts from the same state
+            forced = True
+            self.chrome(surfaces.WINDOW_FULLSCREEN_OFF)
+            _, settled = wait_stable(self.fullscreen_read, ready=lambda v: v[1][0] is False and v[0][0] is False,
+                                     timeout=surfaces.FULLSCREEN_TIMEOUT)
+        left = dict(self.record(), settled=settled, forced_exit=forced, fullscreen=self.fullscreen_facts())
+        return entered, left
+
+    def window_fullscreen(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """(entered, left): F11-style fullscreen of the window, `window.fullScreen = true` and then false from the chrome, the
+        full record after each."""
+        self.chrome(surfaces.WINDOW_FULLSCREEN_ON)
+        last, settled = wait_stable(self.fullscreen_read, ready=lambda v: v[0][0] is True, timeout=surfaces.FULLSCREEN_TIMEOUT)
+        if not (last and last[0][0] is True):
+            raise surfaces.StepNotPossible("window.fullScreen stayed false after setting it")
+        entered = dict(self.record(), settled=settled, fullscreen=self.fullscreen_facts())
+        self.chrome(surfaces.WINDOW_FULLSCREEN_OFF)
+        _, settled = wait_stable(self.fullscreen_read, ready=lambda v: v[0][0] is False, timeout=surfaces.FULLSCREEN_TIMEOUT)
+        return entered, dict(self.record(), settled=settled, fullscreen=self.fullscreen_facts())
+
+    def fullscreen(self, tag: str, fits: bool = True) -> Dict[str, Dict[str, Any]]:
+        """The four fullscreen steps of `tag` (`max`: the maximized window, `res`: the window Juggler left):
+        fullscreen_<tag>_in/out by a real click, f11_<tag>_in/out by window.fullScreen. `fits` False: skipped."""
+        element = (f"fullscreen_{tag}_in", f"fullscreen_{tag}_out")
+        window = (f"f11_{tag}_in", f"f11_{tag}_out")
+        if not fits:
+            return {name: {"skipped": "does_not_fit"} for name in element + window}
+        steps = self.surface(element, self.element_fullscreen)
+        steps.update(self.surface(window, self.window_fullscreen))
+        return steps
+
+    def new_windows(self, before: set) -> List[int]:
+        return sorted(set(self.windows()) - before)
+
+    def popup(self, features: str) -> Dict[str, Any]:
+        """A popup from the main page: a REAL click on #open, whose handler calls window.open(url, '_blank', features). Its
+        page records its full content record (inner, outer, screenX/Y, mozInnerScreen, probe) after real mouse moves over its
+        content; Windows' rects of the popup window are recorded; the popup is closed."""
+        if "popup" not in self.urls:
+            raise surfaces.StepNotPossible("no popup page was served")
+        before = set(self.windows())
+        self.content(surfaces.SET_POPUP, [self.urls["popup"], features])
+        rect = self.content(surfaces.ELEMENT_RECT, ["open"])
+        chrome = self.chrome(CHROME_STATE)
+        hwnd = self.hwnd()
+        main_native = self.native(hwnd)
+        self.foreground(hwnd)
+        clicked = self.click(surfaces.region_points(chrome, main_native, rect, surfaces.CLICK_FRACTION)[0])
+        opened, _ = wait_stable(lambda: self.new_windows(before), ready=bool, hold=0.5, timeout=surfaces.POPUP_TIMEOUT)
+        if not opened:
+            raise surfaces.StepNotPossible("no popup window opened after a real click on the button")
+        loaded, _ = wait_stable(lambda: self.content(surfaces.POPUP_READY), ready=bool, hold=0, timeout=surfaces.POPUP_TIMEOUT)
+        if not loaded:
+            raise surfaces.StepNotPossible("the popup window opened but its page did not load")
+        _, settled = wait_stable(lambda: self.content(surfaces.POPUP_SIZE))
+        popup_hwnd = opened[0]
+        native = self.native(popup_hwnd)
+        self.foreground(popup_hwnd)
+        self.content(surfaces.POPUP_RESET)
+        moves = self.move(surfaces.client_points(native)) if "client_rect" in native else []
+        time.sleep(0.3)
+        step = {"features": features, "windows_opened": len(opened), "native": native, "input": moves, "settled": settled,
+                "click": clicked, "content": json.loads(self.content(surfaces.POPUP_STATE))}
+        self.content(surfaces.POPUP_CLOSE)
+        _, closed = wait_stable(lambda: self.new_windows(before), ready=lambda v: not v, hold=0.3, timeout=surfaces.POPUP_TIMEOUT)
+        step["closed"] = closed
+        return step
+
+    def iframes(self) -> Dict[str, Any]:
+        """The main page with a same-origin and a cross-site iframe (both local): each frame records its full content record
+        (inner, outer, screenX/Y, mozInnerScreen, devicePixelRatio, probe, the mouse events) after real mouse moves over it. The
+        frames are removed afterwards."""
+        if not all(name in self.urls for name in surfaces.FRAME_NAMES):
+            raise surfaces.StepNotPossible("no iframe page was served")
+        names = sorted(surfaces.FRAME_NAMES)
+        self.content(surfaces.ADD_FRAMES, [self.urls["same"], self.urls["cross"]])
+        try:
+            hello, _ = wait_stable(lambda: self.content(surfaces.FRAMES_HELLO), ready=lambda v: v == names, hold=0,
+                                   timeout=surfaces.FRAME_TIMEOUT)
+            if hello != names:
+                raise surfaces.StepNotPossible(f"an iframe did not load (hello from {hello})")
+            self.client.execute_async_script(TWO_FRAMES, context="content")
+            chrome = self.chrome(CHROME_STATE)
+            hwnd = self.hwnd()
+            native = self.native(hwnd)
+            self.foreground(hwnd)
+            rects = self.content(surfaces.FRAME_RECTS)
+            self.content(surfaces.ASK_FRAMES, ["reset"])
+            time.sleep(0.3)
+            moves = {name: self.move(surfaces.region_points(chrome, native, rects[name], surfaces.FRAME_FRACTIONS))
+                     for name in surfaces.FRAME_NAMES}
+            self.client.execute_async_script(TWO_FRAMES, context="content")
+            self.content(surfaces.ASK_FRAMES, ["record"])
+
+            def answered() -> Any:
+                return sorted(json.loads(self.content(surfaces.FRAME_RECORDS)))
+
+            got, _ = wait_stable(answered, ready=lambda v: v == names, hold=0, timeout=surfaces.FRAME_TIMEOUT)
+            if got != names:
+                raise surfaces.StepNotPossible(f"an iframe did not answer the record request (answers from {got})")
+            records = json.loads(self.content(surfaces.FRAME_RECORDS))
+            return {"chrome": chrome, "native": native, "content": self.content(CONTENT_STATE), "settled": True,
+                    "frames": {name: {"kind": surfaces.FRAME_KINDS[name], "rect": rects[name], "input": moves[name],
+                                      "state": records[name]} for name in surfaces.FRAME_NAMES}}
+        finally:
+            self.content(surfaces.REMOVE_FRAMES)
 
     def load(self, url: str) -> None:
         """Navigate the selected tab without waiting for the page: from the chrome, else from the page."""
@@ -509,7 +740,8 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
                            "prefs_declared": {k: v for k, v in all_prefs.items() if k != "marionette.port"},
                            "dev_px_per_px": (prefs or {}).get("layout.css.devPixelsPerPx"),
                            "steps_planned": list(steps_wanted), "steps": {}, "error": None}
-    server, process, client = PageServer(), None, marionette.Client(marionette_port)
+    server, cross, process, client = PageServer(), PageServer(also_ipv6=True), None, marionette.Client(marionette_port)
+    urls = dict(surfaces.frame_urls(server.port, cross.port), popup=surfaces.popup_url(server.port))
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         profile = Path(tmp) / "profile"
         profile.mkdir()
@@ -528,7 +760,7 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
             ready, _ = wait_stable(lambda: client.execute_script(PAGE_READY, context="content"), ready=bool, hold=0, timeout=20)
             if not ready:
                 raise MeasureError("page.html did not load")
-            session = Session(client, install_dir, table)
+            session = Session(client, install_dir, table, urls)
             steps = raw["steps"]
             steps["maximized"] = session.maximized()
             native = steps["maximized"]["native"]
@@ -537,10 +769,28 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
             # Juggler's sequence runs on the maximized window, as setViewportSize does on a fresh page: the
             # toolbar height it reads (toolbarTop) is the maximized window's. Run 45672953042 ran it after the
             # restored step, from a compact window, and measured that route instead.
+            # Round 5, on the maximized window and before any Juggler call: fullscreen (a real click; then F11-style), the
+            # iframes, the two popups.
+            if "fullscreen_max_in" in steps_wanted:
+                steps.update(session.fullscreen("max"))
+            if "iframes_max" in steps_wanted:
+                steps.update(session.surface(("iframes_max",), lambda: (session.iframes(),)))
+            for name, features in surfaces.POPUP_FEATURES:
+                if name in steps_wanted:
+                    steps.update(session.surface((name,), lambda features=features: (session.popup(features),)))
             if "juggler" in steps_wanted:
                 steps["juggler"], steps["juggler_rdm"], raw["juggler_size_used"] = session.juggler(work, scale)
                 if "juggler2" in steps_wanted:
                     steps["juggler2"], raw["juggler2_size_used"] = session.juggler_again(work, scale)
+                if "juggler2_repeat" in steps_wanted:
+                    steps["juggler2_repeat"], raw["juggler2_repeat_size_used"] = session.juggler_repeat(work, scale)
+                # From the window Juggler's calls left (its styles still on the browser): fullscreen and the iframes.
+                fits = (raw.get("juggler2_size_used") or {}).get("height") is not None
+                if "fullscreen_res_in" in steps_wanted:
+                    steps.update(session.fullscreen("res", fits))
+                if "iframes_juggler" in steps_wanted:
+                    steps.update(session.surface(("iframes_juggler",), lambda: (session.iframes(),)) if fits
+                                 else {"iframes_juggler": {"skipped": "does_not_fit"}})
                 if "juggler_back" in steps_wanted:
                     steps["juggler_back"], raw["juggler_back_size_used"] = session.juggler_back(steps["maximized"])
                 session.clear_juggler()
@@ -563,6 +813,7 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
             client.close()
             left = launcher.end_all(table, install_dir, getattr(process, "pid", None))
             server.close()
+            cross.close()
     raw["processes_left"] = len(left)
     return raw
 

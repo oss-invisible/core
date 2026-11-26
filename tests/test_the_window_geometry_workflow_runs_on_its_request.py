@@ -6,7 +6,7 @@ one job per display scale. Held here, on the file itself:
   * the trigger is an event of the code (a pull request or a push to main that changes the request); no schedule, no
     dispatched run;
   * a first job validates the request; the capture job is a matrix of the scales it prints, on windows-2025, TEMP and TMP
-    on D:, 45 minutes at most, `fail-fast: false`;
+    on D:, 60 minutes at most, `fail-fast: false`;
   * the browser is started only by the scripts, never by the workflow; the build is fetched by the script that verifies it;
   * the artifact is named for the version and the scale, is uploaded even when a step is red, and is kept 90 days;
   * the `judge` job needs the matrix, runs `if: always()`, downloads every artifact and runs the judge script;
@@ -20,7 +20,7 @@ import re
 import pytest
 import yaml
 
-from _retail_scripts import ROOT
+from _retail_scripts import ROOT, load_window_geometry
 
 pytestmark = pytest.mark.unit
 
@@ -61,7 +61,7 @@ def test_the_capture_is_one_job_per_scale_on_windows_2025_with_temp_on_d():
     assert job["strategy"]["fail-fast"] is False
     assert job["strategy"]["matrix"] == {"dpr": "${{ fromJSON(needs.request.outputs.dpr) }}"}
     assert job["env"]["TEMP"] == D_TEMP and job["env"]["TMP"] == D_TEMP
-    assert job["timeout-minutes"] == 45, "the grid and the every-resolution launches take most of it (run_scale.TIME_BUDGET_SECONDS)"
+    assert job["timeout-minutes"] == 60, "the grid, round 5 and the every-resolution launches fill it (run_scale.TIME_BUDGET_SECONDS, 49 minutes)"
     assert "--dpr ${{ matrix.dpr }}" in _runs("capture")
 
 
@@ -107,3 +107,15 @@ def test_every_script_it_runs_exists_and_every_action_is_pinned_like_retail_capt
     only_here = {u.split("@")[0] for u in used - pinned}
     assert only_here == {"actions/download-artifact"}, "an action pinned differently from retail-capture.yml"
 
+
+def test_the_every_resolution_launches_stop_with_the_minutes_the_setup_the_last_launch_and_the_upload_need():
+    run_scale = load_window_geometry("run_scale")
+    timeout_seconds = JOBS["capture"]["timeout-minutes"] * 60
+    assert run_scale.TIME_BUDGET_SECONDS == 49 * 60 and timeout_seconds - run_scale.TIME_BUDGET_SECONDS >= 10 * 60
+
+
+def test_the_header_says_what_round_5_added_and_why_the_job_has_sixty_minutes():
+    header = TEXT.split("\non:")[0]
+    for needle in ("Round 5", "thirteen steps", "real click", "F11-style fullscreen", "cross-site iframe", "juggler2",
+                   "60 minutes (it had 45)", "TIME_BUDGET_SECONDS is 49 minutes"):
+        assert needle in header, needle

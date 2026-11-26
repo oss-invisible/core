@@ -1,15 +1,16 @@
 """What each launch of the window-geometry capture measures, and which points of the grids fit (pure: no browser, no Windows).
 
-Round 4 of the capture, per job (one display scale):
+Round 5 of the capture, per job (one display scale):
 
-  launch a (first reached resolution)  maximized, restored, juggler, juggler_rdm, juggler2, juggler_back, and at the scales
-                                       of GRID_DPRS also `grid` (restored windows at GRID_WIDTHS x GRID_HEIGHTS) and `minimum`
-  launch b (same resolution)           the same six steps, and at GRID_DPRS `grid_check` (GRID_CHECK_POINTS again)
+  launch a (first reached resolution)  the six CORE_STEPS and the thirteen ROUND5_STEPS (fullscreen, popups, iframes, the
+                                       repeated Juggler call), and at the scales of GRID_DPRS also `grid` (restored windows at
+                                       GRID_WIDTHS x GRID_HEIGHTS) and `minimum`
+  launch b (same resolution)           the same nineteen steps, and at GRID_DPRS `grid_check` (GRID_CHECK_POINTS again)
   launches a and b at HOSTGATE_DPRS    last, `rdm_hostgate`
   launch m (every resolution Windows   `maximized` only: the maximized UI height as a function of the work area
             offers, at the job's scale)
-  launch p (and q when no display      the six steps with layout.css.devPixelsPerPx = the scale, at 100% display scale
-            launch could be made)
+  launch p (and q when no display      the six CORE_STEPS with layout.css.devPixelsPerPx = the scale, at 100% display scale; the
+            launch could be made)      ROUND5_STEPS too when no display launch could be made (p and q are then the pair)
   launch m with devPixelsPerPx 0.75    `maximized` only, in the job of scale 1 (CSS screens 2560x1440 and 3840x2160)
   and 0.5
 """
@@ -22,6 +23,17 @@ from typing import List, Optional, Sequence, Tuple
 #: in this order except `restored`, which runs after the Juggler steps: maximized, juggler, juggler_rdm, (inRDMPane
 #: back to false, styles kept) juggler2, juggler_back, (styles cleared) restored.
 CORE_STEPS = ("maximized", "restored", "juggler", "juggler_rdm", "juggler2", "juggler_back")
+#: The steps round 5 adds to the two launches the judge compares (a and b; p and q where no display launch could be made), in
+#: the order they run: element fullscreen (a real click on a button) and F11-style window fullscreen from the maximized window
+#: (`fullscreen_max_*`, `f11_max_*`), a same-origin and a cross-site iframe (`iframes_max`), two popups (`popup`, and
+#: `popup_pos` with left and top), Juggler's second call again at exactly its size (`juggler2_repeat`), the same fullscreen
+#: steps from the window Juggler left (`fullscreen_res_*`, `f11_res_*`) and the iframes there (`iframes_juggler`).
+#: A step is a full record, or `{"skipped": "does_not_fit"}` (Juggler's size did not fit the work area), or
+#: `{"not_possible": <reason>}` (this browser did not allow it); the judge prints the reason.
+ROUND5_STEPS = ("fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out", "iframes_max", "popup", "popup_pos",
+                "juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out", "f11_res_in", "f11_res_out", "iframes_juggler")
+#: The steps the a/b (p/q) determinism check compares.
+COMPARED_STEPS = CORE_STEPS + ROUND5_STEPS
 #: Steps that are not part of the a/b determinism check.
 GRID_STEPS = ("grid", "minimum", "grid_check", "rdm_hostgate")
 MAXIMIZED_ONLY = ("maximized",)
@@ -80,9 +92,17 @@ def juggler2_height(work_rect: Sequence[int], scale: float) -> Optional[int]:
     return first - JUGGLER2_GAP if second == first else second
 
 
+def derived_steps(display_launches_made: bool) -> List[str]:
+    """The steps of a derived launch (p, q): the core steps; the round 5 steps too when p and q are the pair the judge compares."""
+    return list(CORE_STEPS if display_launches_made else COMPARED_STEPS)
+
+
 def steps_for(dpr: float, launch: str, launches: Sequence[str], first_reached: bool) -> List[str]:
-    """The steps of a display launch: the four, and the grid steps on the first launch(es) of the first reached resolution."""
+    """The steps of a display launch: the core steps, the round 5 steps on the two launches the judge compares (the first two
+    of the request, at the first reached resolution), and the grid steps on the first launch(es) of the first reached resolution."""
     steps = list(CORE_STEPS)
+    if first_reached and launch in launches[:2]:
+        steps += ROUND5_STEPS
     if first_reached and float(dpr) in GRID_DPRS:
         if launch == launches[0]:
             steps += ["grid", "minimum"]

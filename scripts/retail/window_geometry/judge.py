@@ -4,9 +4,12 @@
 
 Red when:
   * a scale of the request has no run, a run has an error or leaves a process of the install folder alive, a run lacks
-    a step of its launch (a, b, p, q: maximized, restored, juggler, juggler_rdm, juggler2, juggler_back; m: maximized);
-  * launch a differs from launch b (launch p from q) at a resolution that has both, on any number of those steps
-    (the diff is printed); the grid, the minimum and the grid check are not part of that comparison;
+    a step of its launch (a, b, p, q: maximized, restored, juggler, juggler_rdm, juggler2, juggler_back; m: maximized; and,
+    in the two launches that are compared, the thirteen steps of plan.ROUND5_STEPS: fullscreen, F11-style fullscreen,
+    iframes, popups, the repeated Juggler call). A step of round 5 that is `{"not_possible": <reason>}` is complete when it
+    has a non-empty reason, which is printed; `{"skipped": ...}` is complete as before;
+  * launch a differs from launch b (launch p from q) at a resolution that has both, on any number of those steps and of
+    the round 5 steps (the diff is printed); the grid, the minimum and the grid check are not part of that comparison;
   * at the scales of plan.GRID_DPRS, launch a lacks its grid and minimum, launch b lacks its grid check, a grid row is
     an error, or a point of the grid check does not show what launch a shows at that point (content top, size mode);
   * at the scales of plan.HOSTGATE_DPRS, launches a and b lack their `rdm_hostgate` step, or the collection page did not
@@ -35,6 +38,7 @@ import plan  # noqa: E402
 import request as request_file  # noqa: E402
 
 STEPS = plan.CORE_STEPS
+EXTRA = plan.ROUND5_STEPS
 
 
 def half_up(value: float) -> int:
@@ -98,14 +102,37 @@ def name_of(run: Dict[str, Any]) -> str:
     return f"dpr {run['dpr_asked']:g} {run['resolution'][0]}x{run['resolution'][1]} launch {run['launch']} ({run['mode']}{label})"
 
 
-def required_steps(run: Dict[str, Any]) -> Tuple[str, ...]:
-    """The steps a launch must have: launch m takes the maximized step alone."""
-    return plan.MAXIMIZED_ONLY if run["launch"] == "m" else STEPS
+def required_steps(run: Dict[str, Any], compared: bool = False) -> Tuple[str, ...]:
+    """The steps a launch must have: launch m takes the maximized step alone; a launch that is compared with another (a with
+    b, p with q) takes the round 5 steps too."""
+    if run["launch"] == "m":
+        return plan.MAXIMIZED_ONLY
+    return STEPS + EXTRA if compared else STEPS
+
+
+def compared_runs(runs: Iterable[Dict[str, Any]]) -> set:
+    """The ids of the runs that are compared: the first two launches of a resolution (display launches other than m) and
+    the first two derived launches (p, q) of a scale; a launch alone is compared with nothing."""
+    groups: Dict[Tuple[float, tuple, str], List[Dict[str, Any]]] = {}
+    for run in runs:
+        if run.get("mode") == "display" and run.get("launch") != "m":
+            kind = "display"
+        elif run.get("mode") == "devPixelsPerPx" and run.get("launch") in ("p", "q"):
+            kind = "derived"
+        else:
+            continue
+        groups.setdefault((float(run["dpr_asked"]), tuple(run["resolution"]), kind), []).append(run)
+    return {id(r) for group in groups.values() if len(group) >= 2 for r in sorted(group, key=lambda r: r["launch"])[:2]}
 
 
 def step_is_complete(step: Any) -> bool:
-    """A step with its window record, or one the capture says it skipped (Juggler's size did not fit the work area)."""
-    return isinstance(step, dict) and ("skipped" in step or "window_rect" in (step.get("native") or {}))
+    """A step with its window record, one the capture says it skipped (Juggler's size did not fit the work area), or one it
+    says was not possible with a reason."""
+    if not isinstance(step, dict):
+        return False
+    if "not_possible" in step:
+        return isinstance(step["not_possible"], str) and bool(step["not_possible"].strip())
+    return "skipped" in step or "window_rect" in (step.get("native") or {})
 
 
 def chrome_line(step_name: str, step: Dict[str, Any]) -> str:
@@ -129,6 +156,7 @@ def probe_line(step_name: str, step: Dict[str, Any]) -> Optional[str]:
     viewport = probe.get("visualViewport")
     return (f"    {step_name} probe: screen {screen.get('width')}x{screen.get('height')} avail {screen.get('availWidth')}x{screen.get('availHeight')} "
             f"at {screen.get('availLeft')},{screen.get('availTop')} colorDepth {screen.get('colorDepth')} "
+            f"pixelDepth {screen.get('pixelDepth')} "
             f"orientation {orientation.get('type')}/{orientation.get('angle')} dpr {probe.get('devicePixelRatio')} ; "
             f"matchMedia width {found.get('width')} height {found.get('height')} device-width {found.get('device-width')} "
             f"device-height {found.get('device-height')} aspect-ratio x10000 {found.get('aspect-ratio_x10000')} "
@@ -262,7 +290,84 @@ def grid_problems(first: Dict[str, Any], second: Dict[str, Any], dpr: float) -> 
 
 
 def core_steps_of(run: Dict[str, Any]) -> Dict[str, Any]:
-    return {name: run["steps"][name] for name in STEPS if name in run["steps"]}
+    return {name: run["steps"][name] for name in plan.COMPARED_STEPS if name in run["steps"]}
+
+
+def standard_lines(step_name: str, step: Dict[str, Any], dpr: float) -> List[str]:
+    """The lines of a step that has the full record of the main window."""
+    d = derived(step, dpr)
+    return [f"    {step_name}: border L/R/B {d['border_left']}/{d['border_right']}/{d['border_bottom']}  ui {d['ui']}  "
+            f"position dev {d['position_dev']} css {d['position_css']}  outer-inner css {d['outer_minus_inner_css']}  "
+            f"screenX/Y {d['screen_xy']}  mozInnerScreenX/Y {d['moz_inner_screen']}  events(count,dx,dy) {d['events']}",
+            f"    {step_name} page: inner {d['page_inner']} outer {d['page_outer']} screen {d['screen_wh']} "
+            f"event dx/dy {d['event_dxdy']} work area css {d['work_css']} native client rect {d['client_rect']} "
+            f"window rect {d['window_rect']}",
+            chrome_line(step_name, step)]
+
+
+def popup_lines(step_name: str, step: Dict[str, Any], dpr: float, frame: Any = None) -> List[str]:
+    """What a popup says about itself and what Windows says about its window. The core's popup values are a MODEL (Firefox
+    151 on a workbench): they are printed beside the measure and are not judged."""
+    native, content = step["native"], step["content"]
+    left, top, right, bottom = native["window_rect"]
+    origin = native["client_origin"]
+    client = native["client_rect"]
+    client_right, client_bottom = origin[0] + client[2] - client[0], origin[1] + client[3] - client[1]
+    model = "" if frame is None else (f" ; core MODEL popup_ui {frame.popup_ui} popup_position {frame.popup_position} "
+                                      "(not judged: Firefox 151 on a workbench)")
+    events = content["events"]
+    return [f"    {step_name} (window.open features {step.get('features')!r}): native window rect {[left, top, right, bottom]} "
+            f"size dev {right - left}x{bottom - top} client rect {client} client origin {origin} "
+            f"window top to client top {origin[1] - top} content top dev {half_up(content['mozInnerScreenY'] * dpr)} "
+            f"position dev {[left, top]} css {[left / dpr, top / dpr]} "
+            f"border L/R/B {origin[0] - left}/{right - client_right}/{bottom - client_bottom}{model}",
+            f"    {step_name} page: inner {[content['innerWidth'], content['innerHeight']]} outer "
+            f"{[content['outerWidth'], content['outerHeight']]} screenX/Y {[content['screenX'], content['screenY']]} "
+            f"screenLeft/Top {[content.get('screenLeft'), content.get('screenTop')]} mozInnerScreenX/Y "
+            f"{[content['mozInnerScreenX'], content['mozInnerScreenY']]} dpr {content['devicePixelRatio']} "
+            f"events(count,dx,dy) {[events['count'], events['dx'], events['dy']]} screen {content.get('screen') or {}} ; "
+            f"windows opened {step.get('windows_opened')} closed {step.get('closed')} settled {step.get('settled')}"]
+
+
+def frames_lines(step_name: str, step: Dict[str, Any]) -> List[str]:
+    """The records of the iframes of an `iframes_*` step: each frame's own view, and the probe it read."""
+    lines = []
+    for name, frame in sorted((step.get("frames") or {}).items()):
+        state = frame["state"]
+        events = state["events"]
+        lines.append(f"    {step_name} frame {name} ({frame.get('kind')}): rect css {frame.get('rect')} inner "
+                     f"{[state['innerWidth'], state['innerHeight']]} outer {[state['outerWidth'], state['outerHeight']]} "
+                     f"screenX/Y {[state['screenX'], state['screenY']]} mozInnerScreenX/Y "
+                     f"{[state['mozInnerScreenX'], state['mozInnerScreenY']]} dpr {state['devicePixelRatio']} "
+                     f"events(count,dx,dy) {[events['count'], events['dx'], events['dy']]} "
+                     f"mouse asked/cursor {[(m.get('asked'), m.get('cursor')) for m in frame.get('input') or []]}")
+        line = probe_line(f"{step_name} frame {name}", {"content": {"probe": state.get("probe")}})
+        if line:
+            lines.append(line)
+    return lines
+
+
+def fullscreen_line(step_name: str, step: Dict[str, Any]) -> List[str]:
+    facts = step.get("fullscreen")
+    if facts is None:
+        return []
+    return [f"    {step_name} fullscreen: {facts} settled {step.get('settled')} forced_exit {step.get('forced_exit')} "
+            f"click {step.get('click')}"]
+
+
+def repeat_line(steps: Dict[str, Any], dpr: float) -> List[str]:
+    """juggler2_repeat against juggler2: the outer sizes and the window rects. The engine's model says the outer height
+    shrinks by one border at each call at the same size; this is the measure, not a check."""
+    first, again = steps.get("juggler2"), steps.get("juggler2_repeat")
+    if not first or not again or "native" not in first or "native" not in again or "chrome" not in first or "chrome" not in again:
+        return []
+    a, b = derived(first, dpr), derived(again, dpr)
+    outer = [b["page_outer"][0] - a["page_outer"][0], b["page_outer"][1] - a["page_outer"][1]]
+    size = [(b["window_rect"][2] - b["window_rect"][0]) - (a["window_rect"][2] - a["window_rect"][0]),
+            (b["window_rect"][3] - b["window_rect"][1]) - (a["window_rect"][3] - a["window_rect"][1])]
+    moved = [b["position_dev"][0] - a["position_dev"][0], b["position_dev"][1] - a["position_dev"][1]]
+    return [f"    juggler2_repeat minus juggler2: page outer css {outer} (outer {b['page_outer']} against {a['page_outer']}), "
+            f"window rect size dev {size}, position dev {moved}"]
 
 
 def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: Dict[float, Any]) -> Dict[str, Any]:
@@ -274,12 +379,13 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
         if not any(float(r["dpr_asked"]) == dpr for r in runs):
             problems.append(f"dpr {dpr:g}: no result (the job is missing or wrote nothing)")
     usable = []
+    pairs = compared_runs(runs)
     for run in sorted(runs, key=lambda r: (float(r["dpr_asked"]), r["mode"], r["resolution"], r["launch"], str(r.get("dev_px_per_px")))):
         steps = run.get("steps", {})
-        if (run.get("error") or run.get("processes_left") != 0
-                or not all(s in steps and step_is_complete(steps[s]) for s in required_steps(run))):
+        incomplete = [s for s in required_steps(run, id(run) in pairs) if not (s in steps and step_is_complete(steps[s]))]
+        if run.get("error") or run.get("processes_left") != 0 or incomplete:
             problems.append(f"{name_of(run)}: error={run.get('error')!r} processes_left={run.get('processes_left')!r} "
-                            f"steps={sorted(run.get('steps', {}))}")
+                            f"missing or incomplete steps={incomplete} steps={sorted(run.get('steps', {}))}")
             continue
         usable.append(run)
     for run in usable:
@@ -293,21 +399,24 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
                 lines.append(f"    maximized {name}: {what} = {got} ; core declares {want} : {'ok' if ok else 'DIFFERENT'}")
                 if not ok:
                     problems.append(f"{name_of(run)}: maximized {name} is {got}, the core declares {want}")
-        for step_name in required_steps(run):
+        wanted = required_steps(run, id(run) in pairs)
+        for step_name in wanted:
             step = run["steps"][step_name]
             if "skipped" in step:
                 lines.append(f"    {step_name}: skipped ({step['skipped']})")
                 continue
-            d = derived(step, dpr)
-            lines.append(f"    {step_name}: border L/R/B {d['border_left']}/{d['border_right']}/{d['border_bottom']}  ui {d['ui']}  "
-                         f"position dev {d['position_dev']} css {d['position_css']}  outer-inner css {d['outer_minus_inner_css']}  "
-                         f"screenX/Y {d['screen_xy']}  mozInnerScreenX/Y {d['moz_inner_screen']}  events(count,dx,dy) {d['events']}")
-            lines.append(f"    {step_name} page: inner {d['page_inner']} outer {d['page_outer']} screen {d['screen_wh']} "
-                         f"event dx/dy {d['event_dxdy']} work area css {d['work_css']} native client rect {d['client_rect']} "
-                         f"window rect {d['window_rect']}")
-            lines.append(chrome_line(step_name, step))
-        for step_name in required_steps(run):
-            line = probe_line(step_name, run["steps"][step_name]) if "skipped" not in run["steps"][step_name] else None
+            if "not_possible" in step:
+                lines.append(f"    {step_name}: NOT POSSIBLE ({step['not_possible']})")
+                continue
+            if "chrome" not in step:  # a popup: its own page and its own window, no chrome record of the main window
+                lines.extend(popup_lines(step_name, step, dpr, table.get(dpr)))
+                continue
+            lines.extend(standard_lines(step_name, step, dpr))
+            lines.extend(fullscreen_line(step_name, step))
+            lines.extend(frames_lines(step_name, step))
+        for step_name in wanted:
+            step = run["steps"][step_name]
+            line = probe_line(step_name, step) if not ({"skipped", "not_possible"} & set(step)) else None
             if line:
                 lines.append(line)
         lines.extend(hostgate_lines(run))
@@ -315,9 +424,10 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
             lines.append(f"    restored size used {run.get('restored_size_used')}")
         if "juggler" in run["steps"]:
             lines.append(f"    juggler size used {run.get('juggler_size_used')}")
-        for name in ("juggler2", "juggler_back"):
+        for name in ("juggler2", "juggler2_repeat", "juggler_back"):
             if name in run["steps"]:
                 lines.append(f"    {name} size used {run.get(name + '_size_used')}")
+        lines.extend(repeat_line(run["steps"], dpr))
         lines.extend(grid_lines(run))
     display_groups: Dict[Tuple[float, tuple], List[Dict[str, Any]]] = {}
     derived_groups: Dict[Tuple[float, tuple], List[Dict[str, Any]]] = {}

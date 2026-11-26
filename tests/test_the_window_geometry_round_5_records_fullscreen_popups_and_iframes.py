@@ -1,0 +1,504 @@
+"""Round 5 of the window-geometry capture: fullscreen, popups, iframes and the repeated Juggler call, with no browser and no Windows.
+
+scripts/retail/window_geometry/surfaces.py (the scripts the browser runs and the points the real mouse goes to) and the Session
+methods of measure.py that drive them, against a small model of the browser (`Browser`: what the chrome and the page answer,
+what a real click on a button does). Held here:
+  * element fullscreen is entered by a REAL click on the middle of the button #fs, recorded, left with exitFullscreen and recorded
+    again; a click that does not enter fullscreen is `not_possible` with the page's own reason in both steps; a window that stays
+    fullscreen after exitFullscreen is forced out and says so;
+  * F11-style fullscreen is `window.fullScreen = true` then false in the chrome, each recorded; one that never turns on is
+    `not_possible`; the four steps of a state that did not fit Juggler's size are skipped;
+  * a popup is opened by a REAL click on #open with the features asked, its window rects and its page's record are kept, the mouse
+    moves inside its client area, and it is closed; none opening is `not_possible`; the two popups are the two features;
+  * the iframes (same-origin and cross-site, both local) are added, each gets real mouse moves inside its rectangle, each answers
+    with its own record, and they are removed even when one did not load;
+  * a step Marionette refused is `not_possible` and puts the window back; a closed connection is not that and ends the launch;
+  * the repeated Juggler call is the same sequence at exactly the second call's size, and skipped when that does not fit;
+  * the order of a launch, the pages the server serves, the page script's hooks, the real click's two button events.
+"""
+from __future__ import annotations
+
+import json
+import socket
+import urllib.request
+from pathlib import Path
+
+import pytest
+
+from _retail_scripts import load_window_geometry
+
+pytestmark = pytest.mark.unit
+
+measure = load_window_geometry("measure")
+surfaces = load_window_geometry("surfaces")
+marionette = load_window_geometry("marionette")
+HERE = Path(measure.__file__).parent
+URLS = {"popup": "http://127.0.0.1:5001/surface.html?name=popup", "same": "http://127.0.0.1:5001/surface.html?name=same",
+        "cross": "http://localhost:5002/surface.html?name=cross"}
+BUTTONS = {"fs": {"x": 8, "y": 8, "width": 120, "height": 40}, "open": {"x": 140, "y": 8, "width": 120, "height": 40}}
+FRAME_RECTS = {"same": {"x": 10, "y": 60, "width": 300, "height": 120}, "cross": {"x": 10, "y": 200, "width": 300, "height": 120}}
+CHROME = {"devicePixelRatio": 1.0, "browser": {"x": 0, "y": 85, "width": 1900, "height": 900}, "windowState": 1}
+NATIVE = {"client_origin": [0, 0], "client_rect": [0, 0, 1900, 985], "window_rect": [-8, -8, 1928, 1040]}
+POPUP_NATIVE = {"client_origin": [108, 152], "client_rect": [0, 0, 500, 400], "window_rect": [100, 80, 616, 620]}
+
+
+def state(events=3):
+    return {"innerWidth": 300, "innerHeight": 120, "events": {"count": events, "dx": 7, "dy": 91}, "probe": {"screen": {"pixelDepth": 24}}}
+
+
+class FakeClient:
+    """The Marionette client of a Browser: scripts go to its chrome and content."""
+
+    def __init__(self, browser):
+        self.browser = browser
+
+    def execute_script(self, script, args=None, context=None):
+        return (self.browser.chrome if context == "chrome" else self.browser.content)(script, args)
+
+    def execute_async_script(self, script, args=None, context=None):
+        return True
+
+
+class Browser(measure.Session):
+    """A Session with no browser and no Windows: the chrome and the page answer from a model of what fullscreen, a popup and
+    an iframe do; every call that changes something is logged in `log`, the real clicks in `clicks`, the real moves in `moves`."""
+
+    def __init__(self, enters=True, window_fullscreen=True, exit_leaves=True, opens=True, frames_load=True, fail_on=None):
+        super().__init__(FakeClient(self), Path("."), None, dict(URLS))
+        self.enters, self.window_ok, self.exit_leaves, self.opens, self.frames_load = enters, window_fullscreen, exit_leaves, opens, frames_load
+        self.fail_on = fail_on  # (script, exception) raised when that script runs
+        self.fs = self.window_fs = self.popup_open = self.frames_on = False
+        self.fs_error, self.log, self.clicks, self.moves, self.popup_args, self.frames_args = None, [], [], [], None, None
+
+    # ---- what the harness reads from Windows and the mouse
+    def hwnd(self):
+        return 1
+
+    def native(self, hwnd):
+        return dict(POPUP_NATIVE if hwnd == 2 else NATIVE)
+
+    def foreground(self, hwnd):
+        self.log.append(("foreground", hwnd))
+
+    def windows(self):
+        return [1, 2] if self.popup_open else [1]
+
+    def move(self, points):
+        self.moves.append(list(points))
+        return [{"asked": list(p), "cursor": list(p)} for p in points]
+
+    def click(self, point):
+        self.clicks.append(tuple(point))
+        for name, rect in BUTTONS.items():
+            if tuple(point) == tuple(surfaces.region_points(CHROME, NATIVE, rect, surfaces.CLICK_FRACTION)[0]):
+                if name == "fs":
+                    if self.enters:
+                        self.fs = True
+                    else:
+                        self.fs_error = "TypeError: Fullscreen request denied"
+                if name == "open" and self.opens:
+                    self.popup_open = True
+        return {"asked": list(point), "cursor": list(point), "buttons_sent": [1, 1]}
+
+    def record(self):
+        self.log.append(("record", self.fs, self.window_fs, self.popup_open))
+        return {"chrome": dict(CHROME), "native": dict(NATIVE), "input": [], "content": {}}
+
+    # ---- the chrome and the page
+    def chrome(self, script, args=None):
+        if self.fail_on and script == self.fail_on[0]:
+            raise self.fail_on[1]
+        if script == measure.CHROME_STATE:
+            return dict(CHROME)
+        if script == surfaces.FULLSCREEN_CHROME:
+            on = self.fs or self.window_fs
+            return [on, 4 if on else 1, 1920, 1080, 1936, 1049]
+        if script == surfaces.WINDOW_FULLSCREEN_ON:
+            self.log.append("window_fullscreen_on")
+            self.window_fs = self.window_ok
+            return True
+        if script == surfaces.WINDOW_FULLSCREEN_OFF:
+            self.log.append("window_fullscreen_off")
+            self.window_fs = self.fs = False
+            return True
+        raise AssertionError(f"unexpected chrome script {script[:50]!r}")
+
+    def content(self, script, args=None):
+        if self.fail_on and script == self.fail_on[0]:
+            raise self.fail_on[1]
+        table = {surfaces.FULLSCREEN_CONTENT: lambda: [self.fs, 1920, 1080], surfaces.FULLSCREEN_ERROR: lambda: self.fs_error,
+                 surfaces.POPUP_READY: lambda: self.popup_open, surfaces.POPUP_SIZE: lambda: [500, 400, 516, 540, 100, 80],
+                 surfaces.POPUP_STATE: lambda: json.dumps(dict(state(), innerWidth=500)),
+                 surfaces.FRAMES_HELLO: lambda: ["cross", "same"] if self.frames_load else ["same"],
+                 surfaces.FRAME_RECTS: lambda: FRAME_RECTS,
+                 surfaces.FRAME_RECORDS: lambda: json.dumps({"same": state(), "cross": state()}),
+                 measure.CONTENT_STATE: lambda: {"events": {"count": 0, "dx": None, "dy": None}, "probe": {}}}
+        if script in table:
+            return table[script]()
+        if script == surfaces.ELEMENT_RECT:
+            return BUTTONS[args[0]]
+        if script == surfaces.EXIT_FULLSCREEN:
+            self.log.append("exit_fullscreen")
+            if self.exit_leaves:
+                self.fs = False
+            return True
+        if script == surfaces.SET_POPUP:
+            self.popup_args = args
+            return True
+        if script == surfaces.POPUP_RESET:
+            self.log.append("popup_reset")
+            return True
+        if script == surfaces.POPUP_CLOSE:
+            self.log.append("popup_close")
+            self.popup_open = False
+            return True
+        if script == surfaces.ADD_FRAMES:
+            self.frames_args, self.frames_on = args, True
+            return True
+        if script == surfaces.ASK_FRAMES:
+            self.log.append(("ask_frames", args[0]))
+            return True
+        if script == surfaces.REMOVE_FRAMES:
+            self.log.append("remove_frames")
+            self.frames_on = False
+            return True
+        raise AssertionError(f"unexpected content script {script[:50]!r}")
+
+
+@pytest.fixture(autouse=True)
+def faithful_and_instant(monkeypatch):
+    """A wait that returns the value and whether it was ready (no hold), and no sleeping."""
+    def stub(read, ready=lambda v: True, **kwargs):
+        value = read()
+        return value, bool(ready(value))
+
+    monkeypatch.setattr(measure, "wait_stable", stub)
+    monkeypatch.setattr(measure.time, "sleep", lambda seconds: None)
+
+
+def button_centre(name):
+    return surfaces.region_points(CHROME, NATIVE, BUTTONS[name], surfaces.CLICK_FRACTION)[0]
+
+
+# ---------------------------------------------------------------------------- the points and the pages (pure)
+
+
+def test_a_region_s_points_are_its_fractions_from_the_client_origin_and_the_browser_at_the_window_scale():
+    chrome = {"devicePixelRatio": 1.25, "browser": {"x": 0, "y": 80, "width": 800, "height": 400}}
+    native = {"client_origin": [-9, 0]}
+    region = {"x": 10, "y": 60, "width": 300, "height": 120}
+    assert surfaces.region_points(chrome, native, region, ((0.5, 0.5), (0.25, 0.3))) == [
+        (round(-9 + (0 + 10 + 150) * 1.25), round((80 + 60 + 60) * 1.25)), (round(-9 + (10 + 75) * 1.25), round((80 + 60 + 36) * 1.25))]
+    assert button_centre("fs") == (68, 113) and button_centre("open") == (200, 113)
+
+
+def test_the_popup_points_are_inside_the_client_area_below_the_popup_s_own_bar():
+    native = {"client_origin": [108, 152], "client_rect": [0, 0, 500, 400]}
+    points = surfaces.client_points(native)
+    assert points == [(108 + 125, 152 + 220), (108 + 250, 152 + 280), (108 + 375, 152 + 340)]
+    for x, y in points:
+        assert 108 < x < 608 and 152 + 0.5 * 400 <= y < 552
+    assert surfaces.POPUP_FRACTIONS == ((0.25, 0.55), (0.5, 0.7), (0.75, 0.85))
+
+
+def test_the_two_iframes_are_two_origins_and_two_sites_and_the_popup_is_the_page_s_own_origin():
+    urls = surfaces.frame_urls(5001, 5002)
+    assert urls == {"same": "http://127.0.0.1:5001/surface.html?name=same", "cross": "http://localhost:5002/surface.html?name=cross"}
+    assert surfaces.popup_url(5001) == "http://127.0.0.1:5001/surface.html?name=popup"
+    assert surfaces.POPUP_FEATURES == (("popup", "width=500,height=400"), ("popup_pos", "left=100,top=80,width=500,height=400"))
+    assert surfaces.FRAME_NAMES == ("same", "cross") and set(surfaces.FRAME_KINDS) == {"same", "cross"}
+
+
+def test_the_server_serves_the_main_page_its_script_and_the_surface_page_and_nothing_else():
+    server = measure.PageServer(also_ipv6=True)
+    try:
+        for path, needle in (("/", b'id="fs"'), ("/page.js", b"window.__probe"), ("/surface.html", b"/page.js")):
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.port}{path}?name=x", timeout=10) as response:
+                assert response.status == 200 and needle in response.read()
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(f"http://127.0.0.1:{server.port}/secret", timeout=10)
+        assert err.value.code == 404
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/page.js", timeout=10) as response:
+            assert response.headers["Content-Type"].startswith("text/javascript")
+        assert len(server.httpds) in (1, 2)
+        if len(server.httpds) == 2:  # `localhost` can be reached on ::1 too
+            with socket.create_connection(("::1", server.port), timeout=5):
+                pass
+    finally:
+        server.close()
+
+
+def test_two_servers_are_two_ports_so_the_cross_site_frame_is_another_origin():
+    first, second = measure.PageServer(), measure.PageServer()
+    try:
+        assert first.port != second.port
+    finally:
+        first.close()
+        second.close()
+
+
+PAGE_JS = (HERE / "page.js").read_text(encoding="utf-8")
+PAGE_HTML = (HERE / "page.html").read_text(encoding="utf-8")
+SURFACE_HTML = (HERE / "surface.html").read_text(encoding="utf-8")
+
+
+def test_the_pages_load_the_one_script_and_the_main_page_has_the_two_buttons_the_real_clicks_land_on():
+    assert PAGE_HTML.count('<script src="/page.js"></script>') == 1 and "<script>" not in PAGE_HTML
+    assert SURFACE_HTML.count('<script src="/page.js"></script>') == 1
+    assert 'id="fs"' in PAGE_HTML and 'id="open"' in PAGE_HTML and "position:fixed" in PAGE_HTML
+    assert "requestFullscreen()" in PAGE_JS and "window.open(window.__popupUrl, \"_blank\", window.__popupFeatures)" in PAGE_JS
+    assert PAGE_JS.count("pixelDepth: s.pixelDepth") == 1 and "pixelDepth: screen.pixelDepth" in PAGE_JS
+
+
+def test_the_page_script_keeps_the_frame_protocol_the_capture_relies_on():
+    for needle in ("window.__addFrames = ", "window.__removeFrames = ", "window.__askFrames = ", "window.__frameHello", "window.__frameRecords",
+                   '"geometry-parent"', '"geometry-frame"', 'data.cmd === "reset"', 'data.cmd === "record"', "window.parent !== window",
+                   "window.__state = ", "window.__fsError"):
+        assert needle in PAGE_JS, needle
+    for script, name in ((surfaces.ADD_FRAMES, "__addFrames"), (surfaces.ASK_FRAMES, "__askFrames"), (surfaces.REMOVE_FRAMES, "__removeFrames"),
+                         (surfaces.POPUP_STATE, "__state"), (surfaces.POPUP_RESET, "__reset")):
+        assert name in script, name
+    assert "frame-same" in surfaces.FRAME_RECTS and "frame-cross" in surfaces.FRAME_RECTS
+    assert "frame.id = \"frame-\" + name" in PAGE_JS
+
+
+def test_the_state_a_popup_and_a_frame_report_has_the_fields_of_the_main_page_record_and_the_probe():
+    state_js = PAGE_JS.split("window.__state = ")[1].split("});")[0]
+    for field in ("innerWidth", "innerHeight", "outerWidth", "outerHeight", "screenX", "screenY", "screenLeft", "screenTop",
+                  "mozInnerScreenX", "mozInnerScreenY", "devicePixelRatio", "events: {count", "probe: JSON.parse(window.__probe())"):
+        assert field in state_js, field
+    main = measure.CONTENT_STATE
+    for field in ("innerWidth", "mozInnerScreenY", "devicePixelRatio", "events: {count: m.count, dx: m.dx, dy: m.dy}"):
+        assert field in main, field
+
+
+# ---------------------------------------------------------------------------- the real click
+
+
+def test_a_real_click_is_a_move_then_the_left_button_going_down_and_up(monkeypatch):
+    sent = []
+
+    class User32:
+        def SendInput(self, count, pointer, size):  # noqa: N802
+            sent.append(pointer._obj.mi.dwFlags if hasattr(pointer, "_obj") else None)
+            return count
+
+    class Api:
+        user32 = User32()
+
+    monkeypatch.setattr(measure, "api", lambda: Api())
+    monkeypatch.setattr(measure, "move_mouse", lambda points, pause=0.2: [{"asked": list(points[0]), "sent": 1, "cursor": list(points[0])}])
+    result = measure.click((10, 20))
+    assert sent == [measure.MOUSEEVENTF_LEFTDOWN, measure.MOUSEEVENTF_LEFTUP] == [0x2, 0x4]
+    assert result == {"asked": [10, 20], "sent": 1, "cursor": [10, 20], "buttons_sent": [1, 1]}
+
+
+# ---------------------------------------------------------------------------- element fullscreen
+
+
+def test_element_fullscreen_is_a_real_click_on_the_button_a_record_exitfullscreen_and_a_record():
+    browser = Browser()
+    steps = browser.fullscreen("max")
+    assert list(steps) == ["fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out"]
+    assert browser.clicks == [button_centre("fs")] and browser.fs is False
+    entered, left = steps["fullscreen_max_in"], steps["fullscreen_max_out"]
+    assert entered["fullscreen"] == {"window_fullScreen": True, "windowState": 4, "document_fullscreen": True} and entered["settled"] is True
+    assert left["fullscreen"] == {"window_fullScreen": False, "windowState": 1, "document_fullscreen": False} and left["forced_exit"] is False
+    assert entered["click"]["asked"] == list(button_centre("fs")) and entered["chrome"]["browser"]["y"] == 85
+    element_log = [item for item in browser.log if item != ("foreground", 1)][:3]
+    assert element_log == [("record", True, False, False), "exit_fullscreen", ("record", False, False, False)]
+
+
+def test_a_click_that_does_not_enter_fullscreen_is_not_possible_in_both_steps_with_the_page_s_own_reason():
+    browser = Browser(enters=False)
+    steps = browser.fullscreen("res")
+    reason = ("document.fullscreenElement stayed null after a real click on the button "
+              "(requestFullscreen rejected: TypeError: Fullscreen request denied)")
+    assert steps["fullscreen_res_in"] == {"not_possible": reason} and steps["fullscreen_res_out"] == {"not_possible": reason}
+    assert "exit_fullscreen" in browser.log and "remove_frames" in browser.log, "the window is put back"
+    assert set(steps["f11_res_in"]) >= {"chrome", "native", "fullscreen"}, "the F11 steps are still taken"
+
+
+def test_a_window_still_fullscreen_after_exitfullscreen_is_forced_out_and_says_so():
+    browser = Browser(exit_leaves=False)
+    steps = browser.fullscreen("max")
+    assert steps["fullscreen_max_out"]["forced_exit"] is True and steps["fullscreen_max_out"]["settled"] is True
+    assert browser.log.count("window_fullscreen_off") == 2, "once to force the element out, once at the end of F11"
+
+
+def test_f11_style_fullscreen_is_the_chrome_s_window_fullscreen_true_then_false_each_recorded():
+    browser = Browser()
+    entered, left = browser.window_fullscreen()
+    assert [item for item in browser.log if item != ("foreground", 1)] == [
+        "window_fullscreen_on", ("record", False, True, False), "window_fullscreen_off", ("record", False, False, False)]
+    assert entered["fullscreen"]["window_fullScreen"] is True and left["fullscreen"]["window_fullScreen"] is False
+
+
+def test_a_window_that_never_turns_fullscreen_on_is_not_possible_in_both_f11_steps():
+    steps = Browser(window_fullscreen=False).fullscreen("max")
+    assert steps["f11_max_in"] == {"not_possible": "window.fullScreen stayed false after setting it"} == steps["f11_max_out"]
+    assert "chrome" in steps["fullscreen_max_in"]
+
+
+def test_the_fullscreen_steps_of_a_window_juggler_s_size_did_not_fit_are_skipped_and_no_script_runs():
+    browser = Browser()
+    steps = browser.fullscreen("res", fits=False)
+    assert steps == {name: {"skipped": "does_not_fit"} for name in ("fullscreen_res_in", "fullscreen_res_out", "f11_res_in", "f11_res_out")}
+    assert browser.log == [] and browser.clicks == []
+
+
+# ---------------------------------------------------------------------------- popups
+
+
+@pytest.mark.parametrize("features", ["width=500,height=400", "left=100,top=80,width=500,height=400"])
+def test_a_popup_is_opened_by_a_real_click_with_the_features_asked_recorded_with_the_mouse_over_it_and_closed(features):
+    browser = Browser()
+    step = browser.popup(features)
+    assert browser.clicks == [button_centre("open")] and browser.popup_args == [URLS["popup"], features]
+    assert step["features"] == features and step["windows_opened"] == 1 and step["closed"] is True and step["settled"] is True
+    assert step["native"] == POPUP_NATIVE and step["content"]["innerWidth"] == 500 and step["content"]["probe"]["screen"]["pixelDepth"] == 24
+    assert [m["asked"] for m in step["input"]] == [list(p) for p in surfaces.client_points(POPUP_NATIVE)]
+    assert browser.moves == [surfaces.client_points(POPUP_NATIVE)] and browser.popup_open is False
+    assert ("foreground", 2) in browser.log and browser.log.index("popup_reset") < browser.log.index("popup_close")
+
+
+def test_the_two_popups_of_a_launch_are_the_two_features_in_their_own_steps():
+    browser = Browser()
+    steps = {}
+    for name, features in surfaces.POPUP_FEATURES:
+        steps.update(browser.surface((name,), lambda features=features: (browser.popup(features),)))
+    assert list(steps) == ["popup", "popup_pos"]
+    assert steps["popup"]["features"] == "width=500,height=400" and "left=100,top=80" in steps["popup_pos"]["features"]
+
+
+def test_a_click_that_opens_no_popup_is_not_possible_with_that_reason_and_the_window_is_put_back():
+    browser = Browser(opens=False)
+    steps = browser.surface(("popup",), lambda: (browser.popup("width=500,height=400"),))
+    assert steps == {"popup": {"not_possible": "no popup window opened after a real click on the button"}}
+    assert "popup_close" in browser.log
+
+
+def test_a_popup_without_its_page_is_not_possible():
+    browser = Browser()
+    browser.urls.pop("popup")
+    assert browser.surface(("popup",), lambda: (browser.popup("width=500,height=400"),)) == {"popup": {"not_possible": "no popup page was served"}}
+
+
+# ---------------------------------------------------------------------------- iframes
+
+
+def test_the_iframes_get_real_moves_inside_their_rectangles_and_each_answers_with_its_own_record_and_they_are_removed():
+    browser = Browser()
+    step = browser.iframes()
+    assert browser.frames_args == [URLS["same"], URLS["cross"]] and browser.frames_on is False
+    assert list(step["frames"]) == ["same", "cross"] and step["settled"] is True
+    for name in ("same", "cross"):
+        frame = step["frames"][name]
+        want = surfaces.region_points(CHROME, NATIVE, FRAME_RECTS[name], surfaces.FRAME_FRACTIONS)
+        assert [m["asked"] for m in frame["input"]] == [list(p) for p in want]
+        assert frame["rect"] == FRAME_RECTS[name] and frame["state"]["events"] == {"count": 3, "dx": 7, "dy": 91}
+        assert frame["kind"] == surfaces.FRAME_KINDS[name] and frame["state"]["probe"]["screen"]["pixelDepth"] == 24
+        for x, y in want:  # inside the frame, on the screen
+            rect = FRAME_RECTS[name]
+            assert rect["x"] < x < rect["x"] + rect["width"] and 85 + rect["y"] < y < 85 + rect["y"] + rect["height"]
+    ask = [item for item in browser.log if isinstance(item, tuple) and item[0] == "ask_frames"]
+    assert ask == [("ask_frames", "reset"), ("ask_frames", "record")] and browser.log[-1] == "remove_frames"
+    assert "chrome" in step and "native" in step and step["content"]["events"]["count"] == 0
+    assert "url" not in json.dumps(step), "no port in the step: launch a and launch b must be equal"
+
+
+def test_an_iframe_that_did_not_load_is_not_possible_and_the_frames_are_still_removed():
+    browser = Browser(frames_load=False)
+    steps = browser.surface(("iframes_max",), lambda: (browser.iframes(),))
+    assert steps == {"iframes_max": {"not_possible": "an iframe did not load (hello from ['same'])"}}
+    assert browser.frames_on is False and browser.moves == []
+
+
+def test_the_frame_rectangles_of_the_page_script_hold_in_the_narrowest_window_juggler_asks_for():
+    assert "left: 10, top: 60" in PAGE_JS and "left: 10, top: 200" in PAGE_JS and "width:300px;height:120px" in PAGE_JS
+    assert 10 + 300 <= 390 and 200 + 120 <= 340, "390 CSS wide, 340 high at scale 2 (plan.juggler2_height)"
+
+
+# ---------------------------------------------------------------------------- what a refused step does
+
+
+def test_a_command_marionette_refuses_makes_the_step_not_possible_and_a_closed_connection_ends_the_launch():
+    refused = Browser(fail_on=(surfaces.FULLSCREEN_ERROR, marionette.MarionetteError("WebDriver:ExecuteScript: boom")), enters=False)
+    steps = refused.fullscreen("max")
+    assert steps["fullscreen_max_in"] == {"not_possible": "marionette: WebDriver:ExecuteScript: boom"} == steps["fullscreen_max_out"]
+    closed = Browser(fail_on=(surfaces.ELEMENT_RECT, marionette.ConnectionClosed("the connection closed")))
+    with pytest.raises(marionette.ConnectionClosed):
+        closed.fullscreen("max")
+    assert issubclass(marionette.ConnectionClosed, marionette.MarionetteError)
+
+
+def test_the_marionette_client_raises_the_closed_connection_error_when_the_browser_hangs_up():
+    class Hung:
+        def settimeout(self, seconds):
+            pass
+
+        def sendall(self, data):
+            pass
+
+        def recv(self, size):
+            return b""
+
+    client = marionette.Client(1)
+    client.sock = Hung()
+    with pytest.raises(marionette.ConnectionClosed):
+        client.call("WebDriver:GetTitle")
+
+
+# ---------------------------------------------------------------------------- the repeated Juggler call and the order of a launch
+
+
+class Recording(measure.Session):
+    def __init__(self):
+        super().__init__(None, Path("."), None)
+        self.calls = []
+
+    def chrome(self, script, args=None):
+        self.calls.append((script, args))
+        return True
+
+    def content(self, script, args=None):
+        return [1, 1]
+
+    def record(self):
+        self.calls.append(("record", None))
+        return {"chrome": {}, "native": {}, "content": {}}
+
+
+def test_the_repeated_juggler_call_is_the_same_sequence_at_exactly_the_second_calls_size_without_touching_the_styles():
+    session = Recording()
+    step, size = session.juggler_repeat([0, 0, 1920, 1032], 1.0)
+    assert session.calls == [(measure.JUGGLER_SEQUENCE, [414, 896]), ("record", None)] and step["settled"] is True
+    assert size == {"width": 414, "height": 896, "same_as": "juggler2"}
+    assert measure.RDM_OFF not in [c[0] for c in session.calls] and measure.JUGGLER_CLEAR not in [c[0] for c in session.calls]
+    for scale, height in ((1.25, 650), (1.5, 510), (2.0, 340)):
+        again = Recording()
+        again.juggler_repeat([0, 0, 1920, 1032], scale)
+        assert again.calls[0][1] == [414, height], scale
+    skipped = Recording()
+    assert skipped.juggler_repeat([0, 0, 800, 300], 1.0) == ({"skipped": "does_not_fit"}, {"width": 414, "height": None, "same_as": "juggler2"})
+    assert skipped.calls == []
+
+
+def test_a_launch_takes_the_round_5_steps_in_the_order_of_the_plan_around_the_juggler_calls():
+    source = Path(measure.__file__).read_text(encoding="utf-8")
+    order = [source.index(text) for text in (
+        'steps["maximized"] = session.maximized()', 'session.fullscreen("max")', 'steps.update(session.surface(("iframes_max",)',
+        "for name, features in surfaces.POPUP_FEATURES:", "session.juggler(work, scale)", "session.juggler_again(work, scale)",
+        "session.juggler_repeat(work, scale)", 'session.fullscreen("res", fits)', '("iframes_juggler",)',
+        "session.juggler_back(steps[\"maximized\"])", "session.clear_juggler()", "session.restored(work, scale)")]
+    assert order == sorted(order) and len(set(order)) == len(order)
+    for name in ("fullscreen_max_in", "iframes_max", "juggler2_repeat", "fullscreen_res_in", "iframes_juggler"):
+        assert f'if "{name}" in steps_wanted:' in source, name
+    assert 'if name in steps_wanted:' in source, "the two popups"
+
+
+def test_the_pages_the_launch_serves_are_named_for_the_steps_that_load_them():
+    assert set(measure.SERVED) == {"/", "/page.js", "/surface.html"}
+    for name, _ in measure.SERVED.values():
+        assert (HERE / name).is_file(), name
+    assert surfaces.FULLSCREEN_TIMEOUT == 15.0 and surfaces.POPUP_TIMEOUT == 20.0 and surfaces.FRAME_TIMEOUT == 20.0
