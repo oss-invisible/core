@@ -15,6 +15,10 @@ class MarionetteError(Exception):
     """The browser answered a command with an error."""
 
 
+class ConnectionClosed(MarionetteError):
+    """The browser closed the connection: nothing more can be asked of it (unlike an error reply to one command)."""
+
+
 def encode(message: Any) -> bytes:
     payload = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return str(len(payload)).encode("ascii") + b":" + payload
@@ -80,7 +84,7 @@ class Client:
         while not self.pending:
             data = self.sock.recv(65536)
             if not data:
-                raise MarionetteError("the connection closed")
+                raise ConnectionClosed("the connection closed")
             self.pending.extend(self.decoder.feed(data))
         return self.pending.pop(0)
 

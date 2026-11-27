@@ -255,19 +255,19 @@ def test_the_grid_resize_asks_for_the_chrome_inner_size_by_a_difference_and_the_
 
 def test_the_launch_takes_the_maximized_step_always_and_the_others_only_when_asked():
     source = (Path(measure.__file__)).read_text(encoding="utf-8")
-    for name in ("restored", "juggler", "juggler2", "juggler_back", "grid", "minimum", "grid_check"):
+    for name in ("restored", "juggler", "juggler2", "juggler2_repeat", "juggler_back", "grid", "minimum", "grid_check"):
         assert f'if "{name}" in steps_wanted:' in source, name
     assert 'steps["maximized"] = session.maximized()' in source
 
 
-PAGE_HTML = (Path(measure.__file__).parent / "page.html").read_text(encoding="utf-8")
+PAGE_HTML = (Path(measure.__file__).parent / "page.js").read_text(encoding="utf-8")  # the script every page runs
 
 
 def test_the_page_reads_in_itself_what_can_differ_under_rdm():
     probe = PAGE_HTML.split("window.__probe = ")[1]
     for needle in (
             # screen
-            "s.width", "s.height", "s.availWidth", "s.availHeight", "s.availLeft", "s.availTop", "s.colorDepth",
+            "s.width", "s.height", "s.availWidth", "s.availHeight", "s.availLeft", "s.availTop", "s.colorDepth", "s.pixelDepth",
             "s.orientation.type", "s.orientation.angle", "window.devicePixelRatio",
             # media queries: the integers by binary search over min- queries, the booleans as .matches
             "min-width: ${n}px", "min-height: ${n}px", "min-device-width: ${n}px", "min-device-height: ${n}px",
@@ -281,7 +281,8 @@ def test_the_page_reads_in_itself_what_can_differ_under_rdm():
             "vv.width", "vv.height", "vv.scale", "vv.offsetLeft", "vv.offsetTop", "vv.pageLeft", "vv.pageTop",
             "document.documentElement.clientWidth", "document.documentElement.clientHeight"):
         assert needle in probe, needle
-    assert "JSON.stringify" in probe and PAGE_HTML.count("<script>") == 1 == PAGE_HTML.count("</script>")
+    main_page = (Path(measure.__file__).parent / "page.html").read_text(encoding="utf-8")
+    assert "JSON.stringify" in probe and main_page.count('<script src="/page.js"></script>') == 1 and "<script>" not in main_page
 
 
 def test_the_content_record_of_every_step_calls_the_probe_in_the_page_itself_and_keeps_what_it_read_before():

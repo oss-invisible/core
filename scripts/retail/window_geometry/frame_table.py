@@ -57,3 +57,15 @@ def load(path: Path = CONSTANTS) -> Dict[float, Any]:
 def declared_maximized_ui(frame: Any, avail_height_css: float, path: Path = CONSTANTS) -> int:
     """The chrome height (device px) a maximized window declares at this availHeight (CSS): the core's density rule."""
     return core_constants(path).declared_maximized_ui(frame, avail_height_css)
+
+
+def declared_chrome_height(scale: float, density: str, path: Path = CONSTANTS) -> int:
+    """The chrome height (device px, from the window client top to the content top) the core declares for a density at a scale:
+    chrome_height_device, the function the table's ui_normal and ui_compact are made with."""
+    return core_constants(path).chrome_height_device(scale, density)
+
+
+def density_at(avail_height_css: float, path: Path = CONSTANTS) -> str:
+    """The UI density the core's rule gives a maximized window at this screen.availHeight (CSS px): "normal" or "compact"."""
+    core = core_constants(path)
+    return core.ui_density(core.density_reference_height(avail_height_css, avail_height_css, True))

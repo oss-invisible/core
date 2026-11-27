@@ -1,65 +1,12 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>window geometry</title>
-<style>html,body{margin:0;width:100%;height:100%}</style>
-<script>
-// The last trusted mousemove's screen minus client position, and how many moves were seen.
-window.__m = {count: 0, dx: null, dy: null};
-window.__reset = () => { window.__m = {count: 0, dx: null, dy: null}; };
-addEventListener("mousemove", (e) => {
-  if (!e.isTrusted) return;
-  window.__m.count += 1;
-  window.__m.dx = e.screenX - e.clientX;
-  window.__m.dy = e.screenY - e.clientY;
-});
-
-// Everything a page can read that may differ under responsive-design mode (inRDMPane), read here in the page itself and
-// returned as a JSON string (the content script parses it): the screen, the pixel ratio, the media queries (the integers
-// found by binary search over min- queries, the booleans as .matches), touch, the visual viewport, the root's client size.
-window.__probe = () => {
-  const matches = (query) => matchMedia(query).matches;
-  // The largest integer n in [0, hi] for which make(n) matches; every min- query is true up to the value and false after.
-  const largest = (make, hi) => {
-    let lo = 0;
-    while (lo < hi) {
-      const mid = Math.ceil((lo + hi) / 2);
-      if (matches(make(mid))) lo = mid; else hi = mid - 1;
-    }
-    return lo;
-  };
-  const found = {
-    width: largest((n) => `(min-width: ${n}px)`, 65536),
-    height: largest((n) => `(min-height: ${n}px)`, 65536),
-    "device-width": largest((n) => `(min-device-width: ${n}px)`, 65536),
-    "device-height": largest((n) => `(min-device-height: ${n}px)`, 65536),
-    // the ratio times 10000, rounded down
-    "aspect-ratio_x10000": largest((n) => `(min-aspect-ratio: ${n}/10000)`, 1000000),
-    "device-aspect-ratio_x10000": largest((n) => `(min-device-aspect-ratio: ${n}/10000)`, 1000000),
-    // the resolution in dppx times 100, rounded down (0.01 dppx)
-    "resolution_x100": largest((n) => `(min-resolution: ${n / 100}dppx)`, 2000),
-  };
-  const queries = {};
-  for (const q of [
-    `(width: ${found.width}px)`, `(height: ${found.height}px)`,
-    `(device-width: ${found["device-width"]}px)`, `(device-height: ${found["device-height"]}px)`,
-    "(pointer: fine)", "(pointer: coarse)", "(pointer: none)",
-    "(any-pointer: fine)", "(any-pointer: coarse)", "(any-pointer: none)",
-    "(hover: hover)", "(hover: none)", "(any-hover: hover)", "(any-hover: none)",
-    "(orientation: portrait)", "(orientation: landscape)",
-  ]) queries[q] = matches(q);
-  const s = screen;
-  const vv = window.visualViewport;
-  return JSON.stringify({
-    screen: {width: s.width, height: s.height, availWidth: s.availWidth, availHeight: s.availHeight,
-             availLeft: s.availLeft, availTop: s.availTop, colorDepth: s.colorDepth,
-             orientation: s.orientation ? {type: s.orientation.type, angle: s.orientation.angle} : null},
-    devicePixelRatio: window.devicePixelRatio,
-    found: found,
-    matches: queries,
-    touch: {maxTouchPoints: navigator.maxTouchPoints, ontouchstart: "ontouchstart" in window, touchEvent: typeof TouchEvent},
-    visualViewport: vv ? {width: vv.width, height: vv.height, scale: vv.scale, offsetLeft: vv.offsetLeft, offsetTop: vv.offsetTop,
-                          pageLeft: vv.pageLeft, pageTop: vv.pageTop} : null,
-    client: {width: document.documentElement.clientWidth, height: document.documentElement.clientHeight},
-  });
-};
-</script>
+<style>
+html,body{margin:0;width:100%;height:100%}
+button{position:fixed;top:8px;width:120px;height:40px;margin:0}
+#fs{left:8px}
+#open{left:140px}
+</style>
+<script src="/page.js"></script>
+<button id="fs" type="button">fullscreen</button>
+<button id="open" type="button">popup</button>
