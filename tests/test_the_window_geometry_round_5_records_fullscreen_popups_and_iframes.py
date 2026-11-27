@@ -31,6 +31,7 @@ pytestmark = pytest.mark.unit
 
 measure = load_window_geometry("measure")
 surfaces = load_window_geometry("surfaces")
+plan = load_window_geometry("plan")
 marionette = load_window_geometry("marionette")
 HERE = Path(measure.__file__).parent
 URLS = {"popup": "http://127.0.0.1:5001/surface.html?name=popup", "same": "http://127.0.0.1:5001/surface.html?name=same",
@@ -469,18 +470,33 @@ class Recording(measure.Session):
         return {"chrome": {}, "native": {}, "content": {}}
 
 
-def test_the_repeated_juggler_call_is_the_same_sequence_at_exactly_the_second_calls_size_without_touching_the_styles():
+def test_the_repeat_of_the_first_juggler_call_is_the_same_sequence_at_exactly_its_size_with_inrdmpane_back_to_false_and_the_styles_kept():
     session = Recording()
     step, size = session.juggler_repeat([0, 0, 1920, 1032], 1.0)
+    assert session.calls == [(measure.RDM_OFF, None), (measure.JUGGLER_SEQUENCE, [390, 844]), ("record", None)]
+    assert step["settled"] is True and size == {"width": 390, "height": 844, "same_as": "juggler"}
+    assert measure.JUGGLER_CLEAR not in [c[0] for c in session.calls]
+    for scale, height in ((1.25, 700), (1.5, 560), (2.0, 390)):
+        again = Recording()
+        again.juggler_repeat([0, 0, 1920, 1032], scale)
+        assert again.calls[1][1] == [390, height] and again.calls[1][1] == [390, plan.juggler_height([0, 0, 1920, 1032], scale)], scale
+    skipped = Recording()
+    assert skipped.juggler_repeat([0, 0, 800, 150], 1.0) == ({"skipped": "does_not_fit"}, {"width": 390, "height": None, "same_as": "juggler"})
+    assert skipped.calls == [(measure.RDM_OFF, None)]
+
+
+def test_the_repeated_juggler_call_is_the_same_sequence_at_exactly_the_second_calls_size_without_touching_the_styles():
+    session = Recording()
+    step, size = session.juggler2_repeat([0, 0, 1920, 1032], 1.0)
     assert session.calls == [(measure.JUGGLER_SEQUENCE, [414, 896]), ("record", None)] and step["settled"] is True
     assert size == {"width": 414, "height": 896, "same_as": "juggler2"}
     assert measure.RDM_OFF not in [c[0] for c in session.calls] and measure.JUGGLER_CLEAR not in [c[0] for c in session.calls]
     for scale, height in ((1.25, 650), (1.5, 510), (2.0, 340)):
         again = Recording()
-        again.juggler_repeat([0, 0, 1920, 1032], scale)
+        again.juggler2_repeat([0, 0, 1920, 1032], scale)
         assert again.calls[0][1] == [414, height], scale
     skipped = Recording()
-    assert skipped.juggler_repeat([0, 0, 800, 300], 1.0) == ({"skipped": "does_not_fit"}, {"width": 414, "height": None, "same_as": "juggler2"})
+    assert skipped.juggler2_repeat([0, 0, 800, 300], 1.0) == ({"skipped": "does_not_fit"}, {"width": 414, "height": None, "same_as": "juggler2"})
     assert skipped.calls == []
 
 
@@ -488,11 +504,11 @@ def test_a_launch_takes_the_round_5_steps_in_the_order_of_the_plan_around_the_ju
     source = Path(measure.__file__).read_text(encoding="utf-8")
     order = [source.index(text) for text in (
         'steps["maximized"] = session.maximized()', 'session.fullscreen("max")', 'steps.update(session.surface(("iframes_max",)',
-        "for name, features in surfaces.POPUP_FEATURES:", "session.juggler(work, scale)", "session.juggler_again(work, scale)",
-        "session.juggler_repeat(work, scale)", 'session.fullscreen("res", fits)', '("iframes_juggler",)',
+        "for name, features in surfaces.POPUP_FEATURES:", "session.juggler(work, scale)",
+        "session.juggler_repeat(work, scale)", "session.juggler_again(work, scale)", "session.juggler2_repeat(work, scale)", 'session.fullscreen("res", fits)', '("iframes_juggler",)',
         "session.juggler_back(steps[\"maximized\"])", "session.clear_juggler()", "session.restored(work, scale)")]
     assert order == sorted(order) and len(set(order)) == len(order)
-    for name in ("fullscreen_max_in", "iframes_max", "juggler2_repeat", "fullscreen_res_in", "iframes_juggler"):
+    for name in ("fullscreen_max_in", "iframes_max", "juggler_repeat", "juggler2_repeat", "fullscreen_res_in", "iframes_juggler"):
         assert f'if "{name}" in steps_wanted:' in source, name
     assert 'if name in steps_wanted:' in source, "the two popups"
 

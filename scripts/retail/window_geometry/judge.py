@@ -5,7 +5,7 @@
 Red when:
   * a scale of the request has no run, a run has an error or leaves a process of the install folder alive, a run lacks
     a step of its launch (a, b, p, q: maximized, restored, juggler, juggler_rdm, juggler2, juggler_back; m: maximized; and,
-    in the two launches that are compared, the thirteen steps of plan.ROUND5_STEPS: fullscreen, F11-style fullscreen,
+    in the two launches that are compared, the fourteen steps of plan.ROUND5_STEPS: fullscreen, F11-style fullscreen,
     iframes, popups, the repeated Juggler call). A step of round 5 that is `{"not_possible": <reason>}` is complete when it
     has a non-empty reason, which is printed; `{"skipped": ...}` is complete as before;
   * launch a differs from launch b (launch p from q) at a resolution that has both, on any number of those steps and of
@@ -355,10 +355,16 @@ def fullscreen_line(step_name: str, step: Dict[str, Any]) -> List[str]:
             f"click {step.get('click')}"]
 
 
-def repeat_line(steps: Dict[str, Any], dpr: float) -> List[str]:
-    """juggler2_repeat against juggler2: the outer sizes and the window rects. The engine's model says the outer height
-    shrinks by one border at each call at the same size; this is the measure, not a check."""
-    first, again = steps.get("juggler2"), steps.get("juggler2_repeat")
+def repeat_lines(steps: Dict[str, Any], dpr: float) -> List[str]:
+    """Each repeated Juggler call against the call it repeats (juggler_repeat against juggler, juggler2_repeat against juggler2):
+    the outer sizes and the window rects. The engine's model says the outer height shrinks by one border at each call at the
+    same size; this is the measure, not a check."""
+    return [line for first, again in (("juggler", "juggler_repeat"), ("juggler2", "juggler2_repeat"))
+            for line in repeat_line(steps, dpr, first, again)]
+
+
+def repeat_line(steps: Dict[str, Any], dpr: float, first_name: str, again_name: str) -> List[str]:
+    first, again = steps.get(first_name), steps.get(again_name)
     if not first or not again or "native" not in first or "native" not in again or "chrome" not in first or "chrome" not in again:
         return []
     a, b = derived(first, dpr), derived(again, dpr)
@@ -366,7 +372,7 @@ def repeat_line(steps: Dict[str, Any], dpr: float) -> List[str]:
     size = [(b["window_rect"][2] - b["window_rect"][0]) - (a["window_rect"][2] - a["window_rect"][0]),
             (b["window_rect"][3] - b["window_rect"][1]) - (a["window_rect"][3] - a["window_rect"][1])]
     moved = [b["position_dev"][0] - a["position_dev"][0], b["position_dev"][1] - a["position_dev"][1]]
-    return [f"    juggler2_repeat minus juggler2: page outer css {outer} (outer {b['page_outer']} against {a['page_outer']}), "
+    return [f"    {again_name} minus {first_name}: page outer css {outer} (outer {b['page_outer']} against {a['page_outer']}), "
             f"window rect size dev {size}, position dev {moved}"]
 
 
@@ -424,10 +430,10 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
             lines.append(f"    restored size used {run.get('restored_size_used')}")
         if "juggler" in run["steps"]:
             lines.append(f"    juggler size used {run.get('juggler_size_used')}")
-        for name in ("juggler2", "juggler2_repeat", "juggler_back"):
+        for name in ("juggler_repeat", "juggler2", "juggler2_repeat", "juggler_back"):
             if name in run["steps"]:
                 lines.append(f"    {name} size used {run.get(name + '_size_used')}")
-        lines.extend(repeat_line(run["steps"], dpr))
+        lines.extend(repeat_lines(run["steps"], dpr))
         lines.extend(grid_lines(run))
     display_groups: Dict[Tuple[float, tuple], List[Dict[str, Any]]] = {}
     derived_groups: Dict[Tuple[float, tuple], List[Dict[str, Any]]] = {}

@@ -116,6 +116,6 @@ def test_the_every_resolution_launches_stop_with_the_minutes_the_setup_the_last_
 
 def test_the_header_says_what_round_5_added_and_why_the_job_has_sixty_minutes():
     header = TEXT.split("\non:")[0]
-    for needle in ("Round 5", "thirteen steps", "real click", "F11-style fullscreen", "cross-site iframe", "juggler2",
+    for needle in ("Round 5", "fourteen steps", "real click", "F11-style fullscreen", "cross-site iframe", "juggler2",
                    "60 minutes (it had 45)", "TIME_BUDGET_SECONDS is 49 minutes"):
         assert needle in header, needle

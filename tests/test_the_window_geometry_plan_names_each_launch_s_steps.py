@@ -8,7 +8,7 @@ measurement are replaced by fakes that record what was asked). Held here:
     (the step is skipped and says so) when even 200 does not;
   * the second Juggler call (juggler2) is 414 wide at the largest height <= 896 that fits, 50 lower when that is the first
     call's height, and is skipped when the first call does not fit;
-  * launch a and launch b take the six core steps and the thirteen steps of round 5 (plan.ROUND5_STEPS), at the first reached
+  * launch a and launch b take the six core steps and the fourteen steps of round 5 (plan.ROUND5_STEPS), at the first reached
     resolution; launch a also the grid and the minimum, launch b the grid check, only at the scales of the grid; every other
     launch takes the six core steps; p and q take the round 5 steps only when no display launch could be made (they are then
     the pair that is compared);

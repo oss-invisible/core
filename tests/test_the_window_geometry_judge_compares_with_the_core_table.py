@@ -8,7 +8,7 @@ what the core declares (frame_table.py reads the checked-out constants.py with t
     the bar of a maximized window is judged at the measured availHeight (1.5 at 672 CSS: 109 green, 127 red);
   * launch a different from launch b on one number of any of the six steps (maximized, restored, juggler, juggler_rdm, juggler2, juggler_back): red,
     with the number printed; the grid, the minimum and the grid check are not in that comparison;
-  * round 5: the two launches that are compared (a and b; p and q) also need the thirteen steps of plan.ROUND5_STEPS (fullscreen,
+  * round 5: the two launches that are compared (a and b; p and q) also need the fourteen steps of plan.ROUND5_STEPS (fullscreen,
     F11-style fullscreen, iframes, popups, the repeated Juggler call), compare equal on each, and print each; a step recorded
     as not possible is complete only with a reason, which is printed; a missing step is red;
   * at the scales of the grid, launch a must have its grid and minimum, launch b its grid check, and every point of the check
@@ -81,7 +81,7 @@ def frame_state(dpr):
 
 
 def round5_steps(step, rect, ui, dpr):
-    """The thirteen steps of round 5 of a launch whose window is `rect` with `ui` device pixels of chrome."""
+    """The fourteen steps of round 5 of a launch whose window is `rect` with `ui` device pixels of chrome."""
     steps = {}
     for name in plan.ROUND5_STEPS:
         if name.startswith("popup"):
@@ -615,11 +615,11 @@ def test_the_host_gate_step_is_not_part_of_the_a_b_comparison():
 # ---------------------------------------------------------------------------- round 5: fullscreen, popups, iframes, the repeated call
 
 
-def test_the_thirteen_steps_of_round_5_are_named_in_the_order_they_run_and_compared_with_the_six_core_steps():
+def test_the_fourteen_steps_of_round_5_are_named_in_the_order_they_run_and_compared_with_the_six_core_steps():
     assert plan.ROUND5_STEPS == ("fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out", "iframes_max", "popup",
-                                 "popup_pos", "juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out", "f11_res_in",
-                                 "f11_res_out", "iframes_juggler")
-    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS and len(set(plan.COMPARED_STEPS)) == 19
+                                 "popup_pos", "juggler_repeat", "juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out",
+                                 "f11_res_in", "f11_res_out", "iframes_juggler")
+    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS and len(set(plan.COMPARED_STEPS)) == 20
     a, b = two_launches(1.0)
     assert set(a["steps"]) >= set(plan.COMPARED_STEPS)
 
@@ -681,6 +681,7 @@ def bump(run, step, path):
     ("iframes_juggler", "frames.same.input.0.cursor.0", "iframes_juggler.frames.same.input[0].cursor[0]"),
     ("fullscreen_max_in", "chrome.windowState", "fullscreen_max_in.chrome.windowState"),
     ("f11_res_out", "fullscreen.window_fullScreen", "f11_res_out.fullscreen.window_fullScreen"),
+    ("juggler_repeat", "content.outerHeight", "juggler_repeat.content.outerHeight"),
     ("juggler2_repeat", "content.outerHeight", "juggler2_repeat.content.outerHeight"),
     ("fullscreen_res_in", "native.window_rect.1", "fullscreen_res_in.native.window_rect[1]")])
 def test_launch_a_and_launch_b_differing_on_a_round_5_step_is_red_and_the_number_is_printed(step, path, printed):
@@ -720,7 +721,7 @@ def test_a_step_not_possible_in_one_launch_only_is_red_and_one_without_a_reason_
 def test_a_round_5_step_skipped_in_both_launches_is_green_and_in_one_only_is_red():
     a, b = two_launches(1.5)
     for run in (a, b):
-        for name in ("juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out", "f11_res_in", "f11_res_out", "iframes_juggler"):
+        for name in ("juggler_repeat", "juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out", "f11_res_in", "f11_res_out", "iframes_juggler"):
             run["steps"][name] = {"skipped": "does_not_fit"}
     result = evaluate([a, b])
     assert not result["red"], result["problems"]
@@ -754,6 +755,27 @@ def test_every_round_5_step_is_printed_with_what_it_recorded():
             assert any(other.startswith(f"    {step} frame {frame} probe:") for other in lines)
     assert "fullscreen_max_in fullscreen: {'window_fullScreen': True" in text and "'document_fullscreen': True" in text
     assert "f11_res_out fullscreen: {'window_fullScreen': False" in text
+
+
+def test_the_repeat_of_the_first_juggler_call_is_printed_against_the_first_call_and_is_not_judged():
+    a, b = two_launches(1.0)
+    for run in (a, b):
+        run["steps"]["juggler_repeat"]["content"]["outerHeight"] -= 6
+        rect = run["steps"]["juggler_repeat"]["native"]["window_rect"]
+        run["steps"]["juggler_repeat"]["native"]["window_rect"] = rect[:3] + [rect[3] - 6]
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    line = next(line for line in result["lines"] if line.startswith("    juggler_repeat minus juggler:"))
+    assert "page outer css [0, -6]" in line and "window rect size dev [0, -6]" in line and "position dev [0, 0]" in line
+    assert not any(other.startswith("    juggler2_repeat minus juggler2:") and "[0, -6]" in other for other in result["lines"])
+    a["juggler_repeat_size_used"] = {"width": 390, "height": 844, "same_as": "juggler"}
+    assert any("juggler_repeat size used {'width': 390, 'height': 844, 'same_as': 'juggler'}" in other
+               for other in evaluate([a, b])["lines"])
+    skipped = [make_run(1.0, "a"), make_run(1.0, "b")]
+    for run in skipped:
+        run["steps"]["juggler"] = {"skipped": "does_not_fit"}
+        run["steps"]["juggler_repeat"] = {"skipped": "does_not_fit"}
+    assert not any(other.startswith("    juggler_repeat minus") for other in evaluate(skipped)["lines"])
 
 
 def test_the_repeated_juggler_call_is_printed_against_the_second_call_and_is_not_judged():

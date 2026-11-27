@@ -26,7 +26,8 @@ requestFullscreen; Marionette cannot give the user activation) and left by docum
 `fullscreen_max_out`), F11-style fullscreen by window.fullScreen in the chrome (`f11_max_in`, `f11_max_out`), the main page with a
 same-origin and a cross-site iframe, each recording its own content record after real mouse moves over it (`iframes_max`), and two
 popups opened by a real click on #open, the second with left and top (`popup`, `popup_pos`; the popup page records its content
-record and Windows' rects of its window are kept; it is closed); then, after `juggler2`, `juggler2_repeat` (Juggler's sequence
+record and Windows' rects of its window are kept; it is closed); then, right after `juggler` and `juggler_rdm` (inRDMPane back to
+false, styles kept), `juggler_repeat` (Juggler's sequence again at exactly juggler's size, the repeat of the first call); then, after `juggler2`, `juggler2_repeat` (Juggler's sequence
 again at exactly juggler2's size), the same four fullscreen steps (`fullscreen_res_*`, `f11_res_*`) and the iframes
 (`iframes_juggler`) on the window Juggler left. A step this browser did not allow is `{"not_possible": reason}`.
 Writes OUT/raw.json. The result is valid only when no process of the install folder is left.
@@ -464,6 +465,17 @@ class Session:
         return self.juggler_call(plan.JUGGLER2_WIDTH, height), size
 
     def juggler_repeat(self, work_rect: Sequence[int], scale: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """(step juggler_repeat, size used): Juggler's sequence once more, right after `juggler` and `juggler_rdm` (inRDMPane put
+        back to false, the styles kept, as `juggler2` does) and at exactly the size of `juggler`: the repeat of the FIRST call.
+        Measured, not judged (the judge prints it against `juggler`)."""
+        height = plan.juggler_height(work_rect, scale)
+        size = {"width": plan.JUGGLER_WIDTH, "height": height, "same_as": "juggler"}
+        self.chrome(RDM_OFF)
+        if height is None:
+            return {"skipped": "does_not_fit"}, size
+        return self.juggler_call(plan.JUGGLER_WIDTH, height), size
+
+    def juggler2_repeat(self, work_rect: Sequence[int], scale: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """(step juggler2_repeat, size used): Juggler's sequence once more, right after `juggler2` and at exactly its size, on
         the window and the styles `juggler2` left. The engine's model says the outer height then shrinks by one border: measured,
         not assumed (the judge prints the outer and window sizes of both steps)."""
@@ -780,10 +792,12 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
                     steps.update(session.surface((name,), lambda features=features: (session.popup(features),)))
             if "juggler" in steps_wanted:
                 steps["juggler"], steps["juggler_rdm"], raw["juggler_size_used"] = session.juggler(work, scale)
+                if "juggler_repeat" in steps_wanted:
+                    steps["juggler_repeat"], raw["juggler_repeat_size_used"] = session.juggler_repeat(work, scale)
                 if "juggler2" in steps_wanted:
                     steps["juggler2"], raw["juggler2_size_used"] = session.juggler_again(work, scale)
                 if "juggler2_repeat" in steps_wanted:
-                    steps["juggler2_repeat"], raw["juggler2_repeat_size_used"] = session.juggler_repeat(work, scale)
+                    steps["juggler2_repeat"], raw["juggler2_repeat_size_used"] = session.juggler2_repeat(work, scale)
                 # From the window Juggler's calls left (its styles still on the browser): fullscreen and the iframes.
                 fits = (raw.get("juggler2_size_used") or {}).get("height") is not None
                 if "fullscreen_res_in" in steps_wanted:

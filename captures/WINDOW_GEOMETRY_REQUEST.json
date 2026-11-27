@@ -1,1 +1,1 @@
-{"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"], "resolutions": [[1920, 1080], [1600, 1200], [2560, 1440]], "round": 5}
+{"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"], "resolutions": [[1920, 1080], [1600, 1200], [2560, 1440]], "round": 6}
