@@ -1,0 +1,114 @@
+name: wrapper-unit-on-this-core
+
+# THE WRAPPER'S UNIT SUITE ON THIS CORE, as a reusable workflow: ci.yml calls it (where `wrapper-job-needed` says) and
+# wrapper-proof.yml calls it for publish.yml, on the tagged commit. One text, two callers.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A called workflow does not see the caller's `env`: the two values every job of ci.yml sets there are set again, the same.
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+  STEALTHFOX_SECURITY_STATE: ${{ github.workspace }}/ci/security-state
+
+jobs:
+  # THE WRAPPER'S WHOLE UNIT SUITE, ON THIS CORE (ci-12). `wrapper-on-this-core` runs only the wrapper's tests that stand on the Juggler
+  # client (a computed list of about 70 files), so core PR #328 changed src/, broke the wrapper main's unit tests and nothing was red. This job runs
+  # the required suite `wrapper.unit.all.<os>` of the wrapper exactly as the wrapper's own `unit` job does (tests.yml, the leg of Python 3.11): the
+  # selection printed by the wrapper's scripts/ci_verdict.py `args` (the files and the marker of the row of ci/required-suites.json), pytest with
+  # `-p no:rerunfailures` and a junit, then the verdict with the judge and the list of the wrapper's MAIN (`git show origin/main:` in the wrapper
+  # checkout; a wrapper branch that edits its own judge or its own list cannot pass itself): the exact count of the row, no skip, every file of
+  # the row passed. The wrapper is the same ref as above (`wrapper-ref`, main by default) with its dev extra; THIS checkout's core goes over the
+  # pin, as above. Under the same `if:` as `wrapper-on-this-core`, and `gate` treats it with the same rule: required where the decision says so,
+  # and a skip there is red. The suite launches no browser: no engine, no display.
+  wrapper-unit-on-this-core:
+    name: wrapper-unit-on-this-core (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: linux, runner: ubuntu-24.04}
+          - {os: windows, runner: windows-2022}
+    defaults:
+      run:
+        shell: bash
+    # TEMP and TMP on D:\a\_temp, as the jobs above and the wrapper's unit job.
+    env:
+      TEMP: ${{ startsWith(matrix.runner, 'windows') && 'D:\a\_temp' || '/tmp' }}
+      TMP: ${{ startsWith(matrix.runner, 'windows') && 'D:\a\_temp' || '/tmp' }}
+      INVISIBLE_CORE_PIN: allow
+      INVISIBLE_CORE_AUTOFIX: "off"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          fetch-depth: 0
+      # The version the wrapper judges its suite on (the leg of Python 3.11 of its unit job).
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5 (v5.6.0)
+        with:
+          python-version: "3.11"
+      # The same choice as `wrapper-on-this-core`: the body reaches the script through `env:` and a file, never through an interpolation.
+      - id: wrapper_ref
+        name: which branch of the wrapper this run tries
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # A merge group has no pull request body (the declaration was read on the pull
+          # request's own run): its wrapper is main, said by the script.
+          if [ "$EVENT" = "merge_group" ]; then : > "$RUNNER_TEMP/pr_body.txt"; else printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr_body.txt"; fi
+          python scripts/wrapper_on_this_core.py wrapper-ref --event "$EVENT" --body-file "$RUNNER_TEMP/pr_body.txt"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          repository: oss-invisible/playwright
+          ref: ${{ steps.wrapper_ref.outputs.ref }}
+          path: wrapper
+      # The wrapper's main, for the judge and the list the verdict compares with (the checkout is one commit deep).
+      - name: the wrapper's main, to judge with
+        working-directory: wrapper
+        run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
+      - name: the wrapper with its dev extra, then THIS core over its pin
+        run: |
+          python -m pip install --upgrade pip
+          # THIS core first (a wrapper branch pins the release this one is made for, which the index may not have), then the wrapper as its
+          # unit job installs it, then this core again over whatever the wrapper's pin brought.
+          python -m pip install .
+          (cd wrapper && python -m pip install -e ".[dev]")
+          python -m pip install --force-reinstall --no-deps .
+          python -c "import invisible_core; print('core under test:', invisible_core.__file__)"
+      - name: the GeoIP database (made by the wrapper, same bytes every run)
+        working-directory: wrapper
+        run: python scripts/ci_lab_geoip.py build
+      - name: the wrapper's unit suite (the selection of its gate), on this core
+        working-directory: wrapper
+        env:
+          SUITE_OS: ${{ matrix.os }}
+        run: |
+          unset PYTEST_ADDOPTS
+          python scripts/ci_verdict.py args --required ci/required-suites.json --suite "wrapper.unit.all.$SUITE_OS" --os "$SUITE_OS" --with-marker | tr -d '\r' > "$RUNNER_TEMP/unit_args.txt"
+          mapfile -t ARGS < "$RUNNER_TEMP/unit_args.txt"
+          python -m pytest "${ARGS[@]}" -o addopts='' -o junit_family=xunit2 -q --tb=short -p no:cacheprovider -p no:rerunfailures -rs --junitxml="$RUNNER_TEMP/unit-junit.xml"
+      - name: the leg ran with the pinned GeoIP database
+        if: always()
+        working-directory: wrapper
+        run: |
+          python scripts/ci_lab_geoip.py evidence --out "$(dirname "$GEOIP_USED_OUT")/geoip-evidence.json" > /dev/null
+          python scripts/ci_lab_geoip.py verify --evidence "$(dirname "$GEOIP_USED_OUT")/geoip-evidence.json" --used "$GEOIP_USED_OUT"
+      # The judge of the wrapper's own unit job, main's copy: the exact count of the row, no skip, every file of the row passed, and the list only grows
+      # against main. Never the judge or the list of the branch under judgment.
+      - name: judge wrapper.unit.all (the exact count, with the judge and the list of the wrapper's main)
+        if: always()
+        working-directory: wrapper
+        env:
+          SUITE_OS: ${{ matrix.os }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/main"
+          git show origin/main:scripts/ci_verdict.py > "$RUNNER_TEMP/main/ci_verdict.py"
+          git show origin/main:ci/required-suites.json > "$RUNNER_TEMP/main/required-suites.json"
+          if git cat-file -e origin/main:ci/retired-tests.json; then git show origin/main:ci/retired-tests.json > "$RUNNER_TEMP/main/retired-tests.json"; fi
+          python "$RUNNER_TEMP/main/ci_verdict.py" judge --required ci/required-suites.json --suite "wrapper.unit.all.$SUITE_OS" --os "$SUITE_OS" --junit "$RUNNER_TEMP/unit-junit.xml" --binary "$(python -c 'import sys; print(sys.executable)')" --main-required "$RUNNER_TEMP/main/required-suites.json"

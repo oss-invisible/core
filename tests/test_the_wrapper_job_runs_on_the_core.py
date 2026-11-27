@@ -55,7 +55,11 @@ SCRIPT = ROOT / "scripts" / "wrapper_on_this_core.py"
 NEEDED = ROOT / "scripts" / "wrapper_job_needed.py"
 JOB = "wrapper-on-this-core"
 UNIT_JOB = "wrapper-unit-on-this-core"
-JOB_FILES = (".github/workflows/ci.yml", "scripts/wrapper_on_this_core.py",
+CALLED = {"wrapper-on-this-core": ROOT / ".github" / "workflows" / "wrapper-on-this-core.yml",
+          "wrapper-unit-on-this-core": ROOT / ".github" / "workflows" / "wrapper-unit-on-this-core.yml"}
+JOB_FILES = (".github/workflows/ci.yml", ".github/workflows/wrapper-on-this-core.yml",
+             ".github/workflows/wrapper-unit-on-this-core.yml", ".github/workflows/wrapper-proof.yml",
+             "scripts/wrapper_on_this_core.py",
              "scripts/wrapper_test_seconds.json", "scripts/wrapper_job_needed.py",
              "tests/test_the_wrapper_job_runs_on_the_core.py", "tests/test_wrapper_job_needed.py")
 
@@ -83,6 +87,14 @@ def _spec() -> dict:
     spec = yaml.safe_load(CI.read_text(encoding="utf-8"))
     if True in spec and "on" not in spec:
         spec["on"] = spec.pop(True)
+    # The two wrapper jobs live in reusable workflows that ci.yml calls (and publish.yml, on the tag, through wrapper-proof.yml): the
+    # caller keeps `needs` and `if`, the called file the rest. They are read here as the one job they make, so every check below holds
+    # the text that runs.
+    for name, path in CALLED.items():
+        caller = (spec.get("jobs") or {}).get(name) or {}
+        if caller.get("uses") == f"./.github/workflows/{path.name}":
+            called = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"][name]
+            spec["jobs"][name] = {**called, "needs": caller.get("needs"), "if": caller.get("if")}
     return spec
 
 

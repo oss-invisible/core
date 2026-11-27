@@ -164,11 +164,23 @@ jobs:
           python -m invisible_core.release check --verify-index
           ${{ (github.event_name == 'workflow_dispatch' && inputs.first_release) && '--first-release' || '' }}
 
+  # THE WRAPPER'S MAIN WORKS ON THIS CORE, on the commit the tag names. ci.yml runs the wrapper's e2e and its whole unit suite on
+  # pull requests and on main, never on a tag: a tag on a commit whose run on main was skipped or red would publish. This job is
+  # that run, on `github.sha` (the tagged commit), through the same two workflow files ci.yml calls. A tag is always required:
+  # nothing here asks `wrapper-job-needed`, which is a question for a diff. The one `if:` is the one `upload` has, word for word,
+  # so the proof is skipped only where `upload` is skipped too (a version already on the index is a no-op); it names no event
+  # and no ref. And `upload` needs it: a proof that is red or skipped is an upload that never starts. Not behind `gate`: they
+  # are independent and the proof takes the longer, so both run at once.
+  proof:
+    needs: already-published
+    if: needs.already-published.outputs.present != 'yes'
+    uses: ./.github/workflows/wrapper-proof.yml
+
   upload:
-    needs: [already-published, gate]
+    needs: [already-published, gate, proof]
     if: needs.already-published.outputs.present != 'yes'
     runs-on: ubuntu-latest
-    environment: pypi          # the credential lives HERE, behind `needs: gate`
+    environment: pypi          # the credential lives HERE, behind `needs: gate` and `needs: proof`
     permissions:
       id-token: write          # trusted publishing, no long-lived token anywhere
       contents: write          # to commit the ledger entry back

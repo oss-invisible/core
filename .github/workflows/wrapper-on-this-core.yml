@@ -1,0 +1,194 @@
+name: wrapper-on-this-core
+
+# THE WRAPPER'S E2E ON THIS CORE, as a reusable workflow: ci.yml calls it (where `wrapper-job-needed` says) and
+# wrapper-proof.yml calls it for publish.yml, on the tagged commit. One text, two callers. The checkout of the core is the
+# default one: the commit of the caller's event (the merge of a pull request, a push, the commit a tag names).
+# Why the job exists, when it is required and what it checks: the comment above `wrapper-job-needed` in ci.yml.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A called workflow does not see the caller's `env`: the two values every job of ci.yml sets there are set again, the same.
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+  STEALTHFOX_SECURITY_STATE: ${{ github.workspace }}/ci/security-state
+
+jobs:
+  wrapper-on-this-core:
+    name: wrapper-on-this-core (${{ matrix.os }}, part ${{ matrix.part }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: linux, runner: ubuntu-24.04, part: 1, parts: 2}
+          - {os: linux, runner: ubuntu-24.04, part: 2, parts: 2}
+          - {os: windows, runner: windows-2022, part: 1, parts: 4}
+          - {os: windows, runner: windows-2022, part: 2, parts: 4}
+          - {os: windows, runner: windows-2022, part: 3, parts: 4}
+          - {os: windows, runner: windows-2022, part: 4, parts: 4}
+    defaults:
+      run:
+        shell: bash
+    # TEMP and TMP on D:\a\_temp (the runner's temp folder): the Firefox profiles land in TEMP and on C: they saturate the disk (queue up to 144,
+    # latencies up to 4 s, parent main thread still 40-60 s). On the job, not in a step: `runner.temp` is not readable in a job's `env`.
+    env:
+      TEMP: ${{ startsWith(matrix.runner, 'windows') && 'D:\a\_temp' || '/tmp' }}
+      TMP: ${{ startsWith(matrix.runner, 'windows') && 'D:\a\_temp' || '/tmp' }}
+      INVISIBLE_CORE_PIN: allow
+      INVISIBLE_CORE_AUTOFIX: "off"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      # The core of this change. Full history: the comparison below reads the copy
+      # of the script that main (or the commit before a push) has.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5 (v5.6.0)
+        with:
+          python-version: "3.12"
+      # The runner's screen (1024x768 by default) is smaller than the browser window the e2e open (1936x1048 for a 1920x1080 identity), so the
+      # OS cursor cannot be parked outside it (tests/_os_cursor.py) and a native move for it reaches the page. 1920x1080 is the largest mode the
+      # runner's video device accepts (run 45730213378 of oss-invisible/playwright): it leaves the strip below the window free. Declared here, read back.
+      - name: The runner's screen is 1920x1080, larger than the browser window is tall (read back)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          Add-Type -AssemblyName System.Windows.Forms
+          $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          "the runner's screen: $($b.Width)x$($b.Height) at $($b.X),$($b.Y)"
+          if ($b.Width -lt 1920 -or $b.Height -lt 1080) { Write-Error "the runner's screen is $($b.Width)x$($b.Height), not 1920x1080: the OS cursor could not be parked outside the browser window"; exit 1 }
+      # WHICH BRANCH OF THE WRAPPER. Its `main`, always, on a push and on a tag. A pull
+      # request of the core that changes an API the wrapper uses can declare, in ONE line
+      # of its body, `wrapper-ref: <branch>` (grammar and checks: `wrapper-ref` of
+      # scripts/wrapper_on_this_core.py), and then that branch is tried. The body is
+      # untrusted input: it reaches the script through `env:` and a file, never through
+      # an interpolation in `run:`. The judge and the list compared with are still main's.
+      - id: wrapper_ref
+        name: which branch of the wrapper this run tries
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # A merge group has no pull request body (the declaration was read on the pull
+          # request's own run): its wrapper is main, said by the script.
+          if [ "$EVENT" = "merge_group" ]; then : > "$RUNNER_TEMP/pr_body.txt"; else printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr_body.txt"; fi
+          python scripts/wrapper_on_this_core.py wrapper-ref --event "$EVENT" --body-file "$RUNNER_TEMP/pr_body.txt"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          repository: oss-invisible/playwright
+          ref: ${{ steps.wrapper_ref.outputs.ref }}
+          path: wrapper
+      - name: the list of tests is not shorter than main's
+        run: |
+          # The list of main is what main's copy of the script computes on THIS wrapper
+          # tree. A base that cannot be read is red, not "main has nothing".
+          case "${{ github.event_name }}" in
+            push)
+              # A tag has no commit before it (the "before" of a new ref is zeros): the list of main is read from main, as for a pull request.
+              if [ "${{ github.ref_type }}" = "tag" ]; then BASE="origin/main"; else BASE="${{ github.event.before }}"; fi ;;
+            pull_request|merge_group|workflow_dispatch) BASE="origin/main" ;;
+            *) echo "event ${{ github.event_name }}: it is not known what main has" >&2; exit 1 ;;
+          esac
+          if ! git rev-parse --verify -q "$BASE^{commit}" > /dev/null; then
+            echo "cannot read $BASE: it is not known what main has" >&2
+            exit 1
+          fi
+          if git cat-file -e "$BASE:scripts/wrapper_on_this_core.py" 2> /dev/null; then
+            git show "$BASE:scripts/wrapper_on_this_core.py" > "$RUNNER_TEMP/main_wrapper_on_this_core.py"
+            python scripts/wrapper_on_this_core.py compare --wrapper wrapper \
+              --main-script "$RUNNER_TEMP/main_wrapper_on_this_core.py"
+          else
+            python scripts/wrapper_on_this_core.py compare --wrapper wrapper --main-has-no-script
+          fi
+      - name: the wrapper, then THIS core over its pin
+        run: |
+          python -m pip install --upgrade pip
+          # THIS core first: a wrapper branch a pull request declares pins the release it is
+          # made with (this one, not yet on the index), and pip takes the installed copy for it;
+          # a wrapper whose pin is another version replaces it, and the line after the wrapper
+          # puts this core back over the pin.
+          python -m pip install .
+          (cd wrapper && python -m pip install ".[dev]")
+          # Playwright only as a system tool, for the libraries Firefox needs on a bare runner.
+          python -m pip install "playwright==$(cat wrapper/scripts/playwright_pin.txt)"
+          python -m pip install --force-reinstall --no-deps .
+          python -c "import invisible_core; print('core under test:', invisible_core.__file__)"
+      - name: system libraries and a virtual display (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          sudo "$(which python)" -m playwright install-deps firefox
+      - name: the engine the seal names (published, or red)
+        run: |
+          # An assignment, not `echo "FF=$(...)"`: a failure inside a command
+          # substitution that is only an argument is lost, and "the engine is not
+          # published" must stop the job here.
+          OUT="$(cd "$RUNNER_TEMP" && python "$GITHUB_WORKSPACE/scripts/wrapper_on_this_core.py" engine)"
+          echo "FF=$(echo "$OUT" | tail -1)" >> "$GITHUB_ENV"
+      - name: the GeoIP database (made by the wrapper, same bytes every run)
+        working-directory: wrapper
+        run: python scripts/ci_lab_geoip.py build
+      - name: the wrapper's tests that stand on the core, part ${{ matrix.part }}
+        timeout-minutes: 12
+        run: |
+          RUN=(python -u scripts/wrapper_on_this_core.py run --wrapper wrapper --binary "$FF"
+               --os "${{ matrix.os }}" --part "${{ matrix.part }}" --parts "${{ matrix.parts }}" --procs 4
+               --junit-dir "$RUNNER_TEMP/wrapper-on-this-core-junit")
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a "${RUN[@]}"
+          else
+            "${RUN[@]}"
+          fi
+      # THE ENGINE'S TREE ENDS WITH ITS CLIENT, WITH THE REAL ENGINE, ON BOTH OSES. On POSIX the engine is born the leader of a
+      # process group of its own (the tree is that group), so a terminal's Ctrl+C no longer reaches it, and what ends it when its
+      # client dies is the end of the Juggler pipe (`nsRemoteDebuggingPipe`); on Windows the tree is the launch's job. Nothing but
+      # the real engine can say either holds, so the cases of tests/test_the_engine_is_born_in_the_job.py that start it run here, on
+      # the engine the seal names: the client killed (SIGKILL, TerminateProcess), a close that leaves nothing, and, on Linux only (a
+      # terminal's Ctrl+C is a POSIX signal to a process group), the client interrupted with SIGINT to its group. One part only:
+      # they are the same on all. Fewer passed than the OS has (Linux 3, Windows 2) is red: a skip checked nothing.
+      - name: the engine's tree ends with its client
+        if: matrix.part == 1
+        timeout-minutes: 8
+        env:
+          INVPW_BINARY_PATH: ${{ env.FF }}
+        run: |
+          set -o pipefail   # or tee would swallow pytest's exit code
+          CASES="test_a_killed_client_leaves_no_engine_process or test_after_close_no_process_of_the_session_is_left"
+          WANT=2
+          RUN=(python -m pytest tests/test_the_engine_is_born_in_the_job.py -m e2e -o addopts="" -v -rs -p no:cacheprovider)
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            CASES="$CASES or test_an_interrupted_client_leaves_no_engine_process"
+            WANT=3
+            RUN=(xvfb-run -a "${RUN[@]}")
+          fi
+          "${RUN[@]}" -k "$CASES" | tee tree-report.txt
+          WANT="$WANT" python - <<'PY'
+          import os, pathlib, re, sys
+          text = pathlib.Path("tree-report.txt").read_text(encoding="utf-8", errors="ignore")
+          m = re.search(r"(\d+) passed", text)
+          passed = int(m.group(1)) if m else 0
+          want = int(os.environ["WANT"])
+          if passed < want:
+              print(f"only {passed} of the {want} real-engine cases passed", file=sys.stderr)
+              sys.exit(1)
+          print(f"{passed} cases passed")
+          PY
+      - name: the leg ran with the pinned GeoIP database
+        if: always()
+        working-directory: wrapper
+        run: |
+          python scripts/ci_lab_geoip.py evidence --out "$(dirname "$GEOIP_USED_OUT")/geoip-evidence.json" > /dev/null
+          python scripts/ci_lab_geoip.py verify --evidence "$(dirname "$GEOIP_USED_OUT")/geoip-evidence.json" --used "$GEOIP_USED_OUT"
+      - name: close every Firefox left (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-Process firefox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          "left: " + @(Get-Process firefox -ErrorAction SilentlyContinue).Count

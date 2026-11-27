@@ -14,7 +14,7 @@ from __future__ import annotations
 import pathlib
 import re
 
-CI = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+CI = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "wrapper-on-this-core.yml"
 
 STEP = """      - name: The runner's screen is 1920x1080, larger than the browser window is tall (read back)
         if: matrix.os == 'windows'
@@ -30,7 +30,7 @@ STEP = """      - name: The runner's screen is 1920x1080, larger than the browse
 
 def _job(text: str, name: str) -> str:
     match = re.search(r"\n  %s:\n(.*?)(?=\n  [a-z0-9-]+:\n|\Z)" % re.escape(name), text, re.S)
-    assert match, "ci.yml has no job %r: the check reads nothing" % name
+    assert match, "wrapper-on-this-core.yml has no job %r: the check reads nothing" % name
     return match.group(1)
 
 
