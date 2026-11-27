@@ -154,6 +154,9 @@ class WindowFrame(NamedTuple):
     border: int
     #: A popup: from the window top, border included, to the content top.
     popup_ui: int
+    #: A popup: from the window top, border included, to the top of its client
+    #: area, in device px.
+    popup_client_top: int
     #: Where a popup opened without left/top is put, on both axes.
     popup_position: int
     #: Chrome height above the content with the normal density, maximized or
@@ -165,9 +168,10 @@ class WindowFrame(NamedTuple):
     ui_compact: int
 
 
-def _frame(border: int, popup_ui: int, scale: float) -> WindowFrame:
+def _frame(border: int, popup_ui: int, popup_client_top: int, scale: float) -> WindowFrame:
     return WindowFrame(
-        border=border, popup_ui=popup_ui, popup_position=4,
+        border=border, popup_ui=popup_ui, popup_client_top=popup_client_top,
+        popup_position=4,
         ui_normal=chrome_height_device(scale, "normal"),
         ui_compact=chrome_height_device(scale, "compact"))
 
@@ -186,6 +190,10 @@ def _frame(border: int, popup_ui: int, scale: float) -> WindowFrame:
 #: included, to its content top, launches a and b identical (GitHub run
 #: oss-invisible/core 45952171443, capture round 5, catalogued in the private
 #: RetailCaptures repo at commit 4477c39, captures/WINDOW_GEOMETRY_POPUP_FRAME.csv).
+#: popup_client_top is measured on retail Firefox 159.0 at every scale: 31 / 38 /
+#: 45 / 58 device px, client_origin_y minus window_top of a window.open popup,
+#: launches a and b identical, in both placements (unpositioned at (4, 4), and
+#: left=100,top=80), same run, same CSV.
 #: popup_position (4 device px on both axes, a popup opened without left/top) is
 #: measured in the same run, the same at every scale.
 #:
@@ -195,7 +203,15 @@ def _frame(border: int, popup_ui: int, scale: float) -> WindowFrame:
 #:
 #: ui_normal / ui_compact are computed (chrome_height_device), not typed: 85 /
 #: 73, 106 / 91, 127 / 109, 170 / 146, the first seven measured live on
-#: Firefox 159.0 (GitHub runs oss-invisible/core 45657528859, 45672953042, 45679625406), 170 the model's value.
+#: Firefox 159.0 (GitHub runs oss-invisible/core 45657528859, 45672953042, 45679625406).
+#: 170 (scale 2, normal density) is derived and not measured live. It is the tab
+#: strip 44 CSS and the nav bar 40 CSS (both read from the 159.0 omni.ja and
+#: measured at scales 1, 1.25 and 1.5) times 2, plus the 1 CSS content border,
+#: which snaps to 2 device px at scale 2. That border is measured in the compact
+#: 146 at scale 2.
+#: It cannot be measured on a GitHub Windows runner, whose display refuses panels
+#: above 1920x1080 (capture round 7, run 46061552952), and at 200% on 1920x1080
+#: the work area is 492 CSS px, so the density is always compact.
 #:
 #: ⛔ It replaces CHROME_W = 0 and CHROME_H = 85 with window_x = window_y = 0,
 #: from a 2026-08-09 measurement of a window that was not a maximized Windows
@@ -203,10 +219,10 @@ def _frame(border: int, popup_ui: int, scale: float) -> WindowFrame:
 #: at the screen origin with no side border, which Windows never draws
 #: maximized, and every popup answered the same numbers.
 WINDOW_FRAME_BY_DPR: dict = {
-    1.0: _frame(8, 72, 1.0),
-    1.25: _frame(9, 89, 1.25),
-    1.5: _frame(11, 106, 1.5),
-    2.0: _frame(13, 140, 2.0),
+    1.0: _frame(8, 72, 31, 1.0),
+    1.25: _frame(9, 89, 38, 1.25),
+    1.5: _frame(11, 106, 45, 1.5),
+    2.0: _frame(13, 140, 58, 2.0),
 }
 
 def declared_maximized_ui(frame: WindowFrame, avail_height_css: float) -> int:

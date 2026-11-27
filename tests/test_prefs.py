@@ -73,13 +73,13 @@ def test_the_screen_a_page_reads_is_the_panel_divided_by_the_scale(panel, dpr, c
     # A 2048x1280 panel. Device pixels: border, UI above a maximized window's
     # content (the density rule's value for the work area: normal at 100%,
     # 125% and 150%, compact at 200% where availHeight is 592 CSS), popup UI,
-    # default popup position. The viewport is the work area (panel minus a 48
+    # popup client top, default popup position. The viewport is the work area (panel minus a 48
     # CSS taskbar) minus the UI, divided by the scale: 891 at 125% is
     # (1220 - 106) / 1.25.
-    (1.0, (8, 85, 72, 4), (2048, 1147), (2048, 1232)),
-    (1.25, (9, 106, 89, 4), (1638, 891), (2048, 1220)),
-    (1.5, (11, 127, 106, 4), (1365, 721), (2048, 1208)),
-    (2.0, (13, 146, 140, 4), (1024, 519), (2048, 1184)),
+    (1.0, (8, 85, 72, 31, 4), (2048, 1147), (2048, 1232)),
+    (1.25, (9, 106, 89, 38, 4), (1638, 891), (2048, 1220)),
+    (1.5, (11, 127, 106, 45, 4), (1365, 721), (2048, 1208)),
+    (2.0, (13, 146, 140, 58, 4), (1024, 519), (2048, 1184)),
 ])
 def test_the_window_frame_is_declared_in_device_pixels_per_scale(dpr, frame, viewport, avail_device):
     """Known-bad until 38.x: one CSS window for every scale and every window -
@@ -94,6 +94,7 @@ def test_the_window_frame_is_declared_in_device_pixels_per_scale(dpr, frame, vie
     assert (prefs["zoom.stealth.screen.frame_border"],
             prefs["zoom.stealth.screen.maximized_ui"],
             prefs["zoom.stealth.screen.popup_ui"],
+            prefs["zoom.stealth.screen.popup_client_top"],
             prefs["zoom.stealth.screen.popup_position"]) == frame
     assert (prefs["zoom.stealth.screen.avail_device_width"],
             prefs["zoom.stealth.screen.avail_device_height"]) == avail_device
