@@ -24,8 +24,9 @@ Round 5 adds to launches a and b (p and q where no display launch could be made)
 maximized window, before any Juggler call, element fullscreen entered by a REAL click (SendInput on #fs, whose handler calls
 requestFullscreen; Marionette cannot give the user activation) and left by document.exitFullscreen() (`fullscreen_max_in`,
 `fullscreen_max_out`), F11-style fullscreen by window.fullScreen in the chrome (`f11_max_in`, `f11_max_out`), the main page with a
-same-origin and a cross-site iframe, each recording its own content record after real mouse moves over it (`iframes_max`), and two
-popups opened by a real click on #open, the second with left and top (`popup`, `popup_pos`; the popup page records its content
+same-origin and a cross-site iframe, each recording its own content record after real mouse moves over it (`iframes_max`), the same two origins as four iframes under CSS transforms (a container with scale(1.5), one with
+rotate(10deg), each holding a 300x120 frame, one at a time; every mouse event a frame saw at three points of its transformed area is
+kept: `iframes_transformed`), and two popups opened by a real click on #open, the second with left and top (`popup`, `popup_pos`; the popup page records its content
 record and Windows' rects of its window are kept; it is closed); then, right after `juggler` and `juggler_rdm` (inRDMPane back to
 false, styles kept), `juggler_repeat` (Juggler's sequence again at exactly juggler's size, the repeat of the first call); then, after `juggler2`, `juggler2_repeat` (Juggler's sequence
 again at exactly juggler2's size), the same four fullscreen steps (`fullscreen_res_*`, `f11_res_*`) and the iframes
@@ -515,7 +516,8 @@ class Session:
     def leave_surfaces(self) -> None:
         """Best effort after a failed step: leave fullscreen, close a popup, remove the iframes."""
         for script, context in ((surfaces.EXIT_FULLSCREEN, "content"), (surfaces.WINDOW_FULLSCREEN_OFF, "chrome"),
-                                (surfaces.POPUP_CLOSE, "content"), (surfaces.REMOVE_FRAMES, "content")):
+                                (surfaces.POPUP_CLOSE, "content"), (surfaces.REMOVE_FRAMES, "content"),
+                                (surfaces.REMOVE_TRANSFORMED, "content")):
             try:
                 self.client.execute_script(script, context=context)
             except Exception:  # noqa: BLE001 - cleanup only; the next step says what is wrong
@@ -654,6 +656,51 @@ class Session:
         finally:
             self.content(surfaces.REMOVE_FRAMES)
 
+    def iframe_transformed(self, name: str, transform: str, chrome: Dict[str, Any], native: Dict[str, Any]) -> Dict[str, Any]:
+        """One iframe (`name` = <origin>_<transform>) in a container with `transform` (origin 0 0), fixed at left 10, top 200 of the
+        page: the frame answers after real mouse moves at three points of its transformed area, with its record and every
+        mouse event it saw (client and screen point, and their difference). The container is removed afterwards."""
+        self.content(surfaces.ADD_TRANSFORMED, [name, self.urls[name], transform])
+        try:
+            hello, _ = wait_stable(lambda: self.content(surfaces.FRAME_HELLO_OF, [name]), ready=bool, hold=0,
+                                   timeout=surfaces.FRAME_TIMEOUT)
+            if not hello:
+                raise surfaces.StepNotPossible(f"the iframe {name} did not load")
+            self.client.execute_async_script(TWO_FRAMES, context="content")
+            geometry = self.content(surfaces.TRANSFORMED_GEOMETRY)
+            points = surfaces.transformed_points(chrome, native, geometry)
+            vw, vh = geometry["viewport"]
+            if not all(0 <= p["css"][0] <= vw and 0 <= p["css"][1] <= vh for p in points):
+                raise surfaces.StepNotPossible(f"a point of the transformed iframe {name} is outside the viewport {[vw, vh]}")
+            self.content(surfaces.ASK_TRANSFORMED, [name, "reset"])
+            time.sleep(0.3)
+            moves = self.move([tuple(p["device"]) for p in points])
+            self.client.execute_async_script(TWO_FRAMES, context="content")
+            self.content(surfaces.ASK_TRANSFORMED, [name, "record"])
+            state, _ = wait_stable(lambda: self.content(surfaces.FRAME_RECORD_OF, [name]), ready=lambda v: v != "null", hold=0,
+                                   timeout=surfaces.FRAME_TIMEOUT)
+            if state in (None, "null"):
+                raise surfaces.StepNotPossible(f"the iframe {name} did not answer the record request")
+            return {"kind": surfaces.FRAME_KINDS[name.split("_")[0]], "transform": transform, "geometry": geometry,
+                    "points": points, "input": moves, "state": json.loads(state)}
+        finally:
+            self.content(surfaces.REMOVE_TRANSFORMED)
+
+    def iframes_transformed(self) -> Dict[str, Any]:
+        """The cross-site and the same-origin iframe under scale(1.5) and under rotate(10deg), one at a time (they would cover each
+        other), each a 300 x 120 frame in a container fixed at left 10, top 200: what each frame reads about itself and, per point
+        of three spread over its transformed area, the client and screen point of the real mouse move it received."""
+        if not all(name in self.urls for name in surfaces.TRANSFORMED_NAMES):
+            raise surfaces.StepNotPossible("no iframe page was served")
+        chrome = self.chrome(CHROME_STATE)
+        hwnd = self.hwnd()
+        native = self.native(hwnd)
+        self.foreground(hwnd)
+        transforms = dict(surfaces.TRANSFORMS)
+        frames = {name: self.iframe_transformed(name, transforms[name.split("_")[1]], chrome, native)
+                  for name in surfaces.TRANSFORMED_NAMES}
+        return {"chrome": chrome, "native": native, "content": self.content(CONTENT_STATE), "settled": True, "frames": frames}
+
     def load(self, url: str) -> None:
         """Navigate the selected tab without waiting for the page: from the chrome, else from the page."""
         try:
@@ -753,7 +800,8 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
                            "dev_px_per_px": (prefs or {}).get("layout.css.devPixelsPerPx"),
                            "steps_planned": list(steps_wanted), "steps": {}, "error": None}
     server, cross, process, client = PageServer(), PageServer(also_ipv6=True), None, marionette.Client(marionette_port)
-    urls = dict(surfaces.frame_urls(server.port, cross.port), popup=surfaces.popup_url(server.port))
+    urls = dict(surfaces.frame_urls(server.port, cross.port), popup=surfaces.popup_url(server.port),
+                **surfaces.transformed_urls(server.port, cross.port))
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         profile = Path(tmp) / "profile"
         profile.mkdir()
@@ -787,6 +835,8 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
                 steps.update(session.fullscreen("max"))
             if "iframes_max" in steps_wanted:
                 steps.update(session.surface(("iframes_max",), lambda: (session.iframes(),)))
+            if "iframes_transformed" in steps_wanted:
+                steps.update(session.surface(("iframes_transformed",), lambda: (session.iframes_transformed(),)))
             for name, features in surfaces.POPUP_FEATURES:
                 if name in steps_wanted:
                     steps.update(session.surface((name,), lambda features=features: (session.popup(features),)))

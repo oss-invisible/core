@@ -2,10 +2,10 @@
 
 Round 5 of the capture, per job (one display scale):
 
-  launch a (first reached resolution)  the six CORE_STEPS and the fourteen ROUND5_STEPS (fullscreen, popups, iframes, the
+  launch a (first reached resolution)  the six CORE_STEPS and the fifteen ROUND5_STEPS (fullscreen, popups, iframes, the
                                        repeated Juggler call), and at the scales of GRID_DPRS also `grid` (restored windows at
                                        GRID_WIDTHS x GRID_HEIGHTS) and `minimum`
-  launch b (same resolution)           the same twenty steps, and at GRID_DPRS `grid_check` (GRID_CHECK_POINTS again)
+  launch b (same resolution)           the same twenty-one steps, and at GRID_DPRS `grid_check` (GRID_CHECK_POINTS again)
   launches a and b at HOSTGATE_DPRS    last, `rdm_hostgate`
   launch m (every resolution Windows   `maximized` only: the maximized UI height as a function of the work area
             offers, at the job's scale)
@@ -25,13 +25,14 @@ from typing import List, Optional, Sequence, Tuple
 CORE_STEPS = ("maximized", "restored", "juggler", "juggler_rdm", "juggler2", "juggler_back")
 #: The steps round 5 adds to the two launches the judge compares (a and b; p and q where no display launch could be made), in
 #: the order they run: element fullscreen (a real click on a button) and F11-style window fullscreen from the maximized window
-#: (`fullscreen_max_*`, `f11_max_*`), a same-origin and a cross-site iframe (`iframes_max`), two popups (`popup`, and
+#: (`fullscreen_max_*`, `f11_max_*`), a same-origin and a cross-site iframe (`iframes_max`), the same two origins under two CSS transforms (`iframes_transformed`), two popups (`popup`, and
 #: `popup_pos` with left and top), Juggler's first call again at exactly its size (`juggler_repeat`, right after
 #: `juggler_rdm`, inRDMPane back to false), Juggler's second call again at exactly its size (`juggler2_repeat`), the same fullscreen
 #: steps from the window Juggler left (`fullscreen_res_*`, `f11_res_*`) and the iframes there (`iframes_juggler`).
 #: A step is a full record, or `{"skipped": "does_not_fit"}` (Juggler's size did not fit the work area), or
 #: `{"not_possible": <reason>}` (this browser did not allow it); the judge prints the reason.
-ROUND5_STEPS = ("fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out", "iframes_max", "popup", "popup_pos",
+ROUND5_STEPS = ("fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out", "iframes_max", "iframes_transformed", "popup",
+                "popup_pos",
                 "juggler_repeat", "juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out", "f11_res_in", "f11_res_out", "iframes_juggler")
 #: The steps the a/b (p/q) determinism check compares.
 COMPARED_STEPS = CORE_STEPS + ROUND5_STEPS

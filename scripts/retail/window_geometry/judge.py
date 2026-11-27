@@ -5,7 +5,7 @@
 Red when:
   * a scale of the request has no run, a run has an error or leaves a process of the install folder alive, a run lacks
     a step of its launch (a, b, p, q: maximized, restored, juggler, juggler_rdm, juggler2, juggler_back; m: maximized; and,
-    in the two launches that are compared, the fourteen steps of plan.ROUND5_STEPS: fullscreen, F11-style fullscreen,
+    in the two launches that are compared, the fifteen steps of plan.ROUND5_STEPS: fullscreen, F11-style fullscreen,
     iframes, popups, the repeated Juggler call). A step of round 5 that is `{"not_possible": <reason>}` is complete when it
     has a non-empty reason, which is printed; `{"skipped": ...}` is complete as before;
   * launch a differs from launch b (launch p from q) at a resolution that has both, on any number of those steps and of
@@ -347,6 +347,25 @@ def frames_lines(step_name: str, step: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def transformed_lines(step_name: str, step: Dict[str, Any]) -> List[str]:
+    """The frames of an `iframes_transformed` step: each frame's transform, and per point of the real mouse the screen point asked
+    (device px), the point the frame received as client and as screen CSS px, and their difference. Measured, not judged."""
+    lines = []
+    for name, frame in sorted((step.get("frames") or {}).items()):
+        moves = (frame.get("state") or {}).get("moves")
+        if moves is None:
+            continue
+        state = frame["state"]
+        points = [f"asked {p.get('device')} css {[round(c, 3) for c in p.get('css') or []]} -> client {[m['clientX'], m['clientY']]} "
+                  f"screen {[m['screenX'], m['screenY']]} delta {[m['dx'], m['dy']]}"
+                  for p, m in zip(frame.get("points") or [], moves)]
+        lines.append(f"    {step_name} frame {name} {frame.get('transform')}: mozInnerScreenX/Y "
+                     f"{[state['mozInnerScreenX'], state['mozInnerScreenY']]} container rect {(frame.get('geometry') or {}).get('rect')} "
+                     f"matrix {(frame.get('geometry') or {}).get('matrix')} moves seen {len(moves)} for {len(frame.get('points') or [])} points")
+        lines.extend(f"    {step_name} frame {name} point {i}: {text}" for i, text in enumerate(points))
+    return lines
+
+
 def fullscreen_line(step_name: str, step: Dict[str, Any]) -> List[str]:
     facts = step.get("fullscreen")
     if facts is None:
@@ -420,6 +439,7 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
             lines.extend(standard_lines(step_name, step, dpr))
             lines.extend(fullscreen_line(step_name, step))
             lines.extend(frames_lines(step_name, step))
+            lines.extend(transformed_lines(step_name, step))
         for step_name in wanted:
             step = run["steps"][step_name]
             line = probe_line(step_name, step) if not ({"skipped", "not_possible"} & set(step)) else None

@@ -8,7 +8,7 @@ what the core declares (frame_table.py reads the checked-out constants.py with t
     the bar of a maximized window is judged at the measured availHeight (1.5 at 672 CSS: 109 green, 127 red);
   * launch a different from launch b on one number of any of the six steps (maximized, restored, juggler, juggler_rdm, juggler2, juggler_back): red,
     with the number printed; the grid, the minimum and the grid check are not in that comparison;
-  * round 5: the two launches that are compared (a and b; p and q) also need the fourteen steps of plan.ROUND5_STEPS (fullscreen,
+  * round 5: the two launches that are compared (a and b; p and q) also need the fifteen steps of plan.ROUND5_STEPS (fullscreen,
     F11-style fullscreen, iframes, popups, the repeated Juggler call), compare equal on each, and print each; a step recorded
     as not possible is complete only with a reason, which is printed; a missing step is red;
   * at the scales of the grid, launch a must have its grid and minimum, launch b its grid check, and every point of the check
@@ -81,7 +81,7 @@ def frame_state(dpr):
 
 
 def round5_steps(step, rect, ui, dpr):
-    """The fourteen steps of round 5 of a launch whose window is `rect` with `ui` device pixels of chrome."""
+    """The fifteen steps of round 5 of a launch whose window is `rect` with `ui` device pixels of chrome."""
     steps = {}
     for name in plan.ROUND5_STEPS:
         if name.startswith("popup"):
@@ -615,11 +615,11 @@ def test_the_host_gate_step_is_not_part_of_the_a_b_comparison():
 # ---------------------------------------------------------------------------- round 5: fullscreen, popups, iframes, the repeated call
 
 
-def test_the_fourteen_steps_of_round_5_are_named_in_the_order_they_run_and_compared_with_the_six_core_steps():
-    assert plan.ROUND5_STEPS == ("fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out", "iframes_max", "popup",
-                                 "popup_pos", "juggler_repeat", "juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out",
+def test_the_fifteen_steps_of_round_5_are_named_in_the_order_they_run_and_compared_with_the_six_core_steps():
+    assert plan.ROUND5_STEPS == ("fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out", "iframes_max",
+                                 "iframes_transformed", "popup", "popup_pos", "juggler_repeat", "juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out",
                                  "f11_res_in", "f11_res_out", "iframes_juggler")
-    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS and len(set(plan.COMPARED_STEPS)) == 20
+    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS and len(set(plan.COMPARED_STEPS)) == 21
     a, b = two_launches(1.0)
     assert set(a["steps"]) >= set(plan.COMPARED_STEPS)
 
@@ -679,6 +679,7 @@ def bump(run, step, path):
     ("popup_pos", "native.window_rect.0", "popup_pos.native.window_rect[0]"),
     ("iframes_max", "frames.cross.state.screenX", "iframes_max.frames.cross.state.screenX"),
     ("iframes_juggler", "frames.same.input.0.cursor.0", "iframes_juggler.frames.same.input[0].cursor[0]"),
+    ("iframes_transformed", "frames.cross.state.screenX", "iframes_transformed.frames.cross.state.screenX"),
     ("fullscreen_max_in", "chrome.windowState", "fullscreen_max_in.chrome.windowState"),
     ("f11_res_out", "fullscreen.window_fullScreen", "f11_res_out.fullscreen.window_fullScreen"),
     ("juggler_repeat", "content.outerHeight", "juggler_repeat.content.outerHeight"),
@@ -755,6 +756,33 @@ def test_every_round_5_step_is_printed_with_what_it_recorded():
             assert any(other.startswith(f"    {step} frame {frame} probe:") for other in lines)
     assert "fullscreen_max_in fullscreen: {'window_fullScreen': True" in text and "'document_fullscreen': True" in text
     assert "f11_res_out fullscreen: {'window_fullScreen': False" in text
+
+
+def test_the_transformed_iframes_are_printed_with_each_point_s_client_and_screen_and_are_not_judged():
+    a, b = two_launches(1.0)
+    for run in (a, b):
+        run["steps"]["iframes_transformed"]["frames"] = {
+            name: {"kind": "cross-site", "transform": transform, "rect": {"x": 10, "y": 200, "width": 450, "height": 180},
+                   "geometry": {"rect": {"x": 10, "y": 200, "width": 450, "height": 180}, "matrix": [1.5, 0, 0, 1.5, 0, 0]},
+                   "points": [{"device": [100 + i, 300 + i], "css": [100.5 + i, 300.25 + i]} for i in range(3)],
+                   "input": [{"asked": [100 + i, 300 + i], "cursor": [100 + i, 300 + i]} for i in range(3)],
+                   "state": dict(frame_state(1.0), mozInnerScreenX=10.5, mozInnerScreenY=285.0,
+                                 moves=[{"clientX": 40.5 + i, "clientY": 20.0, "screenX": 100 + i, "screenY": 300 + i, "dx": 59.5, "dy": 280.0}
+                                        for i in range(3)])}
+            for name, transform in (("cross_scale", "scale(1.5)"), ("cross_rotate", "rotate(10deg)"))}
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    lines = [line for line in result["lines"] if line.startswith("    iframes_transformed frame cross_scale")]
+    head = next(line for line in lines if " scale(1.5): mozInnerScreenX/Y [10.5, 285.0]" in line)
+    assert "moves seen 3 for 3 points" in head and "matrix [1.5, 0, 0, 1.5, 0, 0]" in head
+    point = next(line for line in lines if " point 1: " in line)
+    assert "asked [101, 301]" in point and "client [41.5, 20.0] screen [101, 301] delta [59.5, 280.0]" in point
+    assert any(line.startswith("    iframes_transformed frame cross_rotate point 2:") for line in result["lines"])
+    for run in (a, b):
+        run["steps"]["iframes_transformed"] = {"not_possible": "the iframe cross_scale did not load"}
+    assert not evaluate([a, b])["red"]
+    del b["steps"]["iframes_transformed"]
+    assert evaluate([a, b])["red"]
 
 
 def test_the_repeat_of_the_first_juggler_call_is_printed_against_the_first_call_and_is_not_judged():

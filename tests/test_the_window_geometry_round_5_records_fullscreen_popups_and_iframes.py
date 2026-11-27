@@ -19,6 +19,7 @@ what a real click on a button does). Held here:
 from __future__ import annotations
 
 import json
+import math
 import socket
 import urllib.request
 from pathlib import Path
@@ -35,7 +36,12 @@ plan = load_window_geometry("plan")
 marionette = load_window_geometry("marionette")
 HERE = Path(measure.__file__).parent
 URLS = {"popup": "http://127.0.0.1:5001/surface.html?name=popup", "same": "http://127.0.0.1:5001/surface.html?name=same",
-        "cross": "http://localhost:5002/surface.html?name=cross"}
+        "cross": "http://localhost:5002/surface.html?name=cross",
+        **{f"same_{k}": f"http://127.0.0.1:5001/surface.html?name=same_{k}" for k in ("scale", "rotate")},
+        **{f"cross_{k}": f"http://localhost:5002/surface.html?name=cross_{k}" for k in ("scale", "rotate")}}
+TRANSFORM_MATRICES = {"scale(1.5)": [1.5, 0.0, 0.0, 1.5, 0.0, 0.0],
+                      "rotate(10deg)": [math.cos(math.radians(10)), math.sin(math.radians(10)),
+                                        -math.sin(math.radians(10)), math.cos(math.radians(10)), 0.0, 0.0]}
 BUTTONS = {"fs": {"x": 8, "y": 8, "width": 120, "height": 40}, "open": {"x": 140, "y": 8, "width": 120, "height": 40}}
 FRAME_RECTS = {"same": {"x": 10, "y": 60, "width": 300, "height": 120}, "cross": {"x": 10, "y": 200, "width": 300, "height": 120}}
 CHROME = {"devicePixelRatio": 1.0, "browser": {"x": 0, "y": 85, "width": 1900, "height": 900}, "windowState": 1}
@@ -70,6 +76,7 @@ class Browser(measure.Session):
         self.fail_on = fail_on  # (script, exception) raised when that script runs
         self.fs = self.window_fs = self.popup_open = self.frames_on = False
         self.fs_error, self.log, self.clicks, self.moves, self.popup_args, self.frames_args = None, [], [], [], None, None
+        self.transformed = None  # (name, url, transform) of the container that is in the page now
 
     # ---- what the harness reads from Windows and the mouse
     def hwnd(self):
@@ -163,7 +170,42 @@ class Browser(measure.Session):
             self.log.append("remove_frames")
             self.frames_on = False
             return True
+        if script == surfaces.ADD_TRANSFORMED:
+            self.transformed = tuple(args)
+            self.log.append(("add_transformed", args[0], args[2]))
+            return True
+        if script == surfaces.FRAME_HELLO_OF:
+            return self.frames_load and self.transformed is not None and self.transformed[0] == args[0]
+        if script == surfaces.TRANSFORMED_GEOMETRY:
+            return self.transformed_geometry()
+        if script == surfaces.ASK_TRANSFORMED:
+            self.log.append(("ask_transformed", args[0], args[1]))
+            return True
+        if script == surfaces.FRAME_RECORD_OF:
+            return json.dumps(self.transformed_record())
+        if script == surfaces.REMOVE_TRANSFORMED:
+            self.log.append("remove_transformed")
+            self.transformed = None
+            return True
         raise AssertionError(f"unexpected content script {script[:50]!r}")
+
+    def transformed_geometry(self):
+        a, b, c, d, e, f = TRANSFORM_MATRICES[self.transformed[2]]
+        corners = [(10 + a * u + c * v, 200 + b * u + d * v) for u, v in ((0, 0), (300, 0), (0, 120), (300, 120))]
+        xs, ys = [p[0] for p in corners], [p[1] for p in corners]
+        return {"rect": {"x": min(xs), "y": min(ys), "width": max(xs) - min(xs), "height": max(ys) - min(ys)}, "left": 10, "top": 200,
+                "width": 300, "height": 120, "matrix": [a, b, c, d, e, f], "viewport": [1900, 900]}
+
+    def transformed_record(self):
+        """What the frame saw: the last real moves, each through the inverse of the container's matrix (the frame's own client point)."""
+        a, b, c, d, _, _ = TRANSFORM_MATRICES[self.transformed[2]]
+        det = a * d - b * c
+        moves = []
+        for x, y in self.moves[-1]:
+            px, py = x - 10, y - 85 - 200
+            u, v = (d * px - c * py) / det, (-b * px + a * py) / det
+            moves.append({"clientX": u, "clientY": v, "screenX": x, "screenY": y, "dx": x - u, "dy": y - v})
+        return dict(state(3), moves=moves, mozInnerScreenX=10.0, mozInnerScreenY=285.0)
 
 
 @pytest.fixture(autouse=True)
@@ -408,6 +450,84 @@ def test_the_iframes_get_real_moves_inside_their_rectangles_and_each_answers_wit
     assert "url" not in json.dumps(step), "no port in the step: launch a and launch b must be equal"
 
 
+def test_the_transformed_points_are_the_matrix_applied_to_fractions_of_the_frame_and_inside_the_container_s_rectangle():
+    for transform, matrix in TRANSFORM_MATRICES.items():
+        browser = Browser()
+        browser.transformed = ("cross_x", "u", transform)
+        geometry = browser.transformed_geometry()
+        points = surfaces.transformed_points(CHROME, NATIVE, geometry)
+        a, b, c, d, _, _ = matrix
+        for (fx, fy), point in zip(surfaces.FRAME_FRACTIONS, points):
+            x, y = 10 + a * 300 * fx + c * 120 * fy, 200 + b * 300 * fx + d * 120 * fy
+            assert point["css"] == pytest.approx([x, y]) and point["device"] == [round(x), round(85 + y)] and point["inside_rect"] is True
+    scaled = surfaces.transformed_points({"devicePixelRatio": 1.25, "browser": {"x": 0, "y": 80}}, {"client_origin": [-9, 0]},
+                                         {"rect": {"x": 10, "y": 200, "width": 450, "height": 180}, "left": 10, "top": 200, "width": 300,
+                                          "height": 120, "matrix": [1.5, 0, 0, 1.5, 0, 0]})
+    assert scaled[1]["device"] == [round(-9 + (10 + 225) * 1.25), round((80 + 200 + 90) * 1.25)]
+
+
+def test_a_rotated_frame_s_point_that_is_in_the_bounding_box_only_would_be_outside_the_frame_so_the_points_are_not_taken_from_the_box():
+    browser = Browser()
+    browser.transformed = ("cross_rotate", "u", "rotate(10deg)")
+    geometry = browser.transformed_geometry()
+    box = geometry["rect"]
+    a, b, c, d, _, _ = geometry["matrix"]
+    det = a * d - b * c
+    dx, dy = box["x"] - 10, box["y"] - 200  # the box's top left: not a point of the rotated frame
+    u, v = (d * dx - c * dy) / det, (-b * dx + a * dy) / det
+    assert not (0 <= u <= 300 and 0 <= v <= 120)
+    for point in surfaces.transformed_points(CHROME, NATIVE, geometry):
+        dx, dy = point["css"][0] - 10, point["css"][1] - 200
+        u, v = (d * dx - c * dy) / det, (-b * dx + a * dy) / det
+        assert 0 <= u <= 300 and 0 <= v <= 120
+
+
+def test_the_four_transformed_iframes_run_one_at_a_time_each_with_three_real_moves_in_its_transformed_area_and_are_removed():
+    browser = Browser()
+    step = browser.iframes_transformed()
+    assert list(step["frames"]) == ["cross_scale", "cross_rotate", "same_scale", "same_rotate"] == list(surfaces.TRANSFORMED_NAMES)
+    assert [item[1:] for item in browser.log if isinstance(item, tuple) and item[0] == "add_transformed"] == [
+        ("cross_scale", "scale(1.5)"), ("cross_rotate", "rotate(10deg)"), ("same_scale", "scale(1.5)"), ("same_rotate", "rotate(10deg)")]
+    assert browser.log.count("remove_transformed") == 4 and browser.transformed is None and len(browser.moves) == 4
+    for name, frame in step["frames"].items():
+        points = frame["points"]
+        assert len(points) == 3 and [m["asked"] for m in frame["input"]] == [p["device"] for p in points]
+        assert frame["transform"] == dict(surfaces.TRANSFORMS)[name.split("_")[1]] and frame["kind"] == surfaces.FRAME_KINDS[name.split("_")[0]]
+        assert all(p["inside_rect"] for p in points) and len(frame["state"]["moves"]) == 3
+        for move, fraction in zip(frame["state"]["moves"], surfaces.FRAME_FRACTIONS):  # the frame's own client point is the fraction
+            assert move["clientX"] == pytest.approx(fraction[0] * 300, abs=1.0) and move["clientY"] == pytest.approx(fraction[1] * 120, abs=1.0)
+        assert frame["geometry"]["matrix"] == TRANSFORM_MATRICES[frame["transform"]]
+    asked = [item[2] for item in browser.log if isinstance(item, tuple) and item[0] == "ask_transformed"]
+    assert asked == ["reset", "record"] * 4
+    assert "chrome" in step and "native" in step and "url" not in json.dumps(step)
+
+
+def test_a_transformed_iframe_that_did_not_load_makes_the_step_not_possible_and_the_container_is_removed():
+    browser = Browser(frames_load=False)
+    steps = browser.surface(("iframes_transformed",), lambda: (browser.iframes_transformed(),))
+    assert steps == {"iframes_transformed": {"not_possible": "the iframe cross_scale did not load"}}
+    assert browser.transformed is None and browser.moves == []
+    missing = Browser()
+    missing.urls.pop("same_rotate")
+    assert missing.surface(("iframes_transformed",), lambda: (missing.iframes_transformed(),)) == {
+        "iframes_transformed": {"not_possible": "no iframe page was served"}}
+
+
+def test_the_transformed_urls_are_the_two_origins_of_the_plain_frames_each_named_for_its_transform():
+    urls = surfaces.transformed_urls(5001, 5002)
+    assert urls == {"cross_scale": "http://localhost:5002/surface.html?name=cross_scale",
+                    "cross_rotate": "http://localhost:5002/surface.html?name=cross_rotate",
+                    "same_scale": "http://127.0.0.1:5001/surface.html?name=same_scale",
+                    "same_rotate": "http://127.0.0.1:5001/surface.html?name=same_rotate"}
+    assert {k: v for k, v in URLS.items() if "_" in k} == urls, "the fake browser serves the same names"
+
+
+def test_the_page_script_puts_the_frame_in_a_container_at_left_10_top_200_with_the_transform_on_the_container_and_keeps_every_move():
+    for needle in ("position:fixed;left:10px;top:200px;width:300px;height:120px", "transform:${transform};transform-origin:0 0",
+                   "window.__moves.push(", "new DOMMatrix(getComputedStyle(box).transform)", "if (data.moves) state.moves = window.__moves"):
+        assert needle in PAGE_JS, needle
+
+
 def test_an_iframe_that_did_not_load_is_not_possible_and_the_frames_are_still_removed():
     browser = Browser(frames_load=False)
     steps = browser.surface(("iframes_max",), lambda: (browser.iframes(),))
@@ -504,11 +624,11 @@ def test_a_launch_takes_the_round_5_steps_in_the_order_of_the_plan_around_the_ju
     source = Path(measure.__file__).read_text(encoding="utf-8")
     order = [source.index(text) for text in (
         'steps["maximized"] = session.maximized()', 'session.fullscreen("max")', 'steps.update(session.surface(("iframes_max",)',
-        "for name, features in surfaces.POPUP_FEATURES:", "session.juggler(work, scale)",
+        'steps.update(session.surface(("iframes_transformed",)', "for name, features in surfaces.POPUP_FEATURES:", "session.juggler(work, scale)",
         "session.juggler_repeat(work, scale)", "session.juggler_again(work, scale)", "session.juggler2_repeat(work, scale)", 'session.fullscreen("res", fits)', '("iframes_juggler",)',
         "session.juggler_back(steps[\"maximized\"])", "session.clear_juggler()", "session.restored(work, scale)")]
     assert order == sorted(order) and len(set(order)) == len(order)
-    for name in ("fullscreen_max_in", "iframes_max", "juggler_repeat", "juggler2_repeat", "fullscreen_res_in", "iframes_juggler"):
+    for name in ("fullscreen_max_in", "iframes_max", "iframes_transformed", "juggler_repeat", "juggler2_repeat", "fullscreen_res_in", "iframes_juggler"):
         assert f'if "{name}" in steps_wanted:' in source, name
     assert 'if name in steps_wanted:' in source, "the two popups"
 

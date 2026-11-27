@@ -27,6 +27,10 @@ POPUP_FEATURES = (("popup", "width=500,height=400"), ("popup_pos", "left=100,top
 FRAME_NAMES = ("same", "cross")
 FRAME_KINDS = {"same": "same-origin (127.0.0.1, the page's own port)",
                "cross": "cross-site (localhost against the page's 127.0.0.1, another port)"}
+#: The iframes of step `iframes_transformed`: each origin under each transform, named <origin>_<transform>, run one at a time at
+#: the same place (a container fixed at left 10, top 200, 300 x 120 CSS, transform-origin 0 0, holding a 300 x 120 iframe).
+TRANSFORMS = (("scale", "scale(1.5)"), ("rotate", "rotate(10deg)"))
+TRANSFORMED_NAMES = tuple(f"{origin}_{kind}" for origin in ("cross", "same") for kind, _ in TRANSFORMS)
 #: How long to wait, in seconds, for a fullscreen change, a popup or its page, an iframe, a popup to close.
 FULLSCREEN_TIMEOUT, POPUP_TIMEOUT, FRAME_TIMEOUT = 15.0, 20.0, 20.0
 
@@ -75,6 +79,14 @@ FRAME_RECTS = ("const r = (id) => { const b = document.getElementById(id).getBou
 ASK_FRAMES = _PAGE + "w.__askFrames(arguments[0]); return true;"
 FRAME_RECORDS = _PAGE + "return JSON.stringify(w.__frameRecords);"
 REMOVE_FRAMES = _PAGE + "w.__removeFrames(); return true;"
+#: The iframes under a transform: add one (arguments: name, url, transform), the container's geometry, ask it for its record
+#: with every mouse move it saw (argument: name), remove it.
+ADD_TRANSFORMED = _PAGE + "w.__addTransformed(arguments[0], arguments[1], arguments[2]); return true;"
+TRANSFORMED_GEOMETRY = _PAGE + "return w.__transformedGeometry();"
+ASK_TRANSFORMED = _PAGE + "w.__askTransformed(arguments[0], arguments[1]); return true;"
+REMOVE_TRANSFORMED = _PAGE + "w.__removeTransformed(); return true;"
+FRAME_HELLO_OF = _PAGE + "return !!w.__frameHello[arguments[0]];"
+FRAME_RECORD_OF = _PAGE + "return JSON.stringify(w.__frameRecords[arguments[0]] || null);"
 
 
 # ---------------------------------------------------------------------------- the points of the real mouse
@@ -90,6 +102,27 @@ def region_points(chrome: Dict[str, Any], native: Dict[str, Any], region: Dict[s
              round(oy + (browser["y"] + region["y"] + fy * region["height"]) * scale)) for fx, fy in fractions]
 
 
+def transformed_points(chrome: Dict[str, Any], native: Dict[str, Any], geometry: Dict[str, Any],
+                       fractions: Sequence[Tuple[float, float]] = FRAME_FRACTIONS) -> List[Dict[str, Any]]:
+    """Per fraction of the frame (300 x 120 before the transform): the point in CSS pixels of the page (the container's place
+    plus the container's matrix applied to the point, transform-origin 0 0) and the screen point in device pixels (the browser's
+    rect in the chrome plus that point, scaled by the window's pixel ratio, from the client origin). The point is inside the
+    transformed frame by construction (an affine image of a point of the frame), and `inside_rect` says it is inside the
+    container's bounding rectangle from getBoundingClientRect too."""
+    a, b, c, d, e, f = geometry["matrix"]
+    ox, oy = native["client_origin"]
+    browser, scale = chrome["browser"], chrome["devicePixelRatio"]
+    rect = geometry["rect"]
+    out = []
+    for fx, fy in fractions:
+        u, v = fx * geometry["width"], fy * geometry["height"]
+        x, y = geometry["left"] + a * u + c * v + e, geometry["top"] + b * u + d * v + f
+        out.append({"fraction": [fx, fy], "css": [x, y],
+                    "inside_rect": rect["x"] <= x <= rect["x"] + rect["width"] and rect["y"] <= y <= rect["y"] + rect["height"],
+                    "device": [round(ox + (browser["x"] + x) * scale), round(oy + (browser["y"] + y) * scale)]})
+    return out
+
+
 def client_points(native: Dict[str, Any], fractions: Sequence[Tuple[float, float]] = POPUP_FRACTIONS) -> List[Tuple[int, int]]:
     """Screen points (device pixels) at fractions of a window's client area (Windows' client rect from its client origin)."""
     ox, oy = native["client_origin"]
@@ -102,6 +135,12 @@ def frame_urls(same_port: int, cross_port: int) -> Dict[str, str]:
     name against an IP, and another port). The url carries the name the frame answers to."""
     return {"same": f"http://127.0.0.1:{same_port}/surface.html?name=same",
             "cross": f"http://localhost:{cross_port}/surface.html?name=cross"}
+
+
+def transformed_urls(same_port: int, cross_port: int) -> Dict[str, str]:
+    """The pages of the iframes under a transform, by name (<origin>_<transform>): the same two origins as `frame_urls`."""
+    base = frame_urls(same_port, cross_port)
+    return {name: base[name.split("_")[0]].replace(f"name={name.split('_')[0]}", f"name={name}") for name in TRANSFORMED_NAMES}
 
 
 def popup_url(port: int) -> str:
