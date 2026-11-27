@@ -46,6 +46,9 @@ FRAME_RECTS = {"same": {"x": 10, "y": 60, "width": 300, "height": 120}, "cross":
 CHROME = {"devicePixelRatio": 1.0, "browser": {"x": 0, "y": 85, "width": 1900, "height": 900}, "windowState": 1}
 NATIVE = {"client_origin": [0, 0], "client_rect": [0, 0, 1900, 985], "window_rect": [-8, -8, 1928, 1040]}
 POPUP_NATIVE = {"client_origin": [108, 152], "client_rect": [0, 0, 500, 400], "window_rect": [100, 80, 616, 620]}
+EARLY_MOMENTS = ("parse", "dcl", "raf1", "raf2", "load")
+PAGE_EARLY = {m: {"mozInnerScreenX": 8.0, "mozInnerScreenY": 1.0 + i, "now": 5.0 + i} for i, m in enumerate(EARLY_MOMENTS)}
+POPUP_EARLY = {m: {"mozInnerScreenX": 108.0, "mozInnerScreenY": 152.0, "now": 9.0 + i} for i, m in enumerate(EARLY_MOMENTS)}
 
 
 def state(events=3):
@@ -136,6 +139,7 @@ class Browser(measure.Session):
         table = {surfaces.FULLSCREEN_CONTENT: lambda: [self.fs, 1920, 1080], surfaces.FULLSCREEN_ERROR: lambda: self.fs_error,
                  surfaces.POPUP_READY: lambda: self.popup_open, surfaces.POPUP_SIZE: lambda: [500, 400, 516, 540, 100, 80],
                  surfaces.POPUP_STATE: lambda: json.dumps(dict(state(), innerWidth=500)),
+                 surfaces.POPUP_EARLY: lambda: json.dumps(POPUP_EARLY), surfaces.EARLY: lambda: json.dumps(PAGE_EARLY),
                  surfaces.FRAMES_HELLO: lambda: ["cross", "same"] if self.frames_load else ["same"],
                  surfaces.FRAME_RECTS: lambda: FRAME_RECTS,
                  surfaces.FRAME_RECORDS: lambda: json.dumps({"same": state(), "cross": state()}),
@@ -285,7 +289,7 @@ SURFACE_HTML = (HERE / "surface.html").read_text(encoding="utf-8")
 
 
 def test_the_pages_load_the_one_script_and_the_main_page_has_the_two_buttons_the_real_clicks_land_on():
-    assert PAGE_HTML.count('<script src="/page.js"></script>') == 1 and "<script>" not in PAGE_HTML
+    assert PAGE_HTML.count('<script src="/page.js"></script>') == 1 and PAGE_HTML.count("<script>") == 1, "the one inline script is the early one"
     assert SURFACE_HTML.count('<script src="/page.js"></script>') == 1
     assert 'id="fs"' in PAGE_HTML and 'id="open"' in PAGE_HTML and "position:fixed" in PAGE_HTML
     assert "requestFullscreen()" in PAGE_JS and "window.open(window.__popupUrl, \"_blank\", window.__popupFeatures)" in PAGE_JS
@@ -392,6 +396,7 @@ def test_a_popup_is_opened_by_a_real_click_with_the_features_asked_recorded_with
     assert browser.clicks == [button_centre("open")] and browser.popup_args == [URLS["popup"], features]
     assert step["features"] == features and step["windows_opened"] == 1 and step["closed"] is True and step["settled"] is True
     assert step["native"] == POPUP_NATIVE and step["content"]["innerWidth"] == 500 and step["content"]["probe"]["screen"]["pixelDepth"] == 24
+    assert step["content"]["early"] == POPUP_EARLY, "what the popup's page read in its first moments is in its record"
     assert [m["asked"] for m in step["input"]] == [list(p) for p in surfaces.client_points(POPUP_NATIVE)]
     assert browser.moves == [surfaces.client_points(POPUP_NATIVE)] and browser.popup_open is False
     assert ("foreground", 2) in browser.log and browser.log.index("popup_reset") < browser.log.index("popup_close")
@@ -586,19 +591,25 @@ EARLY_FIELDS = ("mozInnerScreenX", "mozInnerScreenY", "screenX", "screenY", "out
                 "devicePixelRatio")
 
 
-def early_script():
-    head = SURFACE_HTML.split("<head>", 1)[1]
+def early_script(html=None):
+    head = (SURFACE_HTML if html is None else html).split("<head>", 1)[1]
     return head.split("<script>", 1)[1].split("</script>", 1)[0]
 
 
-def test_the_frame_page_has_the_inline_early_script_first_in_head_before_any_other_script_or_stylesheet():
-    assert SURFACE_HTML.startswith("<!doctype html>\n<head>\n<script>\n")
-    head = SURFACE_HTML.split("<head>", 1)[1]
+@pytest.mark.parametrize("html", [SURFACE_HTML, PAGE_HTML], ids=["the frame page", "the top page"])
+def test_the_page_has_the_inline_early_script_first_in_head_before_any_other_script_or_stylesheet(html):
+    assert html.startswith("<!doctype html>\n<head>\n<script>\n")
+    head = html.split("<head>", 1)[1]
     inline = head.index("<script>")
-    for other in ('<script src=', "<style", "<link", "<meta", "<title", "src="):
+    for other in ('<script src=', "<style", "<link", "<meta", "<title", "src=", "<button"):
         assert head.find(other) == -1 or head.find(other) > inline, other  # a tag that is in the page comes after the early script
     assert head.count("<script>") == 1 and head.index("</script>") < head.index('<script src="/page.js"></script>')
-    assert SURFACE_HTML.count('<script src="/page.js"></script>') == 1
+    assert html.count('<script src="/page.js"></script>') == 1
+
+
+def test_the_top_page_and_the_frame_page_run_the_same_early_script_byte_for_byte():
+    assert early_script(PAGE_HTML) == early_script(SURFACE_HTML)
+    assert "window.__early = {}" in early_script(PAGE_HTML)
 
 
 def test_the_early_script_stores_window_early_with_the_five_moments_the_nine_reads_and_the_time_each_read_in_its_own_try():
@@ -649,3 +660,47 @@ def test_each_iframe_step_adds_new_iframe_elements_so_a_frame_s_parse_is_the_fir
     browser.iframes()
     browser.iframes()
     assert browser.log.count("remove_frames") == 2 and browser.frames_on is False
+
+
+# ---------------------------------------------------------------------------- round 8: what the top document and the popups read in their first moments
+
+
+def test_the_two_scripts_that_read_the_early_moments_are_the_pages_own_and_the_popup_s():
+    assert "w.__early" in surfaces.EARLY and "JSON.stringify" in surfaces.EARLY and surfaces.EARLY.startswith(surfaces._PAGE)
+    assert "p.__early" in surfaces.POPUP_EARLY and "JSON.stringify" in surfaces.POPUP_EARLY and surfaces.POPUP_EARLY.startswith(surfaces._POPUP)
+    assert surfaces.popup_url(5001).split("/")[3].startswith("surface.html"), "the popup page is the frame page, with the early script"
+
+
+class Maximizing(Browser):
+    """A Browser that also maximizes: the chrome says it is maximized and the page answers the sizes."""
+
+    def chrome(self, script, args=None):
+        if script == "window.maximize(); return true;":
+            self.log.append("maximize")
+            return True
+        if script == measure.CHROME_SIZE:
+            return [True, 1900, 900, 1936, 1049]
+        return super().chrome(script, args)
+
+    def content(self, script, args=None):
+        if script == measure.CONTENT_SIZE:
+            return [1936, 1049, 1900, 900]
+        return super().content(script, args)
+
+    def record(self):
+        return dict(super().record(), content={"innerWidth": 1900})
+
+
+def test_the_maximized_step_records_the_top_page_s_early_moments_in_its_content_and_keeps_the_other_fields():
+    step = Maximizing().maximized()
+    assert step["content"]["early"] == PAGE_EARLY and step["settled"] is True
+    assert set(step) == {"chrome", "native", "input", "content", "settled"}
+    assert step["content"] == {"innerWidth": 1900, "early": PAGE_EARLY}, "the settled reading is kept, the early one added"
+
+
+def test_a_page_that_stored_no_early_is_recorded_as_null_and_not_an_error():
+    class Bare(Maximizing):
+        def content(self, script, args=None):
+            return json.dumps(None) if script == surfaces.EARLY else super().content(script, args)
+
+    assert Bare().maximized()["content"]["early"] is None

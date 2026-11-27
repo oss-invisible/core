@@ -1,4 +1,33 @@
 <!doctype html>
+<head>
+<script>
+// The document's own first moments, before anything else of the page runs: what the document reads at parse time, at DOMContentLoaded, at
+// the first and the second animation frame and at load (read only; nothing here changes what the page reads or when).
+(function () {
+  var early = window.__early = {};
+  var names = ["mozInnerScreenX", "mozInnerScreenY", "screenX", "screenY", "outerWidth", "outerHeight", "innerWidth", "innerHeight", "devicePixelRatio"];
+  function snap() {
+    var out = {};
+    for (var i = 0; i < names.length; i++) {
+      try { out[names[i]] = window[names[i]]; } catch (e) { out[names[i]] = "error: " + e; }
+    }
+    try { out.now = performance.now(); } catch (e) { out.now = "error: " + e; }
+    return out;
+  }
+  function at(moment) {
+    try { early[moment] = snap(); } catch (e) { early[moment] = {error: "error: " + e}; }
+  }
+  at("parse");
+  try { document.addEventListener("DOMContentLoaded", function () { at("dcl"); }); } catch (e) { early.dcl = {error: "error: " + e}; }
+  try {
+    requestAnimationFrame(function () {
+      at("raf1");
+      requestAnimationFrame(function () { at("raf2"); });
+    });
+  } catch (e) { early.raf1 = {error: "error: " + e}; }
+  try { window.addEventListener("load", function () { at("load"); }); } catch (e) { early.load = {error: "error: " + e}; }
+})();
+</script>
 <meta charset="utf-8">
 <title>window geometry</title>
 <style>

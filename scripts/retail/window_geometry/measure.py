@@ -10,7 +10,9 @@ the chrome context. Marionette is the one difference from retail-capture.yml; wh
 .github/workflows/retail-window-geometry.yml.
 
 Steps (plan.py says which launch takes which). `maximized` has the same fields as every full record (what the page reads, what the
-chrome reads, what Windows says about the top-level window, and a real mouse move over the content). The steps of plan.ROUND5_STEPS, taken on launches a and b (p and q where no display launch could be made), in
+chrome reads, what Windows says about the top-level window, and a real mouse move over the content), and what the page read in
+its first moments: `content.early` (parse, DOMContentLoaded, the first and second animation frame, load; page.html's first inline
+script, which is the one of surface.html). The steps of plan.ROUND5_STEPS, taken on launches a and b (p and q where no display launch could be made), in
 this order: on the maximized window, element fullscreen entered by a REAL click (SendInput on #fs, whose handler calls
 requestFullscreen; Marionette cannot give the user activation) and left by document.exitFullscreen() (`fullscreen_max_in`,
 `fullscreen_max_out`), F11-style fullscreen by window.fullScreen in the chrome (`f11_max_in`, `f11_max_out`), the main page with a
@@ -18,7 +20,7 @@ same-origin and a cross-site iframe, each recording its own content record after
 two origins as four iframes under CSS transforms (a container with scale(1.5), one with rotate(10deg), each holding a 300x120 frame,
 one at a time; every mouse event a frame saw at three points of its transformed area is kept: `iframes_transformed`), and two popups
 opened by a real click on #open, the second with left and top (`popup`, `popup_pos`; the popup page records its content
-record and Windows' rects of its window are kept; it is closed). A step this browser did not allow is
+record, its first moments (`content.early`) and Windows' rects of its window are kept; it is closed). A step this browser did not allow is
 `{"not_possible": reason}`.
 Writes OUT/raw.json. The result is valid only when no process of the install folder is left.
 """
@@ -348,7 +350,9 @@ class Session:
             return [self.chrome(CHROME_SIZE), self.content(CONTENT_SIZE)]
 
         _, settled = wait_stable(read, ready=lambda v: v[0][0] is True)
-        return dict(self.record(), settled=settled)
+        step = dict(self.record(), settled=settled)
+        step["content"] = dict(step["content"], early=json.loads(self.content(surfaces.EARLY)))
+        return step
 
     # ----- round 5: fullscreen, popups, iframes (the scripts and the points are in surfaces.py)
 
@@ -434,7 +438,8 @@ class Session:
     def popup(self, features: str) -> Dict[str, Any]:
         """A popup from the main page: a REAL click on #open, whose handler calls window.open(url, '_blank', features). Its
         page records its full content record (inner, outer, screenX/Y, mozInnerScreen, probe) after real mouse moves over its
-        content; Windows' rects of the popup window are recorded; the popup is closed."""
+        content, and what it read in its first moments (`content.early`, surface.html's first inline script); Windows' rects of
+        the popup window are recorded; the popup is closed."""
         if "popup" not in self.urls:
             raise surfaces.StepNotPossible("no popup page was served")
         before = set(self.windows())
@@ -458,8 +463,10 @@ class Session:
         self.content(surfaces.POPUP_RESET)
         moves = self.move(surfaces.client_points(native)) if "client_rect" in native else []
         time.sleep(0.3)
+        content = json.loads(self.content(surfaces.POPUP_STATE))
+        content["early"] = json.loads(self.content(surfaces.POPUP_EARLY))
         step = {"features": features, "windows_opened": len(opened), "native": native, "input": moves, "settled": settled,
-                "click": clicked, "content": json.loads(self.content(surfaces.POPUP_STATE))}
+                "click": clicked, "content": content}
         self.content(surfaces.POPUP_CLOSE)
         _, closed = wait_stable(lambda: self.new_windows(before), ready=lambda v: not v, hold=0.3, timeout=surfaces.POPUP_TIMEOUT)
         step["closed"] = closed

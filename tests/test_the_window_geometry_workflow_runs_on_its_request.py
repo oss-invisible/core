@@ -145,3 +145,14 @@ def test_the_header_no_longer_asks_for_any_restored_window_step_of_a_launch():
         assert needle not in " ".join(run_scale.COMMAND_IN_WORDS.split()), needle
     assert "grid" not in run_scale.PROOF_RULE and "launch n" not in run_scale.PROOF_RULE
     assert not (set(plan.COMPARED_STEPS) & {"juggler", "restored", "iframes_juggler"})
+
+
+def test_the_header_says_the_top_page_and_the_popups_record_their_early_reads_and_that_none_of_it_is_judged():
+    header = " ".join(line.lstrip("# ").strip() for line in TEXT.split("\non:")[0].splitlines())
+    for needle in ("Round 8 also gives the page the launch opens (page.html) the same first inline script as surface.html",
+                   "the very first thing in its head", "window.__early", "The maximized step records it as `content.early`",
+                   "so does each popup", "next to the settled reading and the window's client origin", "`now` left out",
+                   "none of it is judged"):
+        assert needle in header, needle
+    run_scale = load_window_geometry("run_scale")
+    assert "what the page read at parse, DOMContentLoaded, the first and second animation frame and load" in " ".join(run_scale.COMMAND_IN_WORDS.split())

@@ -59,6 +59,9 @@ WINDOW_FULLSCREEN_OFF = "window.fullScreen = false; return true;"
 
 _PAGE = "const w = window.wrappedJSObject || window; "
 _POPUP = _PAGE + "const p = w.__popup; "
+#: What a page read in its first moments (parse, DOMContentLoaded, the first and second animation frame, load): the main page's own
+#: and the popup's (page.html and surface.html start with the same inline script, which stores window.__early); a JSON string.
+EARLY = _PAGE + "return JSON.stringify(w.__early || null);"
 #: Store what the click on #open opens (arguments: url, features).
 SET_POPUP = _PAGE + "w.__popupUrl = arguments[0]; w.__popupFeatures = arguments[1]; w.__popup = null; return true;"
 #: The popup is open, its page is loaded and has page.js's recorder.
@@ -67,6 +70,7 @@ POPUP_READY = (_POPUP + "try { return !!(p && !p.closed && p.document && p.docum
 POPUP_SIZE = (_POPUP + "return [p.innerWidth, p.innerHeight, p.outerWidth, p.outerHeight, p.screenX, p.screenY];")
 POPUP_RESET = _POPUP + "p.__reset(); return true;"
 POPUP_STATE = _POPUP + "return p.__state();"
+POPUP_EARLY = _POPUP + "return JSON.stringify(p.__early || null);"
 POPUP_CLOSE = _POPUP + "p.close(); return true;"
 POPUP_CLOSED = _POPUP + "return !p || p.closed;"
 

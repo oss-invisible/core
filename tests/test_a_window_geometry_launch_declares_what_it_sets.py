@@ -213,7 +213,7 @@ def test_the_page_reads_in_itself_what_can_differ_under_rdm():
             "document.documentElement.clientWidth", "document.documentElement.clientHeight"):
         assert needle in probe, needle
     main_page = (Path(measure.__file__).parent / "page.html").read_text(encoding="utf-8")
-    assert "JSON.stringify" in probe and main_page.count('<script src="/page.js"></script>') == 1 and "<script>" not in main_page
+    assert "JSON.stringify" in probe and main_page.count('<script src="/page.js"></script>') == 1 and main_page.count("<script>") == 1, "the one inline script is the early one"
 
 
 def test_the_content_record_of_every_step_calls_the_probe_in_the_page_itself_and_keeps_what_it_read_before():

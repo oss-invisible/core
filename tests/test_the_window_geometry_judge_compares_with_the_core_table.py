@@ -595,7 +595,7 @@ def test_the_early_reads_of_each_frame_are_printed_per_moment_next_to_the_settle
             assert "window client origin css [" in first
             for moment in ("dcl", "raf1", "raf2", "load"):
                 assert any(f" early {moment}: " in line for line in lines), moment
-    assert any("0 difference(s) in what the frames read in their first moments" in line for line in result["lines"])
+    assert any("0 difference(s) in what the pages and the frames read in their first moments" in line for line in result["lines"])
 
 
 def test_a_difference_between_launch_a_and_launch_b_in_the_early_reads_is_printed_without_the_time_and_is_not_red():
@@ -606,7 +606,7 @@ def test_a_difference_between_launch_a_and_launch_b_in_the_early_reads_is_printe
     result = evaluate([a, b])
     assert not result["red"], result["problems"]
     lines = result["lines"]
-    assert any("1 difference(s) in what the frames read in their first moments (printed, not judged)" in line for line in lines)
+    assert any("1 difference(s) in what the pages and the frames read in their first moments (printed, not judged)" in line for line in lines)
     assert any(line.startswith("    iframes_max.frames.cross.state.early.raf1.mozInnerScreenY: 93.0 vs 85.0") for line in lines)
     assert not any(".now" in line and "vs" in line for line in lines)
     assert any("dpr 1 launch a vs b: 0 difference(s)" in line for line in lines), "the judged comparison is the same as before"
@@ -636,3 +636,115 @@ def test_the_early_reads_are_in_no_other_step_and_a_difference_in_a_judged_numbe
     result = evaluate([a, b])
     assert result["red"] and any("iframes_max.frames.cross.state.screenX" in line for line in result["lines"])
     assert not any(" early " in line for line in result["lines"] if line.startswith("    iframes_transformed"))
+
+
+# ---------------------------------------------------------------------------- round 8: what the top page and the popups read in their first moments
+
+
+def with_page_early(run, parse_x=0.0, now=1.0, steps=("maximized", "popup", "popup_pos")):
+    for name in steps:
+        run["steps"][name]["content"]["early"] = early_of(parse_x, now)
+
+
+def test_the_top_page_s_early_reads_are_printed_per_moment_next_to_the_settled_reading_and_the_client_origin_and_are_not_judged():
+    a, b = two_launches(1.0)
+    with_page_early(a, 0.0, now=1.0)
+    with_page_early(b, 0.0, now=7.5)  # only the time differs
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    lines = [line for line in result["lines"] if line.startswith("    maximized early ")]
+    assert len(lines) == 10, "five moments, in the two compared launches"
+    first = [line for line in lines if " early parse: " in line][0]
+    assert "mozInnerScreenX/Y [0.0, 85.0] screenX/Y [-8, -8] outer [1936, 1049] inner [300, 120] dpr 1 now 1.0 " in first
+    assert "settled mozInnerScreenX/Y [0.0, " in first and "screenX/Y [-8, -8] ; window client origin css [" in first
+    assert "parent mozInnerScreenX/Y" not in first, "the top page has no parent"
+    for moment in ("dcl", "raf1", "raf2", "load"):
+        assert any(f" early {moment}: " in line for line in lines), moment
+    assert any("dpr 1 launch a vs b: 0 difference(s)" in line for line in result["lines"]), "the judged comparison is the same as before"
+    assert any("0 difference(s) in what the pages and the frames read in their first moments" in line for line in result["lines"])
+
+
+def test_the_window_client_origin_is_printed_in_css_pixels_of_the_window_s_scale():
+    run = make_run(1.25)
+    with_page_early(run, steps=("maximized",))
+    origin = run["steps"]["maximized"]["native"]["client_origin"]
+    line = next(line for line in evaluate([run, make_run(1.25, "b")])["lines"] if line.startswith("    maximized early parse: "))
+    assert f"window client origin css {[origin[0] / 1.25, origin[1] / 1.25]}" in line
+
+
+def test_a_difference_between_launch_a_and_launch_b_in_the_top_page_s_early_reads_is_printed_without_the_time_and_is_not_red():
+    a, b = two_launches(1.0)
+    with_page_early(a, 0.0)
+    with_page_early(b, 0.0, now=9.0)
+    b["steps"]["maximized"]["content"]["early"]["raf1"]["mozInnerScreenY"] = 85.0
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    lines = result["lines"]
+    assert any("1 difference(s) in what the pages and the frames read in their first moments (printed, not judged)" in line for line in lines)
+    assert any(line.startswith("    maximized.content.early.raf1.mozInnerScreenY: 93.0 vs 85.0") for line in lines)
+    assert not any(".now" in line and "vs" in line for line in lines)
+    assert any("dpr 1 launch a vs b: 0 difference(s)" in line for line in lines), "the judged comparison is the same as before"
+
+
+def test_a_judged_number_of_the_maximized_step_is_still_red_when_the_early_reads_are_there():
+    a, b = two_launches(1.0)
+    with_page_early(a)
+    with_page_early(b)
+    b["steps"]["maximized"]["content"]["innerHeight"] += 1
+    result = evaluate([a, b])
+    assert result["red"] and any("maximized.content.innerHeight" in line for line in result["lines"])
+    assert [p for p in result["problems"] if "differ on" in p] == ["dpr 1: launch a and b differ on 1 number(s)"], "the early reads do not count"
+
+
+def test_the_popups_early_reads_are_printed_for_each_popup_next_to_its_own_window_and_are_not_judged():
+    a, b = two_launches(1.5)
+    with_page_early(a, 108.0, now=1.0)
+    with_page_early(b, 108.0, now=4.0)
+    b["steps"]["popup_pos"]["content"]["early"]["parse"]["screenX"] = 5
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    for name in ("popup", "popup_pos"):
+        lines = [line for line in result["lines"] if line.startswith(f"    {name} early ")]
+        assert len(lines) == 10 and all("window client origin css [72.0, 101.33333333333333]" in line for line in lines), name
+        assert any(" early parse: mozInnerScreenX/Y [108.0, 85.0]" in line for line in lines)
+    assert any(line.startswith("    popup_pos.content.early.parse.screenX: -8 vs 5") for line in result["lines"])
+    assert not any(line.startswith("    popup.content.early") for line in result["lines"])
+
+
+def test_a_page_without_early_or_with_a_moment_not_reached_is_printed_so_and_is_not_red():
+    a, b = two_launches(1.0)
+    for run in (a, b):
+        with_page_early(run)
+        del run["steps"]["popup"]["content"]["early"]
+        del run["steps"]["maximized"]["content"]["early"]["raf2"]
+        run["steps"]["maximized"]["content"]["early"]["load"] = {"error": "error: boom"}
+        run["steps"]["popup_pos"]["content"]["early"] = None
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    text = "\n".join(result["lines"])
+    assert "popup early: none recorded" in text and "popup_pos early: none recorded" in text
+    assert "maximized early raf2: not reached" in text
+    assert "maximized early load: mozInnerScreenX/Y [None, None]" in text and "error error: boom" in text
+    assert "maximized early: none recorded" not in text
+
+
+def test_a_record_without_any_early_prints_none_recorded_for_the_maximized_step_and_is_not_red():
+    result = evaluate(two_launches(1.0))
+    assert not result["red"], result["problems"]
+    assert sum(line.startswith("    maximized early: none recorded") for line in result["lines"]) == 2
+
+
+def test_launch_m_prints_the_early_reads_of_its_maximized_step_too():
+    m = make_run(1.25, "m", resolution=(1280, 720))
+    with_page_early(m, steps=("maximized",))
+    result = evaluate(two_launches(1.25) + [m])
+    assert not result["red"], result["problems"]
+    assert sum(line.startswith("    maximized early ") and ": mozInnerScreenX/Y" in line for line in result["lines"]) == 5
+
+
+def test_the_early_reads_are_taken_out_of_every_judged_step_and_kept_only_when_asked():
+    run = make_run(1.0)
+    with_page_early(run)
+    assert all("early" not in step["content"] for step in judge.core_steps_of(run).values() if "content" in step)
+    assert all("early" in judge.core_steps_of(run, with_early=True)[name]["content"] for name in ("maximized", "popup", "popup_pos"))
+    assert "early" in run["steps"]["maximized"]["content"], "the run itself is not changed"

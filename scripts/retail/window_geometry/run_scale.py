@@ -50,7 +50,8 @@ MARIONETTE_EXCEPTION = (
 COMMAND_IN_WORDS = (
     "Per scale: set each requested resolution, then the Windows display scale (DisplayConfig -3/-4), read the "
     "effective DPI back; launch retail Firefox -no-remote -profile <fresh dir> -marionette <page>; maximize the "
-    "window, move the mouse, record; from the maximized window, element fullscreen by a real click and F11-style fullscreen, "
+    "window, move the mouse, record (with what the page read at parse, DOMContentLoaded, the first and second animation frame "
+    "and load); from the maximized window, element fullscreen by a real click and F11-style fullscreen, "
     "a same-origin and a cross-site iframe, the same two origins under two CSS transforms, and two popups opened by a real "
     "click. Every resolution Windows offers: launch m, maximized only. Last, 100% scale and layout.css.devPixelsPerPx = the "
     "scale (launches p and q), and in the job of scale 1 devPixelsPerPx 0.75 and 0.5 (launch m).")

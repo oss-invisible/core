@@ -36,6 +36,12 @@ name: retail-window-geometry
 # everything about the maximized window, fullscreen from it, popups, iframes_max, iframes_transformed and the frames' early readings.
 # The red of round 7 on iframes_juggler (events.count 2 against 3 at dpr 1.5, run 46061552952) leaves with the step: the step is not
 # measured any more, and that is the only reason it leaves the verdict, not a way around the red.
+# Round 8 also gives the page the launch opens (page.html) the same first inline script as surface.html, the very first thing in its
+# head: window.__early holds what the top document reads at parse time, at DOMContentLoaded, at the first and second animation frame
+# and at load (mozInnerScreenX/Y, screenX/Y, outer and inner size, devicePixelRatio, performance.now). The maximized step records it
+# as `content.early`, and so does each popup (its page is surface.html, which already had the script). The judge prints one line per
+# moment next to the settled reading and the window's client origin, and the differences of launch a and b in them with `now` left
+# out; none of it is judged.
 # The job has 30 minutes (it had 60) and run_scale.TIME_BUDGET_SECONDS is 20 minutes (it was 49): the jobs of round 7, with the
 # restored-window steps and the grid still in them, took 4 to 11 minutes, and the steps that remain are the shorter part of them.
 #
