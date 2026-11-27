@@ -275,7 +275,9 @@ def test_the_panels_of_launch_n_that_qualify_at_scale_2_are_the_two_tall_ones_in
 def test_the_numbers_of_the_normal_density_rule_are_the_cores():
     frame_table = load_window_geometry("frame_table")
     core = frame_table.core_constants()
-    assert plan.TASKBAR_CSS == core.TASKBAR_PX and plan.NORMAL_DENSITY_FROM_CSS == core.AUTO_COMPACT_BELOW_CSS_INT
+    assert plan.TASKBAR_CSS == core.TASKBAR_PX
+    assert plan.NORMAL_DENSITY_FROM_CSS == core.AUTO_COMPACT_REFERENCE_TABSTRIP_CSS / core.AUTO_COMPACT_THRESHOLD
+    assert core.ui_density(plan.NORMAL_DENSITY_FROM_CSS) == "normal" and core.ui_density(plan.NORMAL_DENSITY_FROM_CSS - 0.001) == "compact"
     assert frame_table.declared_chrome_height(2.0, "normal") == 170 and frame_table.declared_chrome_height(2.0, "compact") == 146
     assert frame_table.density_at(719) == "compact" and frame_table.density_at(720) == "normal"
     for panel in plan.normal_density_panels(2.0):

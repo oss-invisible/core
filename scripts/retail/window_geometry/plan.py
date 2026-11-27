@@ -68,7 +68,8 @@ NORMAL_DENSITY_ROLE = "normal density at scale 2"
 NORMAL_DENSITY_STEPS = ("maximized", "iframes_max")
 NORMAL_DENSITY_PANELS = ((3840, 2160), (2560, 1600), (2560, 1440))
 #: The taskbar (CSS px at scale 1, invisible_core TASKBAR_PX) and the reference height from which the density is normal
-#: (invisible_core AUTO_COMPACT_BELOW_CSS_INT); a test holds both equal to the core's.
+#: (the height at which invisible_core ui_density turns from compact to normal, AUTO_COMPACT_REFERENCE_TABSTRIP_CSS /
+#: AUTO_COMPACT_THRESHOLD = 36 / 0.05, browser.js gUIDensity); a test holds both equal to the core's.
 TASKBAR_CSS, NORMAL_DENSITY_FROM_CSS = 48, 720
 #: Juggler's size in CSS pixels. The frame allowance is what a restored window needs above and around the content
 #: (chrome 73 CSS at most 85, plus the borders) with some slack; a smaller work area gets the largest height that fits.
