@@ -619,8 +619,10 @@ class Session:
 
     def iframes(self) -> Dict[str, Any]:
         """The main page with a same-origin and a cross-site iframe (both local): each frame records its full content record
-        (inner, outer, screenX/Y, mozInnerScreen, devicePixelRatio, probe, the mouse events) after real mouse moves over it. The
-        frames are removed afterwards."""
+        (inner, outer, screenX/Y, mozInnerScreen, devicePixelRatio, probe, the mouse events) after real mouse moves over it, and what the
+        frame read in its first moments (`early`: parse, DOMContentLoaded, the first and second animation frame, load; surface.html's
+        first inline script). The frames are added fresh at each step (new iframe elements, so each is a new document, the parse
+        reading its first moment) and removed afterwards."""
         if not all(name in self.urls for name in surfaces.FRAME_NAMES):
             raise surfaces.StepNotPossible("no iframe page was served")
         names = sorted(surfaces.FRAME_NAMES)

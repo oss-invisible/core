@@ -638,3 +638,74 @@ def test_the_pages_the_launch_serves_are_named_for_the_steps_that_load_them():
     for name, _ in measure.SERVED.values():
         assert (HERE / name).is_file(), name
     assert surfaces.FULLSCREEN_TIMEOUT == 15.0 and surfaces.POPUP_TIMEOUT == 20.0 and surfaces.FRAME_TIMEOUT == 20.0
+
+
+# ---------------------------------------------------------------------------- round 7: what a frame reads in its first moments
+
+EARLY_FIELDS = ("mozInnerScreenX", "mozInnerScreenY", "screenX", "screenY", "outerWidth", "outerHeight", "innerWidth", "innerHeight",
+                "devicePixelRatio")
+
+
+def early_script():
+    head = SURFACE_HTML.split("<head>", 1)[1]
+    return head.split("<script>", 1)[1].split("</script>", 1)[0]
+
+
+def test_the_frame_page_has_the_inline_early_script_first_in_head_before_any_other_script_or_stylesheet():
+    assert SURFACE_HTML.startswith("<!doctype html>\n<head>\n<script>\n")
+    head = SURFACE_HTML.split("<head>", 1)[1]
+    inline = head.index("<script>")
+    for other in ('<script src=', "<style", "<link", "<meta", "<title", "src="):
+        assert head.find(other) == -1 or head.find(other) > inline, other  # a tag that is in the page comes after the early script
+    assert head.count("<script>") == 1 and head.index("</script>") < head.index('<script src="/page.js"></script>')
+    assert SURFACE_HTML.count('<script src="/page.js"></script>') == 1
+
+
+def test_the_early_script_stores_window_early_with_the_five_moments_the_nine_reads_and_the_time_each_read_in_its_own_try():
+    script = early_script()
+    assert "window.__early = {}" in script
+    for field in EARLY_FIELDS + ("performance.now()",):
+        assert field in script, field
+    for moment, hook in (("parse", 'at("parse");'), ("dcl", 'document.addEventListener("DOMContentLoaded"'),
+                         ("raf1", "requestAnimationFrame(function () {\n      at(\"raf1\");"),
+                         ("raf2", 'requestAnimationFrame(function () { at("raf2"); })'), ("load", 'window.addEventListener("load"')):
+        assert hook in script, moment
+    assert script.count("try {") >= 6 and script.count('"error: " + e') >= 6, "a try/catch around each read, an error string on failure"
+    assert "window[names[i]]" in script and "out.now = performance.now()" in script
+    for forbidden in ("preventDefault", "stopPropagation", "setTimeout", "setInterval", "innerHTML", "style", "fetch(", "postMessage"):
+        assert forbidden not in script, forbidden
+
+
+def test_the_frame_s_record_answer_carries_early_and_the_parent_keeps_it_in_the_record():
+    assert 'say({kind: "record", state: state, early: window.__early});' in PAGE_JS
+    assert 'window.__frameRecords[data.name] = Object.assign({}, data.state, {early: data.early})' in PAGE_JS
+    assert 'say({kind: "record", state: JSON.parse(window.__state())' not in PAGE_JS, "the old reply is gone"
+    assert 'if (data.moves) state.moves = window.__moves;' in PAGE_JS, "the moves of the transformed frames are kept"
+
+
+def test_the_early_of_a_frame_reaches_the_step_with_the_frame_s_record_in_iframes_and_the_fields_stay():
+    early = {m: {"mozInnerScreenX": 8.0 + i, "mozInnerScreenY": 1.0, "now": 5.0 + i} for i, m in enumerate(("parse", "dcl", "raf1", "raf2", "load"))}
+
+    class WithEarly(Browser):
+        def content(self, script, args=None):
+            if script == surfaces.FRAME_RECORDS:
+                return json.dumps({n: dict(state(), early=early) for n in ("same", "cross")})
+            return super().content(script, args)
+
+    step = WithEarly().iframes()
+    for name in ("same", "cross"):
+        assert step["frames"][name]["state"]["early"] == early
+        assert step["frames"][name]["state"]["events"] == {"count": 3, "dx": 7, "dy": 91}
+        assert set(step["frames"][name]) == {"kind", "rect", "input", "state"}
+
+
+def test_each_iframe_step_adds_new_iframe_elements_so_a_frame_s_parse_is_the_first_moment_of_a_new_document():
+    adds = PAGE_JS.split("window.__addFrames = ")[1].split("window.__removeFrames = ")[0]
+    assert adds.index("window.__removeFrames();") < adds.index('document.createElement("iframe")') and "frame.src = url;" in adds
+    assert "window.__frameHello = {};" in adds and "window.__frameRecords = {};" in adds
+    transformed = PAGE_JS.split("window.__addTransformed = ")[1].split("window.__removeTransformed = ")[0]
+    assert transformed.index("window.__removeTransformed();") < transformed.index('document.createElement("iframe")')
+    browser = Browser()
+    browser.iframes()
+    browser.iframes()
+    assert browser.log.count("remove_frames") == 2 and browser.frames_on is False

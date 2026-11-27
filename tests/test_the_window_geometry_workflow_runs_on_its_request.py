@@ -119,3 +119,12 @@ def test_the_header_says_what_round_5_added_and_why_the_job_has_sixty_minutes():
     for needle in ("Round 5", "fifteen steps", "iframes_transformed", "real click", "F11-style fullscreen", "cross-site iframe", "juggler2",
                    "60 minutes (it had 45)", "TIME_BUDGET_SECONDS is 49 minutes"):
         assert needle in header, needle
+
+
+def test_the_header_says_what_round_7_adds_and_keeps_the_time_budget():
+    header = TEXT.split("\non:")[0]
+    for needle in ("Round 7 adds no step and no launch", "surface.html", "parse time", "DOMContentLoaded", "first and second animation frame",
+                   "`early`", "iframes_max, iframes_juggler", "iframes_transformed", "each frame is a new document", "not judged",
+                   "The time budget is kept", "the same 60 minutes", "the same 49 minutes"):
+        assert needle in header, needle
+    assert header.index("Round 7") > header.index("Round 5"), "round 7 after round 5"

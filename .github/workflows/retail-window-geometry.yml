@@ -31,6 +31,13 @@ name: retail-window-geometry
 # the iframes on the window Juggler left. Every step's content record carries the page's probe (screen.pixelDepth included).
 # These steps add about two minutes to each of the two compared launches (about four per job), so the job has 60 minutes (it had 45) and
 # run_scale.TIME_BUDGET_SECONDS is 49 minutes (it was 34).
+# Round 7 adds no step and no launch: the frame page (surface.html) now starts with an inline script that stores what the frame
+# reads at parse time, at DOMContentLoaded, at the first and second animation frame and at load (mozInnerScreenX/Y, screenX/Y, outer
+# and inner size, devicePixelRatio, performance.now), and the frame's record answer carries it as `early` (iframes_max, iframes_juggler
+# and iframes_transformed). Each iframe step already adds new iframe elements, so each frame is a new document and `parse` is its first
+# moment. The judge prints one line per frame per moment next to the settled reading and the parent's mozInnerScreen, and the
+# differences of launch a and b in them, not judged. The time budget is kept: a script of five reads per frame adds nothing
+# measurable, the job has the same 60 minutes and run_scale.TIME_BUDGET_SECONDS the same 49 minutes.
 #
 # The `judge` job is the one verdict: it reads every artifact, prints the table, and is red when a scale is
 # missing, a launch left a process, launch a differs from launch b (p from q) on any step, the round 5 ones included (a

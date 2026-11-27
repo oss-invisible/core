@@ -9,7 +9,9 @@ Red when:
     iframes, popups, the repeated Juggler call). A step of round 5 that is `{"not_possible": <reason>}` is complete when it
     has a non-empty reason, which is printed; `{"skipped": ...}` is complete as before;
   * launch a differs from launch b (launch p from q) at a resolution that has both, on any number of those steps and of
-    the round 5 steps (the diff is printed); the grid, the minimum and the grid check are not part of that comparison;
+    the round 5 steps (the diff is printed); the grid, the minimum and the grid check are not part of that comparison.
+    What a frame read in its first moments (`early`, round 7) is not part of it: it is printed per moment, and the
+    differences between launch a and launch b (the timing `now` left out) are printed, never red;
   * at the scales of plan.GRID_DPRS, launch a lacks its grid and minimum, launch b lacks its grid check, a grid row is
     an error, or a point of the grid check does not show what launch a shows at that point (content top, size mode);
   * at the scales of plan.HOSTGATE_DPRS, launches a and b lack their `rdm_hostgate` step, or the collection page did not
@@ -24,6 +26,7 @@ A scale Windows would not take is "not reachable live: derived path" and is not 
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -289,8 +292,32 @@ def grid_problems(first: Dict[str, Any], second: Dict[str, Any], dpr: float) -> 
     return lines, problems
 
 
-def core_steps_of(run: Dict[str, Any]) -> Dict[str, Any]:
-    return {name: run["steps"][name] for name in plan.COMPARED_STEPS if name in run["steps"]}
+def core_steps_of(run: Dict[str, Any], with_early: bool = False) -> Dict[str, Any]:
+    """The steps the a/b comparison is made of. A frame's `early` (what it read at parse, DOMContentLoaded, the two animation frames
+    and load) is measured, not judged: it is left out unless `with_early`."""
+    steps = {name: run["steps"][name] for name in plan.COMPARED_STEPS if name in run["steps"]}
+    if with_early:
+        return steps
+    steps = copy.deepcopy(steps)
+    for step in steps.values():
+        for frame in ((step.get("frames") or {}).values() if isinstance(step, dict) else ()):
+            if isinstance(frame.get("state"), dict):
+                frame["state"].pop("early", None)
+    return steps
+
+
+def early_differences(first: Dict[str, Any], other: Dict[str, Any]) -> List[Tuple[str, Any, Any]]:
+    """The differences between two launches in what the frames read in their first moments, only: `now` (the time) is left out."""
+    def only_early(run: Dict[str, Any]) -> Dict[str, Any]:
+        found = {}
+        for name, step in core_steps_of(run, with_early=True).items():
+            for frame_name, frame in ((step.get("frames") or {}).items() if isinstance(step, dict) else ()):
+                early = (frame.get("state") or {}).get("early")
+                if early is not None:
+                    found[f"{name}.frames.{frame_name}.state.early"] = {m: {k: v for k, v in (r.items() if isinstance(r, dict) else [])
+                                                                              if k != "now"} for m, r in early.items()}
+        return found
+    return differences(only_early(first), only_early(other))
 
 
 def standard_lines(step_name: str, step: Dict[str, Any], dpr: float) -> List[str]:
@@ -344,6 +371,40 @@ def frames_lines(step_name: str, step: Dict[str, Any]) -> List[str]:
         line = probe_line(f"{step_name} frame {name}", {"content": {"probe": state.get("probe")}})
         if line:
             lines.append(line)
+    return lines
+
+
+EARLY_MOMENTS = ("parse", "dcl", "raf1", "raf2", "load")
+EARLY_STEPS = ("iframes_max", "iframes_juggler")
+
+
+def early_lines(step_name: str, step: Dict[str, Any], dpr: float) -> List[str]:
+    """Per frame of iframes_max and iframes_juggler (same-origin and cross-site), per moment of its first life (parse, DOMContentLoaded,
+    the first and the second animation frame, load): mozInnerScreenX/Y and screenX/Y the frame read then, next to its settled reading,
+    the parent's mozInnerScreen and the window's client origin in CSS px. Measured, not judged."""
+    if step_name not in EARLY_STEPS:
+        return []
+    parent = [step["content"]["mozInnerScreenX"], step["content"]["mozInnerScreenY"]]
+    origin = (step.get("native") or {}).get("client_origin")
+    client = [origin[0] / dpr, origin[1] / dpr] if origin else None
+    lines = []
+    for name, frame in sorted((step.get("frames") or {}).items()):
+        state = frame["state"]
+        early = state.get("early")
+        settled = (f"settled mozInnerScreenX/Y {[state['mozInnerScreenX'], state['mozInnerScreenY']]} "
+                   f"screenX/Y {[state['screenX'], state['screenY']]} ; parent mozInnerScreenX/Y {parent} ; window client origin css {client}")
+        if not isinstance(early, dict):
+            lines.append(f"    {step_name} frame {name} early: none recorded ; {settled}")
+            continue
+        for moment in EARLY_MOMENTS:
+            read = early.get(moment)
+            if not isinstance(read, dict):
+                lines.append(f"    {step_name} frame {name} early {moment}: not reached ; {settled}")
+                continue
+            lines.append(f"    {step_name} frame {name} early {moment}: mozInnerScreenX/Y {[read.get('mozInnerScreenX'), read.get('mozInnerScreenY')]} "
+                         f"screenX/Y {[read.get('screenX'), read.get('screenY')]} outer {[read.get('outerWidth'), read.get('outerHeight')]} "
+                         f"inner {[read.get('innerWidth'), read.get('innerHeight')]} dpr {read.get('devicePixelRatio')} now {read.get('now')} ; {settled}"
+                         + (f" ; error {read['error']}" if "error" in read else ""))
     return lines
 
 
@@ -439,6 +500,7 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
             lines.extend(standard_lines(step_name, step, dpr))
             lines.extend(fullscreen_line(step_name, step))
             lines.extend(frames_lines(step_name, step))
+            lines.extend(early_lines(step_name, step, dpr))
             lines.extend(transformed_lines(step_name, step))
         for step_name in wanted:
             step = run["steps"][step_name]
@@ -476,6 +538,10 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
                     lines.append(f"    {path}: {va!r} vs {vb!r}")
                 if diff:
                     problems.append(f"dpr {dpr:g}: launch {first['launch']} and {other['launch']} differ on {len(diff)} number(s)")
+                early = early_differences(first, other)
+                lines.append(f"dpr {dpr:g} launch {first['launch']} vs {other['launch']}: {len(early)} difference(s) in what the frames "
+                             "read in their first moments (printed, not judged)")
+                lines.extend(f"    {path}: {va!r} vs {vb!r}" for path, va, vb in early)
             if first["mode"] == "display" and dpr in plan.GRID_DPRS and first["display"].get("dpi_reached"):
                 more_lines, more_problems = grid_problems(first, group[1], dpr)
                 lines.extend(more_lines)

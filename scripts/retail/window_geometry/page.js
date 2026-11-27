@@ -168,7 +168,7 @@ if (window.parent !== window) {
     if (data.cmd === "record") {
       const state = JSON.parse(window.__state());
       if (data.moves) state.moves = window.__moves;
-      say({kind: "record", state: state});
+      say({kind: "record", state: state, early: window.__early});
     }
   });
   say({kind: "hello"});
@@ -178,6 +178,7 @@ if (window.parent !== window) {
     try { data = JSON.parse(e.data); } catch (_) { return; }
     if (!data || data.source !== "geometry-frame") return;
     if (data.kind === "hello") window.__frameHello[data.name] = true;
-    if (data.kind === "record") window.__frameRecords[data.name] = data.state;
+    // The frame's record carries what the frame read in its first moments (surface.html's inline script): `early`.
+    if (data.kind === "record") window.__frameRecords[data.name] = Object.assign({}, data.state, {early: data.early});
   });
 }

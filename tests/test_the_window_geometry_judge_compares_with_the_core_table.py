@@ -831,3 +831,77 @@ def test_pixel_depth_is_in_the_probe_line_of_every_step_that_has_a_page_record()
     for name in plan.COMPARED_STEPS:
         line = next(line for line in text.splitlines() if line.startswith(f"    {name} probe:"))
         assert "pixelDepth 24" in line, name
+
+
+# ---------------------------------------------------------------------------- round 7: what a frame reads in its first moments
+
+
+def early_of(parse_x, now=1.0):
+    return {moment: {"mozInnerScreenX": parse_x if moment == "parse" else 8.0, "mozInnerScreenY": 85.0 if moment == "parse" else 93.0,
+                     "screenX": -8, "screenY": -8, "outerWidth": 1936, "outerHeight": 1049, "innerWidth": 300, "innerHeight": 120,
+                     "devicePixelRatio": 1, "now": now + i} for i, moment in enumerate(("parse", "dcl", "raf1", "raf2", "load"))}
+
+
+def with_early(run, parse_x=0.0, now=1.0):
+    for step_name in ("iframes_max", "iframes_juggler"):
+        for frame in run["steps"][step_name]["frames"].values():
+            frame["state"]["early"] = early_of(parse_x, now)
+
+
+def test_the_early_reads_of_each_frame_are_printed_per_moment_next_to_the_settled_reading_and_the_parent_and_are_not_judged():
+    a, b = two_launches(1.0)
+    with_early(a, 0.0, now=1.0)
+    with_early(b, 0.0, now=7.5)  # only the time differs
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    for step_name in ("iframes_max", "iframes_juggler"):
+        for name in ("same", "cross"):
+            lines = [line for line in result["lines"] if line.startswith(f"    {step_name} frame {name} early ")]
+            assert len(lines) == 10, "five moments, in the two compared launches"
+            first = [line for line in lines if " early parse: " in line][0]
+            assert "mozInnerScreenX/Y [0.0, 85.0] screenX/Y [-8, -8]" in first and "now 1.0 " in first
+            assert "settled mozInnerScreenX/Y [10.0, 200.0] screenX/Y [-7, -7]" in first and "parent mozInnerScreenX/Y [" in first
+            assert "window client origin css [" in first
+            for moment in ("dcl", "raf1", "raf2", "load"):
+                assert any(f" early {moment}: " in line for line in lines), moment
+    assert any("0 difference(s) in what the frames read in their first moments" in line for line in result["lines"])
+
+
+def test_a_difference_between_launch_a_and_launch_b_in_the_early_reads_is_printed_without_the_time_and_is_not_red():
+    a, b = two_launches(1.0)
+    with_early(a, 0.0)
+    with_early(b, 0.0, now=9.0)
+    b["steps"]["iframes_max"]["frames"]["cross"]["state"]["early"]["raf1"]["mozInnerScreenY"] = 85.0
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    lines = result["lines"]
+    assert any("1 difference(s) in what the frames read in their first moments (printed, not judged)" in line for line in lines)
+    assert any(line.startswith("    iframes_max.frames.cross.state.early.raf1.mozInnerScreenY: 93.0 vs 85.0") for line in lines)
+    assert not any(".now" in line and "vs" in line for line in lines)
+    assert any("dpr 1 launch a vs b: 0 difference(s)" in line for line in lines), "the judged comparison is the same as before"
+
+
+def test_a_frame_without_early_or_with_a_moment_not_reached_is_printed_so_and_is_not_red():
+    a, b = two_launches(1.0)
+    for run in (a, b):
+        with_early(run)
+        del run["steps"]["iframes_max"]["frames"]["same"]["state"]["early"]
+        del run["steps"]["iframes_juggler"]["frames"]["cross"]["state"]["early"]["raf2"]
+        run["steps"]["iframes_juggler"]["frames"]["same"]["state"]["early"]["load"] = {"error": "error: boom"}
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    text = "\n".join(result["lines"])
+    assert "iframes_max frame same early: none recorded" in text
+    assert "iframes_juggler frame cross early raf2: not reached" in text
+    assert "iframes_juggler frame same early load: mozInnerScreenX/Y [None, None]" in text and "error error: boom" in text
+
+
+def test_the_early_reads_are_in_no_other_step_and_a_difference_in_a_judged_number_of_a_frame_is_still_red():
+    a, b = two_launches(1.0)
+    for run in (a, b):
+        with_early(run)
+        run["steps"]["iframes_transformed"]["frames"] = {}
+    b["steps"]["iframes_max"]["frames"]["cross"]["state"]["screenX"] += 1
+    result = evaluate([a, b])
+    assert result["red"] and any("iframes_max.frames.cross.state.screenX" in line for line in result["lines"])
+    assert not any(" early " in line for line in result["lines"] if line.startswith("    juggler"))
