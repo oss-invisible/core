@@ -102,25 +102,10 @@ CONTENT_BORDER_CSS: int = 1
 
 #: AUTO_COMPACT_REFERENCE_TABSTRIP_HEIGHT (browser.js gUIDensity).
 AUTO_COMPACT_REFERENCE_TABSTRIP_CSS: int = 36
-#: browser.compactmode.auto.threshold, default "0.05" (firefox.js).
+#: browser.compactmode.auto.threshold, default "0.05" (firefox.js). The window is
+#: compact when 36 / H > 0.05, i.e. H < 36 / 0.05 = 720 CSS px; H = 720 is normal
+#: (36 / 720 is not greater than 0.05).
 AUTO_COMPACT_THRESHOLD: float = 0.05
-#: The window is compact when 36 / H > 0.05, i.e. H < 36 / 0.05 = 720 CSS px;
-#: H = 720 is normal (36 / 720 is not greater than 0.05).
-AUTO_COMPACT_BELOW_CSS: float = AUTO_COMPACT_REFERENCE_TABSTRIP_CSS / AUTO_COMPACT_THRESHOLD
-#: The same bound as the integer the engine reads; it must be exact, because the
-#: pref is an integer.
-AUTO_COMPACT_BELOW_CSS_INT: int = int(AUTO_COMPACT_BELOW_CSS)
-assert AUTO_COMPACT_BELOW_CSS_INT == AUTO_COMPACT_BELOW_CSS, "the compact bound is not an integer"
-
-#: Firefox's smallest main window, chrome inner size in CSS px (width, height).
-#: Measured live on retail 159.0 at scales 1 and 1.25, 500 wide at all four
-#: (GitHub runs oss-invisible/core 45657528859, 45672953042, 45679625406;
-#: RetailCaptures efb8d8f).
-MIN_INNER_CSS: tuple = (500, 120)
-
-#: Where a restored main window sits after Juggler's resize, device px on both
-#: axes. Measured live at scales 1, 1.25, 1.5 and 2 (same runs as MIN_INNER_CSS).
-RESTORED_POSITION: int = 4
 
 
 def _half_up(value: float) -> int:
@@ -178,16 +163,13 @@ class WindowFrame(NamedTuple):
     ui_normal: int
     #: Chrome height above the content with the compact density.
     ui_compact: int
-    #: Where a restored main window sits, on both axes (RESTORED_POSITION).
-    restored_position: int
 
 
 def _frame(border: int, popup_ui: int, scale: float) -> WindowFrame:
     return WindowFrame(
         border=border, popup_ui=popup_ui, popup_position=4,
         ui_normal=chrome_height_device(scale, "normal"),
-        ui_compact=chrome_height_device(scale, "compact"),
-        restored_position=RESTORED_POSITION)
+        ui_compact=chrome_height_device(scale, "compact"))
 
 
 #: The window frame per display scale. The resize border and the popup frame
@@ -205,7 +187,7 @@ def _frame(border: int, popup_ui: int, scale: float) -> WindowFrame:
 #:
 #: ui_normal / ui_compact are computed (chrome_height_device), not typed: 85 /
 #: 73, 106 / 91, 127 / 109, 170 / 146, the first seven measured live on
-#: Firefox 159.0 (the runs listed at MIN_INNER_CSS), 170 the model's value.
+#: Firefox 159.0 (GitHub runs oss-invisible/core 45657528859, 45672953042, 45679625406), 170 the model's value.
 #:
 #: ⛔ It replaces CHROME_W = 0 and CHROME_H = 85 with window_x = window_y = 0,
 #: from a 2026-08-09 measurement of a window that was not a maximized Windows

@@ -3,10 +3,8 @@ density and the scale, and the maximized height declared to the engine is the
 density rule's value for the persona's work area."""
 import pytest
 
-from invisible_core import constants
 from invisible_core._fpforge import generate_profile
 from invisible_core.constants import (
-    MIN_INNER_CSS,
     WINDOW_FRAME_BY_DPR,
     chrome_height_device,
     declared_maximized_ui,
@@ -47,7 +45,6 @@ def test_an_unknown_density_is_refused():
 ])
 def test_the_density_rule_switches_below_720_css(height, density):
     assert ui_density(height) == density
-    assert constants.AUTO_COMPACT_BELOW_CSS == 720
 
 
 @pytest.mark.unit
@@ -66,12 +63,6 @@ def test_the_frame_table_is_computed_from_the_function(scale):
     frame = WINDOW_FRAME_BY_DPR[scale]
     assert frame.ui_normal == chrome_height_device(scale, "normal")
     assert frame.ui_compact == chrome_height_device(scale, "compact")
-    assert frame.restored_position == 4
-
-
-@pytest.mark.unit
-def test_the_smallest_main_window():
-    assert MIN_INNER_CSS == (500, 120)
 
 
 def _declared(w, h, dpr):
@@ -110,26 +101,12 @@ def test_the_maximized_height_is_the_density_rules_for_the_work_area(
 def test_declared_maximized_ui_is_the_density_rule(dpr, avail_css, expected):
     assert declared_maximized_ui(WINDOW_FRAME_BY_DPR[dpr], avail_css) == expected
 
-
 @pytest.mark.unit
-@pytest.mark.parametrize("w,h,dpr", [(1920, 1080, 1.5), (1920, 1080, 1.25), (3840, 2160, 2.0),
-                                     (1920, 1080, 1.0)])
-def test_the_new_chrome_prefs_are_declared_as_integers(w, h, dpr):
+@pytest.mark.parametrize("w,h,dpr", [(1920, 1080, 1.5), (3840, 2160, 2.0), (1920, 1080, 1.0)])
+def test_only_the_maximized_bar_is_declared_to_the_engine(w, h, dpr):
     p, prefs = _declared(w, h, dpr)
-    frame = WINDOW_FRAME_BY_DPR[dpr]
-    expected = {
-        "ui_normal": frame.ui_normal,
-        "ui_compact": frame.ui_compact,
-        "compact_below_css": 720,
-        "restored_position": 4,
-        "min_inner_width_css": 500,
-        "min_inner_height_css": 120,
-    }
-    for name, value in expected.items():
-        got = prefs["zoom.stealth.screen." + name]
-        assert got == value and type(got) is int, (name, got)
-
-
-@pytest.mark.unit
-def test_the_compact_bound_is_an_exact_integer():
-    assert constants.AUTO_COMPACT_BELOW_CSS_INT == constants.AUTO_COMPACT_BELOW_CSS == 720
+    got = prefs["zoom.stealth.screen.maximized_ui"]
+    assert got == declared_maximized_ui(p.screen.frame, p.screen.css_avail_height) and type(got) is int
+    for gone in ("ui_normal", "ui_compact", "compact_below_css", "restored_position",
+                 "min_inner_width_css", "min_inner_height_css"):
+        assert "zoom.stealth.screen." + gone not in prefs, gone
