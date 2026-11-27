@@ -123,8 +123,16 @@ def test_the_header_says_what_round_5_added_and_why_the_job_has_sixty_minutes():
 
 def test_the_header_says_what_round_7_adds_and_keeps_the_time_budget():
     header = TEXT.split("\non:")[0]
-    for needle in ("Round 7 adds no step and no launch", "surface.html", "parse time", "DOMContentLoaded", "first and second animation frame",
+    for needle in ("Round 7 adds no step to the launches that are compared", "surface.html", "parse time", "DOMContentLoaded", "first and second animation frame",
                    "`early`", "iframes_max, iframes_juggler", "iframes_transformed", "each frame is a new document", "not judged",
                    "The time budget is kept", "the same 60 minutes", "the same 49 minutes"):
         assert needle in header, needle
     assert header.index("Round 7") > header.index("Round 5"), "round 7 after round 5"
+
+
+def test_the_header_says_what_launch_n_measures_how_the_panel_is_chosen_and_why_it_runs_in_the_scale_2_job():
+    header = TEXT.split("\non:")[0]
+    for needle in ("Launch n", "normal density at scale 2", "3840x2160, 2560x1600", "EnumDisplaySettings read back", "2560x1440: 672 CSS px",
+                   "never asked", "`not_possible`", "next to the core's", "does not judge it", "inside the scale-2 job", "about three minutes"):
+        assert needle in header, needle
+    assert header.index("Launch n") > header.index("Round 7")

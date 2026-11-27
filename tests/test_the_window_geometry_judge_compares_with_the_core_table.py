@@ -905,3 +905,106 @@ def test_the_early_reads_are_in_no_other_step_and_a_difference_in_a_judged_numbe
     result = evaluate([a, b])
     assert result["red"] and any("iframes_max.frames.cross.state.screenX" in line for line in result["lines"])
     assert not any(" early " in line for line in result["lines"] if line.startswith("    juggler"))
+
+
+# ---------------------------------------------------------------------------- launch n: normal density at scale 2
+
+
+def make_n(dpr=2.0, resolution=(3840, 2160), avail=1032, ui=None, early=True):
+    """Launch n: the maximized step and iframes_max alone, on a panel whose work area is `avail` CSS px tall."""
+    run = make_run(dpr, "n", resolution=resolution, avail=avail, ui=ui)
+    run["steps"] = {name: run["steps"][name] for name in plan.NORMAL_DENSITY_STEPS}
+    run["display"]["role"] = plan.NORMAL_DENSITY_ROLE
+    if early:
+        for frame in run["steps"]["iframes_max"]["frames"].values():
+            frame["state"]["early"] = {m: {"mozInnerScreenX": 0.0, "mozInnerScreenY": 85.0, "screenX": -13, "screenY": -13, "now": 1.5}
+                                       for m in judge.EARLY_MOMENTS}
+    return run
+
+
+def n_not_possible(reason="no panel of the plan could be set with the scale in force: 3840x2160: resolution not set (code -2)"):
+    run = make_n()
+    run["steps"] = {name: {"not_possible": reason} for name in plan.NORMAL_DENSITY_STEPS}
+    run["display"].update(dpi_reached=False, reason=reason, tried=[{"panel": [3840, 2160]}])
+    return run
+
+
+def test_launch_n_needs_the_maximized_step_and_iframes_max_alone_and_is_compared_with_nothing():
+    assert judge.required_steps({"launch": "n"}, True) == plan.NORMAL_DENSITY_STEPS == ("maximized", "iframes_max")
+    a, b = two_launches(2.0)
+    n = make_n()
+    assert judge.compared_runs([a, b, n]) == {id(a), id(b)}
+    result = evaluate([a, b, n])
+    assert not result["red"], result["problems"]
+    assert not any(" vs n:" in line for line in result["lines"])
+
+
+def test_the_maximized_chrome_height_of_launch_n_is_printed_next_to_the_core_s_value_and_not_judged():
+    n = make_n()
+    result = evaluate(two_launches(2.0) + [n])
+    text = "\n".join(result["lines"])
+    assert "launch n (normal density at scale 2): panel 3840x2160" in text
+    assert "screen.availHeight 1032 CSS = at least 720, the core's rule gives normal" in text
+    assert "round(mozInnerScreenY 85.0 * dpr 2) = 170 device px" in text and "chrome_height_device(2, 'normal') = 170" in text
+    assert "declared_maximized_ui at availHeight 1032 = 170" in text and "measured 170 equals the normal 170 (printed, not judged)" in text
+    assert "maximized maximized_ui: round(mozInnerScreenY * dpr) at availHeight 1032 = 170 ; core declares 170 : ok (printed, not judged)" in text
+    n["steps"]["maximized"]["content"]["mozInnerScreenY"] = 160 / 2
+    other = evaluate(two_launches(2.0) + [n])
+    assert not other["red"], other["problems"]
+    assert "measured 160 differs from the normal 170 (printed, not judged)" in "\n".join(other["lines"])
+    assert "DIFFERENT (printed, not judged)" in "\n".join(other["lines"])
+
+
+def test_the_chrome_height_minus_the_client_top_is_printed_too():
+    n = make_n()
+    n["steps"]["maximized"]["native"]["client_origin"][1] = 8
+    text = "\n".join(evaluate(two_launches(2.0) + [n])["lines"])
+    assert "= 170 device px ; minus the window's client top 8 = 162" in text
+
+
+def test_the_border_and_screen_x_of_launch_n_are_judged_like_every_other_launch():
+    n = make_n()
+    n["steps"]["maximized"]["native"]["window_rect"][0] -= 1
+    result = evaluate(two_launches(2.0) + [n])
+    assert result["red"] and any("launch n (display)" in p and "maximized border" in p for p in result["problems"])
+    n = make_n()
+    n["steps"]["maximized"]["content"]["screenX"] += 1
+    assert evaluate(two_launches(2.0) + [n])["red"]
+
+
+def test_a_panel_that_does_not_hold_the_normal_density_says_so_in_the_line():
+    short = make_n(resolution=(2560, 1440), avail=672)
+    result = evaluate(two_launches(2.0) + [short])
+    assert not result["red"], result["problems"]
+    text = "\n".join(result["lines"])
+    assert "screen.availHeight 672 CSS = below 720, the core's rule gives compact (this panel does NOT hold the normal density)" in text
+
+
+def test_launch_n_not_possible_is_printed_with_its_reason_and_is_not_red():
+    result = evaluate(two_launches(2.0) + [n_not_possible()])
+    assert not result["red"], result["problems"]
+    text = "\n".join(result["lines"])
+    assert "launch n (normal density at scale 2): panel 3840x2160 NOT POSSIBLE (no panel of the plan could be set" in text
+    assert "not reachable live" not in "\n".join(line for line in result["lines"] if "launch n" in line)
+
+
+def test_launch_n_without_a_reason_or_without_a_step_or_with_an_error_is_red():
+    assert evaluate(two_launches(2.0) + [n_not_possible("  ")])["red"]
+    n = make_n()
+    del n["steps"]["iframes_max"]
+    assert evaluate(two_launches(2.0) + [n])["red"]
+    n = make_n()
+    n["error"] = "boom"
+    assert evaluate(two_launches(2.0) + [n])["red"]
+
+
+def test_a_scale_2_without_any_launch_n_says_so_and_is_not_red():
+    result = evaluate(two_launches(2.0))
+    assert not result["red"], result["problems"]
+    assert any("dpr 2: no launch n (normal density at scale 2) was recorded (printed, not judged)" in line for line in result["lines"])
+    assert not any("no launch n" in line for line in evaluate(two_launches(1.5))["lines"])
+
+
+def test_the_early_readings_of_the_frames_of_launch_n_are_printed_per_moment():
+    text = "\n".join(evaluate(two_launches(2.0) + [make_n()])["lines"])
+    assert text.count("iframes_max frame same early parse: mozInnerScreenX/Y [0.0, 85.0]") == 1 and "iframes_max frame cross early raf2:" in text

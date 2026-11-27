@@ -13,6 +13,8 @@ Round 5 of the capture, per job (one display scale):
             launch could be made)      ROUND5_STEPS too when no display launch could be made (p and q are then the pair)
   launch m with devPixelsPerPx 0.75    `maximized` only, in the job of scale 1 (CSS screens 2560x1440 and 3840x2160)
   and 0.5
+  launch n (round 7, scale 2 only)      `maximized` and `iframes_max` on the first panel of NORMAL_DENSITY_PANELS that the display
+                                       takes at scale 2 and whose work area is tall enough for the normal UI density
 """
 from __future__ import annotations
 
@@ -53,8 +55,21 @@ MINIMUM_ASKED = (100, 100)
 #: devPixelsPerPx of the maximized-only launches of the job of scale 1: CSS screens 2560x1440 and 3840x2160 at 1920x1080.
 DEVPX_VALUES = (0.75, 0.5)
 #: Launch letters the request may not name: derived (p, q) and the every-resolution launch (m).
-RESERVED_LAUNCHES = ("p", "q", "m")
+RESERVED_LAUNCHES = ("p", "q", "m", "n")
 
+#: Launch n: the maximized window at a display scale where the work area is tall enough for the NORMAL UI density (every
+#: scale-2 panel of the request, 1600x1200 among them, is short in CSS px and gets the compact bar). The scales it runs at, the
+#: role it carries in the output, its two steps (the maximized probe with mozInnerScreenX/Y, innerHeight/outer and
+#: screen.availHeight; and the frames of `iframes_max` with their early readings; no restored-window step), and the panels asked,
+#: in this order: the first one the display sets (read back from EnumDisplaySettings) and at which the scale is in force is
+#: the one measured, and a panel whose work area is too short for the normal density is never asked.
+NORMAL_DENSITY_DPRS = (2.0,)
+NORMAL_DENSITY_ROLE = "normal density at scale 2"
+NORMAL_DENSITY_STEPS = ("maximized", "iframes_max")
+NORMAL_DENSITY_PANELS = ((3840, 2160), (2560, 1600), (2560, 1440))
+#: The taskbar (CSS px at scale 1, invisible_core TASKBAR_PX) and the reference height from which the density is normal
+#: (invisible_core AUTO_COMPACT_BELOW_CSS_INT); a test holds both equal to the core's.
+TASKBAR_CSS, NORMAL_DENSITY_FROM_CSS = 48, 720
 #: Juggler's size in CSS pixels. The frame allowance is what a restored window needs above and around the content
 #: (chrome 73 CSS at most 85, plus the borders) with some slack; a smaller work area gets the largest height that fits.
 JUGGLER_WIDTH, JUGGLER_HEIGHT = 390, 844
@@ -92,6 +107,23 @@ def juggler2_height(work_rect: Sequence[int], scale: float) -> Optional[int]:
     if first is None or second is None:
         return None
     return first - JUGGLER2_GAP if second == first else second
+
+
+def work_height_css(panel: Sequence[int], scale: float) -> float:
+    """screen.availHeight, in CSS px, of a maximized-window display of this panel: the panel's height less the taskbar
+    (TASKBAR_CSS * scale device px), over the scale."""
+    return (panel[1] - TASKBAR_CSS * scale) / scale
+
+
+def qualifies_for_normal_density(panel: Sequence[int], scale: float) -> bool:
+    """True when the work area is at least NORMAL_DENSITY_FROM_CSS tall in CSS px (the density rule of Firefox 159)."""
+    return work_height_css(panel, scale) >= NORMAL_DENSITY_FROM_CSS
+
+
+def normal_density_panels(scale: float) -> List[Tuple[int, int]]:
+    """The panels of NORMAL_DENSITY_PANELS that qualify at this scale, in the order they are asked (at 2: 3840x2160, 2560x1600;
+    2560x1440 leaves 672 CSS px and is not asked)."""
+    return [panel for panel in NORMAL_DENSITY_PANELS if qualifies_for_normal_density(panel, scale)]
 
 
 def derived_steps(display_launches_made: bool) -> List[str]:

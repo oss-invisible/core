@@ -16,6 +16,10 @@ Red when:
     an error, or a point of the grid check does not show what launch a shows at that point (content top, size mode);
   * at the scales of plan.HOSTGATE_DPRS, launches a and b lack their `rdm_hostgate` step, or the collection page did not
     post its result WITHOUT inRDMPane (a missing POST WITH inRDMPane is printed as `RDM HANG` and is a finding, not red);
+  * launch n (round 7, scale 2: the maximized window and iframes_max on a panel whose work area holds the normal UI density) needs
+    its two steps, a record or `not_possible` with a reason; its maximized chrome height is PRINTED next to what the core declares
+    (chrome_height_device(scale, "normal") and the density rule at the measured availHeight) and is not judged; its border and
+    screenX are judged like every other launch's; it is compared with no other launch;
   * at every scale reached live (display mode), at every resolution, the MAXIMIZED step is not exactly what the core declares
     (invisible_core, read from the source of this checkout by frame_table.py): the invisible border (GetWindowRect width
     minus work-area width, halved), screenX = round-half-up(-border / dpr) and round(mozInnerScreenY * dpr) =
@@ -110,6 +114,8 @@ def required_steps(run: Dict[str, Any], compared: bool = False) -> Tuple[str, ..
     b, p with q) takes the round 5 steps too."""
     if run["launch"] == "m":
         return plan.MAXIMIZED_ONLY
+    if run["launch"] == "n":
+        return plan.NORMAL_DENSITY_STEPS
     return STEPS + EXTRA if compared else STEPS
 
 
@@ -118,7 +124,7 @@ def compared_runs(runs: Iterable[Dict[str, Any]]) -> set:
     the first two derived launches (p, q) of a scale; a launch alone is compared with nothing."""
     groups: Dict[Tuple[float, tuple, str], List[Dict[str, Any]]] = {}
     for run in runs:
-        if run.get("mode") == "display" and run.get("launch") != "m":
+        if run.get("mode") == "display" and run.get("launch") not in ("m", "n"):
             kind = "display"
         elif run.get("mode") == "devPixelsPerPx" and run.get("launch") in ("p", "q"):
             kind = "derived"
@@ -456,6 +462,32 @@ def repeat_line(steps: Dict[str, Any], dpr: float, first_name: str, again_name: 
             f"window rect size dev {size}, position dev {moved}"]
 
 
+def normal_density_lines(run: Dict[str, Any], dpr: float, table: Dict[float, Any]) -> List[str]:
+    """Launch n, printed: the panel, the density the core's rule gives at the measured availHeight, and the maximized chrome height
+    (round(mozInnerScreenY * dpr), the formula of the `maximized_ui` check; and that minus the window's client top, device px)
+    next to what the core declares: chrome_height_device(scale, "normal") and the bar the density rule declares at that availHeight.
+    Measured, not judged."""
+    shown = run["display"]
+    head = f"    launch n ({plan.NORMAL_DENSITY_ROLE}): panel {run['resolution'][0]}x{run['resolution'][1]}"
+    maximized = run["steps"].get("maximized") or {}
+    if "not_possible" in maximized:
+        return [f"{head} NOT POSSIBLE ({maximized['not_possible']}) ; panels tried {shown.get('tried')}"]
+    content = maximized["content"]
+    avail = content["screen"]["availHeight"]
+    client_top = maximized["native"]["client_origin"][1]
+    top = half_up(content["mozInnerScreenY"] * dpr)
+    normal = frame_table.declared_chrome_height(dpr, "normal")
+    declared = frame_table.declared_maximized_ui(table[dpr], avail)
+    qualifies = frame_table.density_at(avail) == "normal"
+    return [f"{head} (resolution now {shown.get('resolution_now')}) "
+            f"screen.availHeight {avail} CSS = {'at least' if avail >= plan.NORMAL_DENSITY_FROM_CSS else 'below'} {plan.NORMAL_DENSITY_FROM_CSS}, "
+            f"the core's rule gives {frame_table.density_at(avail)}{'' if qualifies else ' (this panel does NOT hold the normal density)'}",
+            f"    launch n maximized chrome height: round(mozInnerScreenY {content['mozInnerScreenY']} * dpr {dpr:g}) = {top} device px ; "
+            f"minus the window's client top {client_top} = {top - client_top} ; core declares chrome_height_device({dpr:g}, 'normal') = {normal}, "
+            f"declared_maximized_ui at availHeight {avail} = {declared} ; "
+            f"measured {top} {'equals' if top == normal else 'differs from'} the normal {normal} (printed, not judged)"]
+
+
 def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: Dict[float, Any]) -> Dict[str, Any]:
     """{"red": bool, "problems": [...], "lines": [...]}"""
     problems: List[str] = []
@@ -478,12 +510,17 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
         dpr, shown = float(run["dpr_asked"]), run["display"]
         lines.append(f"{name_of(run)}: dpi_reached={shown.get('dpi_reached')} effective_dpi={shown.get('effective_dpi')} "
                      f"resolution_now={shown.get('resolution_now')}")
+        if run["launch"] == "n":
+            lines.extend(normal_density_lines(run, dpr, table))
         if run["mode"] == "display" and not shown.get("dpi_reached"):
-            lines.append(f"    not reachable live: derived path ({shown.get('reason')})")
+            if run["launch"] != "n":
+                lines.append(f"    not reachable live: derived path ({shown.get('reason')})")
         elif run["mode"] == "display":
             for name, what, got, want, ok in check_maximized(run, table):
-                lines.append(f"    maximized {name}: {what} = {got} ; core declares {want} : {'ok' if ok else 'DIFFERENT'}")
-                if not ok:
+                judged = not (run["launch"] == "n" and name == "maximized_ui")
+                lines.append(f"    maximized {name}: {what} = {got} ; core declares {want} : "
+                             f"{'ok' if ok else 'DIFFERENT'}{'' if judged else ' (printed, not judged)'}")
+                if not ok and judged:
                     problems.append(f"{name_of(run)}: maximized {name} is {got}, the core declares {want}")
         wanted = required_steps(run, id(run) in pairs)
         for step_name in wanted:
@@ -517,11 +554,14 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
                 lines.append(f"    {name} size used {run.get(name + '_size_used')}")
         lines.extend(repeat_lines(run["steps"], dpr))
         lines.extend(grid_lines(run))
+    for dpr in plan.NORMAL_DENSITY_DPRS:
+        if dpr in expected and any(float(r["dpr_asked"]) == dpr and r["launch"] != "n" for r in usable)                 and not any(float(r["dpr_asked"]) == dpr and r["launch"] == "n" for r in runs):
+            lines.append(f"dpr {dpr:g}: no launch n ({plan.NORMAL_DENSITY_ROLE}) was recorded (printed, not judged)")
     display_groups: Dict[Tuple[float, tuple], List[Dict[str, Any]]] = {}
     derived_groups: Dict[Tuple[float, tuple], List[Dict[str, Any]]] = {}
     for run in usable:
         key = (float(run["dpr_asked"]), tuple(run["resolution"]))
-        if run["mode"] == "display" and run["launch"] != "m":
+        if run["mode"] == "display" and run["launch"] not in ("m", "n"):
             display_groups.setdefault(key, []).append(run)
         elif run["mode"] == "devPixelsPerPx" and run["launch"] in ("p", "q"):
             derived_groups.setdefault(key, []).append(run)

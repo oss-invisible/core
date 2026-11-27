@@ -100,7 +100,7 @@ def test_the_juggler2_height_is_the_largest_that_fits_up_to_896_and_never_the_fi
 def test_the_core_steps_are_the_ones_the_judge_compares_and_the_grid_steps_are_not_among_them():
     assert plan.CORE_STEPS == ("maximized", "restored", "juggler", "juggler_rdm", "juggler2", "juggler_back")
     assert not set(plan.GRID_STEPS) & set(plan.CORE_STEPS)
-    assert plan.RESERVED_LAUNCHES == ("p", "q", "m") and plan.HOSTGATE_DPRS == (1.0,)
+    assert plan.RESERVED_LAUNCHES == ("p", "q", "m", "n") and plan.HOSTGATE_DPRS == (1.0,)
     assert plan.steps_for(1.0, "c", ["a", "b", "c"], True) == list(plan.CORE_STEPS), "only a and b take the host-gate step"
     assert plan.steps_for(1.0, "a", ["a", "b"], False) == list(plan.CORE_STEPS)
     assert not set(plan.ROUND5_STEPS) & set(plan.CORE_STEPS) and not set(plan.ROUND5_STEPS) & set(plan.GRID_STEPS)
@@ -256,3 +256,138 @@ def test_the_host_gate_results_are_kept_beside_raw_json_and_in_the_meta_hashes(m
     assert "_attachments" not in json.loads((folder / "raw.json").read_text(encoding="utf-8"))
     hashes = meta_of(tmp_path, "1")["raw_sha256"]
     assert {"1920x1080/a/raw.json", "1920x1080/a/hostgate-rdm-false.json", "1920x1080/a/hostgate-rdm-true.json"} <= set(hashes)
+
+
+# ---------------------------------------------------------------------------- launch n: normal density at scale 2
+
+
+def test_the_panels_of_launch_n_that_qualify_at_scale_2_are_the_two_tall_ones_in_the_order_asked():
+    assert plan.NORMAL_DENSITY_DPRS == (2.0,) and plan.NORMAL_DENSITY_ROLE == "normal density at scale 2"
+    assert plan.NORMAL_DENSITY_PANELS == ((3840, 2160), (2560, 1600), (2560, 1440))
+    assert plan.NORMAL_DENSITY_STEPS == ("maximized", "iframes_max") and not set(plan.NORMAL_DENSITY_STEPS) & {"restored", "juggler"}
+    assert plan.work_height_css((3840, 2160), 2.0) == 1032 and plan.work_height_css((2560, 1600), 2.0) == 752
+    assert plan.work_height_css((2560, 1440), 2.0) == 672 and plan.work_height_css((1600, 1200), 2.0) == 552
+    assert plan.normal_density_panels(2.0) == [(3840, 2160), (2560, 1600)], "2560x1440 leaves 672 CSS px: compact, never asked"
+    assert plan.qualifies_for_normal_density((2560, 1536), 2.0) and not plan.qualifies_for_normal_density((2560, 1535), 2.0)
+    assert not plan.qualifies_for_normal_density((1600, 1200), 2.0), "the panel every scale-2 capture used so far"
+
+
+def test_the_numbers_of_the_normal_density_rule_are_the_cores():
+    frame_table = load_window_geometry("frame_table")
+    core = frame_table.core_constants()
+    assert plan.TASKBAR_CSS == core.TASKBAR_PX and plan.NORMAL_DENSITY_FROM_CSS == core.AUTO_COMPACT_BELOW_CSS_INT
+    assert frame_table.declared_chrome_height(2.0, "normal") == 170 and frame_table.declared_chrome_height(2.0, "compact") == 146
+    assert frame_table.density_at(719) == "compact" and frame_table.density_at(720) == "normal"
+    for panel in plan.normal_density_panels(2.0):
+        assert frame_table.density_at(plan.work_height_css(panel, 2.0)) == "normal", panel
+    assert frame_table.density_at(plan.work_height_css((2560, 1440), 2.0)) == "compact"
+
+
+def test_launch_n_is_reserved_so_a_request_cannot_name_it():
+    assert "n" in plan.RESERVED_LAUNCHES
+
+
+class NormalFakes(Fakes):
+    """Fakes whose scale 2 is live and whose settable panels are `settable` (the request's first resolution, 1920x1080, is not one)."""
+
+    def __init__(self, monkeypatch, tmp_path, settable=((1600, 1200), (3840, 2160), (2560, 1600), (2560, 1440)), live=(1.0, 2.0)):
+        super().__init__(monkeypatch, tmp_path, live=live, settable=settable,
+                         offered=((1024, 768), (1600, 1200), (2560, 1440), (3840, 2160)))
+
+
+N_REQUEST = dict(REQUEST, resolutions=[[1920, 1080], [1600, 1200], [2560, 1440]], round=7)
+
+
+def n_calls(fakes):
+    return [c for c in fakes.calls if c["launch"] == "n"]
+
+
+def n_raw(tmp_path, panel):
+    return json.loads((tmp_path / "dpr2" / panel / "n" / "raw.json").read_text(encoding="utf-8"))
+
+
+def test_scale_2_runs_launch_n_on_the_first_panel_that_is_set_with_maximized_and_iframes_max_only(monkeypatch, tmp_path):
+    fakes = NormalFakes(monkeypatch, tmp_path)
+    assert run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path) == 0
+    (call,) = n_calls(fakes)
+    assert call["resolution"] == [3840, 2160] and call["steps"] == ["maximized", "iframes_max"] and call["mode"] == "display"
+    assert n_raw(tmp_path, "3840x2160")["launch"] == "n"
+    order = [c["launch"] for c in fakes.calls]
+    assert order.index("p") < order.index("n") < order.index("m"), "after a, b and p, before the every-resolution launches"
+    nd = meta_of(tmp_path, "2")["normal_density"]
+    assert nd["role"] == "normal density at scale 2" and nd["set"] == [3840, 2160]
+    assert nd["panels_asked"] == [[3840, 2160], [2560, 1600]] and nd["panels_never_asked"] == [[2560, 1440]]
+    assert [t["panel"] for t in nd["tried"]] == [[3840, 2160]] and nd["tried"][0]["dpi_reached"] is True
+    assert "3840x2160/n/raw.json" in meta_of(tmp_path, "2")["raw_sha256"]
+
+
+def test_the_role_and_the_panels_tried_travel_in_the_display_record_of_launch_n(monkeypatch, tmp_path):
+    fakes = NormalFakes(monkeypatch, tmp_path)
+    seen = {}
+    original = fakes.measure
+
+    def spy(install_dir, dpr, launch, resolution, shown, *a, **kw):
+        if launch == "n":
+            seen.update(shown)
+        return original(install_dir, dpr, launch, resolution, shown, *a, **kw)
+
+    monkeypatch.setattr(run_scale.measure, "measure", spy)
+    run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path)
+    assert seen["role"] == "normal density at scale 2" and seen["panels_tried"][0]["panel"] == [3840, 2160]
+
+
+def test_when_3840x2160_is_not_set_launch_n_falls_back_to_2560x1600_and_never_to_2560x1440(monkeypatch, tmp_path):
+    fakes = NormalFakes(monkeypatch, tmp_path, settable=((1600, 1200), (2560, 1600), (2560, 1440)))
+    assert run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path) == 0
+    (call,) = n_calls(fakes)
+    assert call["resolution"] == [2560, 1600]
+    tried = meta_of(tmp_path, "2")["normal_density"]["tried"]
+    assert [t["panel"] for t in tried] == [[3840, 2160], [2560, 1600]]
+    assert tried[0]["resolution"]["ok"] is False and "resolution not set" in tried[0]["reason"] and tried[1]["reason"] is None
+    assert "2560x1600/n/raw.json" in meta_of(tmp_path, "2")["raw_sha256"]
+
+
+def test_when_no_qualifying_panel_is_set_launch_n_is_not_possible_with_the_reason_and_starts_no_browser(monkeypatch, tmp_path):
+    fakes = NormalFakes(monkeypatch, tmp_path, settable=((1600, 1200), (2560, 1440)))
+    assert run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path) == 0
+    assert n_calls(fakes) == [], "2560x1440 can be set but does not qualify: it is never launch n"
+    raw = n_raw(tmp_path, "3840x2160")
+    assert raw["launch"] == "n" and raw["error"] is None and raw["processes_left"] == 0
+    assert set(raw["steps"]) == {"maximized", "iframes_max"}
+    reason = raw["steps"]["maximized"]["not_possible"]
+    assert "3840x2160" in reason and "2560x1600" in reason and "resolution not set" in reason and "2560x1440" not in reason
+    assert raw["steps"]["iframes_max"]["not_possible"] == reason
+    assert raw["display"]["role"] == "normal density at scale 2" and len(raw["display"]["tried"]) == 2
+    meta = meta_of(tmp_path, "2")
+    assert meta["normal_density"]["set"] is None and "3840x2160/n/raw.json" in meta["raw_sha256"]
+
+
+def test_a_panel_where_the_scale_is_not_in_force_is_passed_over_for_the_next(monkeypatch, tmp_path):
+    fakes = NormalFakes(monkeypatch, tmp_path)
+    original = fakes.apply
+
+    def apply(dpr, resolution):
+        shown = original(dpr, resolution)
+        if resolution is not None and tuple(resolution) == (3840, 2160) and float(dpr) == 2.0:
+            shown.update(dpi_reached=False, effective_dpi=144, reason="outside the steps")
+        return shown
+
+    monkeypatch.setattr(run_scale.display, "apply", apply)
+    run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path)
+    (call,) = n_calls(fakes)
+    assert call["resolution"] == [2560, 1600]
+
+
+def test_the_time_budget_spent_makes_launch_n_not_possible_and_says_so(monkeypatch, tmp_path):
+    fakes = NormalFakes(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_scale, "TIME_BUDGET_SECONDS", -1)
+    run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path)
+    assert n_calls(fakes) == []
+    assert "time budget" in n_raw(tmp_path, "3840x2160")["steps"]["maximized"]["not_possible"]
+
+
+def test_the_other_scales_run_no_launch_n(monkeypatch, tmp_path):
+    fakes = NormalFakes(monkeypatch, tmp_path, live=(1.0, 1.25, 2.0))
+    for dpr in (1.0, 1.25):
+        run_scale.run(tmp_path, {}, N_REQUEST, dpr, tmp_path)
+    assert n_calls(fakes) == [] and meta_of(tmp_path, "1")["normal_density"] == {}
