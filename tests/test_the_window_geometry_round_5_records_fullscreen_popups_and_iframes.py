@@ -1,4 +1,4 @@
-"""Round 5 of the window-geometry capture: fullscreen, popups, iframes and the repeated Juggler call, with no browser and no Windows.
+"""Round 5 of the window-geometry capture: fullscreen, popups and iframes of the maximized window, with no browser and no Windows.
 
 scripts/retail/window_geometry/surfaces.py (the scripts the browser runs and the points the real mouse goes to) and the Session
 methods of measure.py that drive them, against a small model of the browser (`Browser`: what the chrome and the page answer,
@@ -7,13 +7,12 @@ what a real click on a button does). Held here:
     again; a click that does not enter fullscreen is `not_possible` with the page's own reason in both steps; a window that stays
     fullscreen after exitFullscreen is forced out and says so;
   * F11-style fullscreen is `window.fullScreen = true` then false in the chrome, each recorded; one that never turns on is
-    `not_possible`; the four steps of a state that did not fit Juggler's size are skipped;
+    `not_possible`;
   * a popup is opened by a REAL click on #open with the features asked, its window rects and its page's record are kept, the mouse
     moves inside its client area, and it is closed; none opening is `not_possible`; the two popups are the two features;
   * the iframes (same-origin and cross-site, both local) are added, each gets real mouse moves inside its rectangle, each answers
     with its own record, and they are removed even when one did not load;
   * a step Marionette refused is `not_possible` and puts the window back; a closed connection is not that and ends the launch;
-  * the repeated Juggler call is the same sequence at exactly the second call's size, and skipped when that does not fit;
   * the order of a launch, the pages the server serves, the page script's hooks, the real click's two button events.
 """
 from __future__ import annotations
@@ -341,7 +340,7 @@ def test_a_real_click_is_a_move_then_the_left_button_going_down_and_up(monkeypat
 
 def test_element_fullscreen_is_a_real_click_on_the_button_a_record_exitfullscreen_and_a_record():
     browser = Browser()
-    steps = browser.fullscreen("max")
+    steps = browser.fullscreen()
     assert list(steps) == ["fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out"]
     assert browser.clicks == [button_centre("fs")] and browser.fs is False
     entered, left = steps["fullscreen_max_in"], steps["fullscreen_max_out"]
@@ -354,17 +353,17 @@ def test_element_fullscreen_is_a_real_click_on_the_button_a_record_exitfullscree
 
 def test_a_click_that_does_not_enter_fullscreen_is_not_possible_in_both_steps_with_the_page_s_own_reason():
     browser = Browser(enters=False)
-    steps = browser.fullscreen("res")
+    steps = browser.fullscreen()
     reason = ("document.fullscreenElement stayed null after a real click on the button "
               "(requestFullscreen rejected: TypeError: Fullscreen request denied)")
-    assert steps["fullscreen_res_in"] == {"not_possible": reason} and steps["fullscreen_res_out"] == {"not_possible": reason}
+    assert steps["fullscreen_max_in"] == {"not_possible": reason} and steps["fullscreen_max_out"] == {"not_possible": reason}
     assert "exit_fullscreen" in browser.log and "remove_frames" in browser.log, "the window is put back"
-    assert set(steps["f11_res_in"]) >= {"chrome", "native", "fullscreen"}, "the F11 steps are still taken"
+    assert set(steps["f11_max_in"]) >= {"chrome", "native", "fullscreen"}, "the F11 steps are still taken"
 
 
 def test_a_window_still_fullscreen_after_exitfullscreen_is_forced_out_and_says_so():
     browser = Browser(exit_leaves=False)
-    steps = browser.fullscreen("max")
+    steps = browser.fullscreen()
     assert steps["fullscreen_max_out"]["forced_exit"] is True and steps["fullscreen_max_out"]["settled"] is True
     assert browser.log.count("window_fullscreen_off") == 2, "once to force the element out, once at the end of F11"
 
@@ -378,16 +377,9 @@ def test_f11_style_fullscreen_is_the_chrome_s_window_fullscreen_true_then_false_
 
 
 def test_a_window_that_never_turns_fullscreen_on_is_not_possible_in_both_f11_steps():
-    steps = Browser(window_fullscreen=False).fullscreen("max")
+    steps = Browser(window_fullscreen=False).fullscreen()
     assert steps["f11_max_in"] == {"not_possible": "window.fullScreen stayed false after setting it"} == steps["f11_max_out"]
     assert "chrome" in steps["fullscreen_max_in"]
-
-
-def test_the_fullscreen_steps_of_a_window_juggler_s_size_did_not_fit_are_skipped_and_no_script_runs():
-    browser = Browser()
-    steps = browser.fullscreen("res", fits=False)
-    assert steps == {name: {"skipped": "does_not_fit"} for name in ("fullscreen_res_in", "fullscreen_res_out", "f11_res_in", "f11_res_out")}
-    assert browser.log == [] and browser.clicks == []
 
 
 # ---------------------------------------------------------------------------- popups
@@ -535,21 +527,16 @@ def test_an_iframe_that_did_not_load_is_not_possible_and_the_frames_are_still_re
     assert browser.frames_on is False and browser.moves == []
 
 
-def test_the_frame_rectangles_of_the_page_script_hold_in_the_narrowest_window_juggler_asks_for():
-    assert "left: 10, top: 60" in PAGE_JS and "left: 10, top: 200" in PAGE_JS and "width:300px;height:120px" in PAGE_JS
-    assert 10 + 300 <= 390 and 200 + 120 <= 340, "390 CSS wide, 340 high at scale 2 (plan.juggler2_height)"
-
-
 # ---------------------------------------------------------------------------- what a refused step does
 
 
 def test_a_command_marionette_refuses_makes_the_step_not_possible_and_a_closed_connection_ends_the_launch():
     refused = Browser(fail_on=(surfaces.FULLSCREEN_ERROR, marionette.MarionetteError("WebDriver:ExecuteScript: boom")), enters=False)
-    steps = refused.fullscreen("max")
+    steps = refused.fullscreen()
     assert steps["fullscreen_max_in"] == {"not_possible": "marionette: WebDriver:ExecuteScript: boom"} == steps["fullscreen_max_out"]
     closed = Browser(fail_on=(surfaces.ELEMENT_RECT, marionette.ConnectionClosed("the connection closed")))
     with pytest.raises(marionette.ConnectionClosed):
-        closed.fullscreen("max")
+        closed.fullscreen()
     assert issubclass(marionette.ConnectionClosed, marionette.MarionetteError)
 
 
@@ -570,67 +557,20 @@ def test_the_marionette_client_raises_the_closed_connection_error_when_the_brows
         client.call("WebDriver:GetTitle")
 
 
-# ---------------------------------------------------------------------------- the repeated Juggler call and the order of a launch
+# ---------------------------------------------------------------------------- the order of a launch
 
 
-class Recording(measure.Session):
-    def __init__(self):
-        super().__init__(None, Path("."), None)
-        self.calls = []
-
-    def chrome(self, script, args=None):
-        self.calls.append((script, args))
-        return True
-
-    def content(self, script, args=None):
-        return [1, 1]
-
-    def record(self):
-        self.calls.append(("record", None))
-        return {"chrome": {}, "native": {}, "content": {}}
-
-
-def test_the_repeat_of_the_first_juggler_call_is_the_same_sequence_at_exactly_its_size_with_inrdmpane_back_to_false_and_the_styles_kept():
-    session = Recording()
-    step, size = session.juggler_repeat([0, 0, 1920, 1032], 1.0)
-    assert session.calls == [(measure.RDM_OFF, None), (measure.JUGGLER_SEQUENCE, [390, 844]), ("record", None)]
-    assert step["settled"] is True and size == {"width": 390, "height": 844, "same_as": "juggler"}
-    assert measure.JUGGLER_CLEAR not in [c[0] for c in session.calls]
-    for scale, height in ((1.25, 700), (1.5, 560), (2.0, 390)):
-        again = Recording()
-        again.juggler_repeat([0, 0, 1920, 1032], scale)
-        assert again.calls[1][1] == [390, height] and again.calls[1][1] == [390, plan.juggler_height([0, 0, 1920, 1032], scale)], scale
-    skipped = Recording()
-    assert skipped.juggler_repeat([0, 0, 800, 150], 1.0) == ({"skipped": "does_not_fit"}, {"width": 390, "height": None, "same_as": "juggler"})
-    assert skipped.calls == [(measure.RDM_OFF, None)]
-
-
-def test_the_repeated_juggler_call_is_the_same_sequence_at_exactly_the_second_calls_size_without_touching_the_styles():
-    session = Recording()
-    step, size = session.juggler2_repeat([0, 0, 1920, 1032], 1.0)
-    assert session.calls == [(measure.JUGGLER_SEQUENCE, [414, 896]), ("record", None)] and step["settled"] is True
-    assert size == {"width": 414, "height": 896, "same_as": "juggler2"}
-    assert measure.RDM_OFF not in [c[0] for c in session.calls] and measure.JUGGLER_CLEAR not in [c[0] for c in session.calls]
-    for scale, height in ((1.25, 650), (1.5, 510), (2.0, 340)):
-        again = Recording()
-        again.juggler2_repeat([0, 0, 1920, 1032], scale)
-        assert again.calls[0][1] == [414, height], scale
-    skipped = Recording()
-    assert skipped.juggler2_repeat([0, 0, 800, 300], 1.0) == ({"skipped": "does_not_fit"}, {"width": 414, "height": None, "same_as": "juggler2"})
-    assert skipped.calls == []
-
-
-def test_a_launch_takes_the_round_5_steps_in_the_order_of_the_plan_around_the_juggler_calls():
+def test_a_launch_takes_the_round_5_steps_in_the_order_of_the_plan_on_the_maximized_window_and_nothing_of_a_restored_one():
     source = Path(measure.__file__).read_text(encoding="utf-8")
     order = [source.index(text) for text in (
-        'steps["maximized"] = session.maximized()', 'session.fullscreen("max")', 'steps.update(session.surface(("iframes_max",)',
-        'steps.update(session.surface(("iframes_transformed",)', "for name, features in surfaces.POPUP_FEATURES:", "session.juggler(work, scale)",
-        "session.juggler_repeat(work, scale)", "session.juggler_again(work, scale)", "session.juggler2_repeat(work, scale)", 'session.fullscreen("res", fits)', '("iframes_juggler",)',
-        "session.juggler_back(steps[\"maximized\"])", "session.clear_juggler()", "session.restored(work, scale)")]
+        'steps["maximized"] = session.maximized()', "session.fullscreen()", 'steps.update(session.surface(("iframes_max",)',
+        'steps.update(session.surface(("iframes_transformed",)', "for name, features in surfaces.POPUP_FEATURES:")]
     assert order == sorted(order) and len(set(order)) == len(order)
-    for name in ("fullscreen_max_in", "iframes_max", "iframes_transformed", "juggler_repeat", "juggler2_repeat", "fullscreen_res_in", "iframes_juggler"):
+    for name in ("fullscreen_max_in", "iframes_max", "iframes_transformed"):
         assert f'if "{name}" in steps_wanted:' in source, name
     assert 'if name in steps_wanted:' in source, "the two popups"
+    for gone in ("juggler", "restored", "inRDMPane", "resizeBy", "hostgate", "grid"):
+        assert gone not in source, gone
 
 
 def test_the_pages_the_launch_serves_are_named_for_the_steps_that_load_them():

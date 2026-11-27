@@ -4,29 +4,19 @@ No browser starts and no Windows call is made. Held here:
   * the launch is `firefox.exe -no-remote -profile <empty directory> -marionette <url>` and its profile holds one file,
     user.js, with exactly the declared prefs: anything else (a second file, another pref, a policy in the install folder, a
     MOZ_ variable) is refused before the spawn;
-  * the Juggler line is the one of TargetRegistry.js, word for word, and so is Juggler's whole sequence (styles on the browser
-    and its stack, then the resizeBy), without inRDMPane (the step juggler_rdm sets it); what clears it removes every style set;
   * a wait ends only when the value is ready and has not moved for the hold time, and says so when it never settles;
   * the mouse points are inside the browser rectangle, from the client origin, at the scale of the window;
   * the structures handed to Windows have the sizes Windows expects on every OS (a WCHAR is 16 bits there, not the 32 bits
     of ctypes.c_wchar on Linux), and the scale steps are relative to the recommended one;
-  * the second Juggler call and the call back to the maximized size: the same sequence verbatim, inRDMPane put back to false
-    between the calls with the styles kept, the sizes asked, and the window state recorded;
   * the run plan: every launch at the first resolution, the first alone at the others;
   * the launch takes only the steps asked for;
   * the page reads, in itself, everything that can differ under responsive-design mode (page.html __probe), and the content
-    record of every step carries it;
-  * the host-gate step: Juggler's sequence again, then the collection page loaded without and with inRDMPane, each wait for
-    the POST bounded; a result is kept in its own file (not in raw.json) with its size and sha256; a missing POST is recorded.
+    record of every step carries it.
 """
 from __future__ import annotations
 
 import ctypes
-import hashlib
 import json
-import re
-import threading
-import urllib.request
 from pathlib import Path
 
 import pytest
@@ -84,15 +74,6 @@ def test_a_launch_that_sets_anything_else_is_refused(tmp_path, what):
         cmd = command(profile) + ["-remote-debugging-port", "1"]
     with pytest.raises(measure.MeasureError, match="declared launch"):
         measure.assert_launch(cmd or command(profile), profile, install, env, prefs)
-
-
-def test_the_resize_is_juggler_s_line_word_for_word():
-    line = ("const stackRect = gBrowser.selectedBrowser.closest('.browserStack').getBoundingClientRect(); "
-            "const toolbarTop = stackRect.y; "
-            "window.resizeBy(width - window.innerWidth, height + toolbarTop - window.innerHeight);")
-    assert line in measure.JUGGLER_RESIZE
-    assert measure.JUGGLER_RESIZE.startswith("const width = arguments[0], height = arguments[1];")
-    assert (measure.RESIZE_WIDTH, measure.RESIZE_HEIGHT, measure.FALLBACK_HEIGHT) == (390, 844, 400)
 
 
 class Clock:
@@ -203,59 +184,9 @@ def test_marionette_s_variable_with_another_value_is_refused(tmp_path):
         measure.assert_launch(command(profile), profile, install, {"MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "0"}, prefs)
 
 
-#: juggler/TargetRegistry.js (setViewportSize), lines 999-1018 of the series, minus the stealth guard, `inRDMPane = true` and
-#: the wait for the content size. Kept here as text: the test never reads the engine's source.
-JUGGLER_LINES = [
-    "this._linkedBrowser.style.setProperty('width', width + 'px');",
-    "this._linkedBrowser.style.setProperty('height', height + 'px');",
-    "this._linkedBrowser.style.setProperty('box-sizing', 'content-box');",
-    "this._linkedBrowser.closest('.browserStack').style.setProperty('overflow', 'auto');",
-    "this._linkedBrowser.closest('.browserStack').style.setProperty('contain', 'size');",
-    "this._linkedBrowser.closest('.browserStack').style.setProperty('scrollbar-width', 'none');",
-    "const stackRect = this._linkedBrowser.closest('.browserStack').getBoundingClientRect();",
-    "const toolbarTop = stackRect.y;",
-    "this._window.resizeBy(width - this._window.innerWidth, height + toolbarTop - this._window.innerHeight);",
-]
-
-
-def test_juggler_s_whole_sequence_is_its_lines_in_order_on_the_selected_browser_as_the_tab():
-    lines = measure.JUGGLER_SEQUENCE.split("\n")
-    assert lines[0] == "const width = arguments[0], height = arguments[1];"
-    start = lines.index("(function () {")
-    assert lines[start + 1:start + 1 + len(JUGGLER_LINES)] == JUGGLER_LINES
-    assert lines[start + 1 + len(JUGGLER_LINES):] == ["}).call({_linkedBrowser: gBrowser.selectedBrowser, _window: window});", "return true;"]
-
-
-def test_juggler_s_sequence_does_not_set_inrdmpane_and_the_rdm_step_sets_it_only_on_the_selected_browser():
-    assert "inRDMPane" not in measure.JUGGLER_SEQUENCE
-    assert measure.RDM_ON == "gBrowser.selectedBrowser.browsingContext.inRDMPane = true; return true;"
-    assert "inRDMPane = false" in measure.JUGGLER_CLEAR
-
-
-def test_what_clears_juggler_s_sequence_removes_every_property_it_set_and_no_other():
-    set_on_browser = re.findall(r"this\._linkedBrowser\.style\.setProperty\('([\w-]+)'", measure.JUGGLER_SEQUENCE)
-    set_on_stack = re.findall(r"closest\('\.browserStack'\)\.style\.setProperty\('([\w-]+)'", measure.JUGGLER_SEQUENCE)
-    assert set_on_browser == ["width", "height", "box-sizing"] and set_on_stack == ["overflow", "contain", "scrollbar-width"]
-    removed_on_browser = re.search(r"for \(const name of \[([^\]]*)\]\) browser\.style\.removeProperty", measure.JUGGLER_CLEAR).group(1)
-    removed_on_stack = re.search(r"for \(const name of \[([^\]]*)\]\) stack\.style\.removeProperty", measure.JUGGLER_CLEAR).group(1)
-    assert re.findall(r"'([\w-]+)'", removed_on_browser) == set_on_browser
-    assert re.findall(r"'([\w-]+)'", removed_on_stack) == set_on_stack
-
-
-def test_the_old_restored_step_keeps_its_plain_resize_and_its_fallback():
-    assert (measure.RESIZE_WIDTH, measure.RESIZE_HEIGHT, measure.FALLBACK_HEIGHT, measure.FRAME_ALLOWANCE_CSS) == (390, 844, 400, 200)
-    assert "setProperty" not in measure.JUGGLER_RESIZE
-
-
-def test_the_grid_resize_asks_for_the_chrome_inner_size_by_a_difference_and_the_row_reads_the_stack():
-    assert "window.resizeBy(w - window.innerWidth, h - window.innerHeight)" in measure.RESIZE_CHROME_INNER
-    assert "getBoundingClientRect()" in measure.CHROME_ROW and "stack: {x: s.x, y: s.y, width: s.width, height: s.height}" in measure.CHROME_ROW
-    assert (measure.GRID_TIMEOUT, measure.HOLD_SECONDS) == (10.0, 1.0)
-
-
 def test_the_launch_takes_the_maximized_step_always_and_the_others_only_when_asked():
     source = (Path(measure.__file__)).read_text(encoding="utf-8")
-    for name in ("restored", "juggler", "juggler2", "juggler2_repeat", "juggler_back", "grid", "minimum", "grid_check"):
+    for name in ("fullscreen_max_in", "iframes_max", "iframes_transformed"):
         assert f'if "{name}" in steps_wanted:' in source, name
     assert 'steps["maximized"] = session.maximized()' in source
 
@@ -292,150 +223,7 @@ def test_the_content_record_of_every_step_calls_the_probe_in_the_page_itself_and
         assert field in state, field
 
 
-def test_the_collection_page_is_the_cores_own_and_posts_to_the_result_path_of_the_capture_server():
-    assert measure.HOSTGATE_PAGE.is_file() and measure.HOSTGATE_PAGE.parts[-3:] == ("captures", "pages", "host-gate-2.html")
-    assert "fetch('/result' + location.search" in measure.HOSTGATE_PAGE.read_text(encoding="utf-8")
-    assert measure.HOSTGATE_TIMEOUT == 120.0
-
-
-class PostingSession(measure.Session):
-    """A session with no browser: the chrome and content calls are recorded, and `load` plays the page POSTing its result."""
-
-    def __init__(self, posts):
-        super().__init__(None, Path("."), None)
-        self.posts, self.calls = posts, []
-
-    def chrome(self, script, args=None):
-        self.calls.append(("chrome", script, args))
-        return False if script == measure.RDM_STATE else True
-
-    def content(self, script, args=None):
-        self.calls.append(("content", script, args))
-        return [390, 844]
-
-    def load(self, url):
-        self.calls.append(("load", url, None))
-        base, label = url.split("/?")
-        if self.posts.get(label):
-            request = urllib.request.Request(f"{base}/result?{label}", data=self.posts[label], method="POST")
-            threading.Thread(target=lambda: urllib.request.urlopen(request, timeout=10).read(), daemon=True).start()
-
-
-@pytest.fixture
-def instant(monkeypatch):
-    monkeypatch.setattr(measure, "wait_stable", lambda read, *a, **k: (read(), True))
-
-
-def test_the_host_gate_step_reapplies_juggler_s_sequence_then_loads_the_page_without_and_with_rdm(instant):
-    posts = {"rdmfalse": b'{"result": "plain"}', "rdmtrue": b'{"result": "under rdm"}'}
-    session = PostingSession(posts)
-    step, files = session.rdm_hostgate(844, timeout=10)
-    order = [(kind, script if kind != "load" else script.split("/?")[1]) for kind, script, _ in session.calls
-             if script not in (measure.RDM_STATE, "return [window.innerWidth, window.innerHeight];")]
-    assert order == [("chrome", measure.JUGGLER_SEQUENCE), ("chrome", measure.RDM_OFF), ("load", "rdmfalse"),
-                     ("chrome", measure.RDM_ON), ("load", "rdmtrue")]
-    assert session.calls[0][2] == [390, 844]
-    assert files == {"hostgate-rdm-false.json": posts["rdmfalse"], "hostgate-rdm-true.json": posts["rdmtrue"]}
-    for key, label in (("rdm_false", "rdmfalse"), ("rdm_true", "rdmtrue")):
-        entry = step[key]
-        assert entry["posted"] is True and entry["bytes"] == len(posts[label]) and entry["sha256"] == hashlib.sha256(posts[label]).hexdigest()
-        assert 0 <= entry["seconds"] < 10 and entry["inRDMPane"] is False
-    assert step["juggler_height"] == 844 and step["timeout_seconds"] == 10
-    assert b"result" not in json.dumps(step).encode("utf-8"), "the results are in files, not in the step"
-
-
-def test_a_page_that_never_posts_under_rdm_is_recorded_as_not_posted_after_the_timeout_and_keeps_no_file(instant):
-    session = PostingSession({"rdmfalse": b"{}", "rdmtrue": None})
-    step, files = session.rdm_hostgate(560, timeout=0.3)
-    assert step["rdm_false"]["posted"] is True and step["rdm_true"] == dict(step["rdm_true"], posted=False, bytes=0, sha256=None)
-    assert 0.3 <= step["rdm_true"]["seconds"] < 5
-    assert list(files) == ["hostgate-rdm-false.json"]
-    assert session.calls[0][2] == [390, 560], "the juggler height used"
-
-
-class RecordingSession(measure.Session):
-    """A session with no browser: records the chrome scripts (with their arguments) and the records taken, in order."""
-
-    def __init__(self):
-        super().__init__(None, Path("."), None)
-        self.calls = []
-
-    def chrome(self, script, args=None):
-        self.calls.append((script, args))
-        return True
-
-    def content(self, script, args=None):
-        return [1, 1]
-
-    def record(self):
-        self.calls.append(("record", None))
-        return {"chrome": {"windowState": 3, "sizemode": "normal", "maximized": False}, "native": {}, "content": {}}
-
-
-def test_the_second_juggler_call_puts_inrdmpane_back_to_false_keeps_the_styles_and_runs_the_same_sequence(instant):
-    session = RecordingSession()
-    step, size = session.juggler_again([0, 0, 1920, 1032], 1.0)
-    assert session.calls == [(measure.RDM_OFF, None), (measure.JUGGLER_SEQUENCE, [414, 896]), ("record", None)]
-    assert measure.JUGGLER_CLEAR not in [c[0] for c in session.calls], "Juggler does not clear its styles between calls"
-    assert size == {"width": 414, "height": 896, "max_height": 896} and step["settled"] is True
-
-
-def test_the_second_juggler_call_differs_from_the_first_in_height_and_is_skipped_when_nothing_fits(instant):
-    session = RecordingSession()
-    _, size = session.juggler_again([0, 0, 1920, 1032], 1.25)
-    assert size["height"] == 650 and session.calls[1][1] == [414, 650]
-    skipped = RecordingSession()
-    step, size = skipped.juggler_again([0, 0, 800, 300], 1.0)
-    assert step == {"skipped": "does_not_fit"} and size["height"] is None and skipped.calls == [(measure.RDM_OFF, None)]
-
-
-def test_the_call_back_asks_for_the_content_size_the_maximized_step_gave_the_page_and_records_the_window_state(instant):
-    session = RecordingSession()
-    step, size = session.juggler_back({"content": {"innerWidth": 1905, "innerHeight": 903}})
-    assert session.calls == [(measure.JUGGLER_SEQUENCE, [1905, 903]), ("record", None)]
-    assert size == {"width": 1905, "height": 903, "from_step": "maximized"}
-    assert step["window_state"] == {"windowState": 3, "sizemode": "normal", "maximized": False}
-
-
-def test_a_launch_runs_the_juggler_steps_in_order_then_clears_the_styles_then_the_restored_step():
-    source = (Path(measure.__file__)).read_text(encoding="utf-8")
-    order = [source.index(text) for text in ("session.juggler(work, scale)", "session.juggler_again(work, scale)",
-                                             "session.juggler_back(steps[\"maximized\"])", "session.clear_juggler()",
-                                             "session.restored(work, scale)")]
-    assert order == sorted(order)
-
-
-def test_the_host_gate_step_is_skipped_when_juggler_s_size_did_not_fit():
-    session = PostingSession({})
-    assert session.rdm_hostgate(None) == ({"skipped": "does_not_fit"}, {})
-    assert session.calls == []
-
-
-def test_the_page_is_loaded_from_the_chrome_without_waiting_and_from_the_page_when_that_fails():
-    calls = []
-
-    class Loader(measure.Session):
-        def __init__(self, fail):
-            super().__init__(None, Path("."), None)
-            self.fail = fail
-
-        def chrome(self, script, args=None):
-            calls.append(("chrome", script))
-            if self.fail:
-                raise RuntimeError("no Services")
-
-        def content(self, script, args=None):
-            calls.append(("content", script))
-
-    Loader(False).load("http://127.0.0.1:1/?x")
-    Loader(True).load("http://127.0.0.1:1/?x")
-    assert calls == [("chrome", measure.LOAD_IN_TAB), ("chrome", measure.LOAD_IN_TAB), ("content", measure.LOAD_IN_CONTENT)]
-    assert "fixupAndLoadURIString" in measure.LOAD_IN_TAB and "getSystemPrincipal" in measure.LOAD_IN_TAB
-    assert "location.assign" in measure.LOAD_IN_CONTENT
-
-
-def test_the_files_next_to_raw_json_are_written_and_not_part_of_raw_json(tmp_path):
-    raw = {"steps": {}, "_attachments": {"hostgate-rdm-false.json": b"A", "hostgate-rdm-true.json": b"B"}}
+def test_raw_json_is_written_alone_in_its_folder(tmp_path):
+    raw = {"steps": {}}
     path = measure.write_raw(raw, tmp_path / "a")
-    assert (tmp_path / "a" / "hostgate-rdm-false.json").read_bytes() == b"A" and (tmp_path / "a" / "hostgate-rdm-true.json").read_bytes() == b"B"
-    assert "_attachments" not in json.loads(path.read_text(encoding="utf-8")) and "_attachments" in raw, "the caller's record is not changed"
+    assert json.loads(path.read_text(encoding="utf-8")) == {"steps": {}} and sorted(p.name for p in (tmp_path / "a").iterdir()) == ["raw.json"]

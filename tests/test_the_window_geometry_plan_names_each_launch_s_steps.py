@@ -1,17 +1,12 @@
-"""The plan of the window-geometry capture: which launch takes which steps, which grid points fit, how a job is ordered.
+"""The plan of the window-geometry capture: which launch takes which steps, how a job is ordered.
 
 scripts/retail/window_geometry/plan.py and run_scale.py, with no browser and no Windows call (the display and the
 measurement are replaced by fakes that record what was asked). Held here:
-  * the grid is 17 widths by 16 heights, every point of the grid check is a point of the grid, the minimum asked is 100x100;
-  * a point fits when its outer size (inner plus the frame of the window, in CSS, at the scale) is inside the work area;
-  * Juggler's height is 844 when the work area holds it plus the frame, else the largest multiple of 10 that fits, and None
-    (the step is skipped and says so) when even 200 does not;
-  * the second Juggler call (juggler2) is 414 wide at the largest height <= 896 that fits, 50 lower when that is the first
-    call's height, and is skipped when the first call does not fit;
-  * launch a and launch b take the six core steps and the fifteen steps of round 5 (plan.ROUND5_STEPS), at the first reached
-    resolution; launch a also the grid and the minimum, launch b the grid check, only at the scales of the grid; every other
-    launch takes the six core steps; p and q take the round 5 steps only when no display launch could be made (they are then
-    the pair that is compared);
+  * launch a and launch b take the maximized step and the eight steps of round 5 (plan.ROUND5_STEPS), at the first reached
+    resolution; every other launch takes the maximized step alone; p and q take the round 5 steps only when no display launch
+    could be made (they are then the pair that is compared);
+  * no restored-window step is in the plan or in a launch (Juggler's resize in any call, the plain resize, the grid, the minimum
+    window, the host-gate page under inRDMPane, launch n), and the code that took them is gone;
   * a job at a scale Windows reaches: a and b at the first resolution, p, m at every offered resolution (and, at scale 1,
     m at devPixelsPerPx 0.75 and 0.5); at a scale it does not reach: p and q only, no display launch, no m;
   * the every-resolution launches stop when the time budget is spent, and say so.
@@ -32,81 +27,44 @@ measure = load_window_geometry("measure")
 WORK = [0, 0, 1920, 1032]
 
 
-def test_the_grid_is_the_widths_and_heights_of_the_order_and_contains_the_grid_check():
-    assert len(plan.GRID_WIDTHS) == 15 and len(plan.GRID_HEIGHTS) == 14 and len(plan.grid_points()) == 210
-    assert plan.GRID_WIDTHS == tuple(sorted(plan.GRID_WIDTHS)) and plan.GRID_HEIGHTS == tuple(sorted(plan.GRID_HEIGHTS))
-    assert plan.GRID_WIDTHS[0] == 500 and plan.GRID_WIDTHS[-1] == 1900 and plan.GRID_HEIGHTS[0] == 450 and plan.GRID_HEIGHTS[-1] == 1000
-    assert plan.GRID_CHECK_POINTS == ((500, 450), (1280, 672), (1366, 768), (1536, 816), (1900, 1000), (800, 600))
-    assert set(plan.GRID_CHECK_POINTS) <= set(plan.grid_points())
-    assert plan.MINIMUM_ASKED == (100, 100) and plan.GRID_DPRS == (1.0, 1.25) and plan.DEVPX_VALUES == (0.75, 0.5)
-
-
-def test_a_point_fits_when_its_outer_size_is_inside_the_work_area():
-    frame = [16, 16]
-    assert plan.fits(1900, 1000, frame, 1.0, WORK)  # 1916 x 1016 in 1920 x 1032
-    assert not plan.fits(1900, 1000, frame, 1.25, WORK)
-    assert not plan.fits(1905, 450, frame, 1.0, WORK) and plan.fits(1904, 450, frame, 1.0, WORK)
-    assert plan.fits(1500, 800, frame, 1.25, WORK) and not plan.fits(1536, 800, frame, 1.25, WORK)
-    assert not plan.fits(500, 1017, frame, 1.0, WORK) and plan.fits(500, 1016, frame, 1.0, WORK)
-
-
-def test_the_points_that_fit_at_each_scale_of_the_grid_are_a_subset_that_shrinks_with_the_scale():
-    def count(scale):
-        return sum(plan.fits(w, h, [16, 16], scale, WORK) for w, h in plan.grid_points())
-
-    assert count(1.0) == 210 and 0 < count(1.25) < 210 and count(1.5) < count(1.25)
-
-
-def test_juggler_s_height_is_844_when_it_fits_else_the_largest_multiple_of_ten_that_does():
-    assert plan.juggler_height(WORK, 1.0) == 844, "1032 css minus the frame holds 844"
-    assert plan.juggler_height(WORK, 1.25) == 700 and plan.juggler_height(WORK, 1.25) % 10 == 0
-    assert plan.juggler_height(WORK, 1.5) == 560
-    assert plan.juggler_height(WORK, 2.0) == 390
-    assert plan.juggler_height([0, 0, 800, 120 + 844], 1.0) == 844
-    assert plan.juggler_height([0, 0, 800, 120 + 843], 1.0) == 840
-    assert plan.juggler_height([0, 0, 800, 300], 1.0) is None, "180 css do not hold the 200 minimum: the step is skipped"
-    assert (plan.JUGGLER_WIDTH, plan.JUGGLER_HEIGHT) == (390, 844)
-
-
-@pytest.mark.parametrize("dpr,launch,first,expected", [
-    (1.0, "a", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid", "minimum", "rdm_hostgate"]),
-    (1.25, "a", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid", "minimum"]),
-    (1.0, "b", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid_check", "rdm_hostgate"]),
-    (1.25, "b", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid_check"]),
-    (1.0, "a", False, list(plan.CORE_STEPS)),
-    (1.5, "a", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS]),
-    (1.5, "b", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS]),
-    (2.0, "a", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS]),
-    (1.0, "c", True, list(plan.CORE_STEPS)),
+@pytest.mark.parametrize("launch,first,expected", [
+    ("a", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS]),
+    ("b", True, [*plan.CORE_STEPS, *plan.ROUND5_STEPS]),
+    ("a", False, list(plan.CORE_STEPS)),
+    ("c", True, list(plan.CORE_STEPS)),
 ])
-def test_each_launch_takes_the_steps_of_the_plan(dpr, launch, first, expected):
-    assert plan.steps_for(dpr, launch, ["a", "b", "c"], first) == expected
+def test_each_launch_takes_the_steps_of_the_plan(launch, first, expected):
+    assert plan.steps_for(launch, ["a", "b", "c"], first) == expected
 
 
-def test_the_juggler2_height_is_the_largest_that_fits_up_to_896_and_never_the_first_calls():
-    assert plan.juggler2_height(WORK, 1.0) == 896 and plan.juggler_height(WORK, 1.0) == 844
-    assert plan.juggler2_height([0, 0, 800, 120 + 896], 1.0) == 896
-    assert plan.juggler2_height([0, 0, 800, 120 + 870], 1.0) == 870, "more than 844, fits: not rounded to the first call"
-    assert plan.juggler2_height([0, 0, 800, 120 + 844], 1.0) == 840, "the work area holds 844: the second call is 840"
-    assert plan.juggler2_height(WORK, 1.25) == 650, "700 is the first call's too: 50 less"
-    assert plan.juggler2_height(WORK, 1.5) == 510 and plan.juggler2_height(WORK, 2.0) == 340
-    for scale in (1.0, 1.25, 1.5, 2.0):
-        first, second = plan.juggler_height(WORK, scale), plan.juggler2_height(WORK, scale)
-        assert first != second and second <= 896
-    assert plan.juggler2_height([0, 0, 800, 300], 1.0) is None
-    assert (plan.JUGGLER2_WIDTH, plan.JUGGLER2_MAX_HEIGHT, plan.JUGGLER2_GAP) == (414, 896, 50)
-
-
-def test_the_core_steps_are_the_ones_the_judge_compares_and_the_grid_steps_are_not_among_them():
-    assert plan.CORE_STEPS == ("maximized", "restored", "juggler", "juggler_rdm", "juggler2", "juggler_back")
-    assert not set(plan.GRID_STEPS) & set(plan.CORE_STEPS)
-    assert plan.RESERVED_LAUNCHES == ("p", "q", "m", "n") and plan.HOSTGATE_DPRS == (1.0,)
-    assert plan.steps_for(1.0, "c", ["a", "b", "c"], True) == list(plan.CORE_STEPS), "only a and b take the host-gate step"
-    assert plan.steps_for(1.0, "a", ["a", "b"], False) == list(plan.CORE_STEPS)
-    assert not set(plan.ROUND5_STEPS) & set(plan.CORE_STEPS) and not set(plan.ROUND5_STEPS) & set(plan.GRID_STEPS)
-    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS
+def test_the_steps_of_the_plan_are_the_maximized_one_and_the_eight_of_round_5_and_no_restored_window_step():
+    assert plan.CORE_STEPS == ("maximized",) and plan.MAXIMIZED_ONLY == ("maximized",)
+    assert plan.ROUND5_STEPS == ("fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out", "iframes_max",
+                                 "iframes_transformed", "popup", "popup_pos")
+    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS and len(set(plan.COMPARED_STEPS)) == 9
+    assert plan.RESERVED_LAUNCHES == ("p", "q", "m") and plan.DEVPX_VALUES == (0.75, 0.5)
     assert plan.derived_steps(True) == list(plan.CORE_STEPS), "p beside a display pair is not compared"
     assert plan.derived_steps(False) == list(plan.COMPARED_STEPS), "p and q are the pair when no display launch could be made"
+    for gone in ("restored", "juggler", "juggler_rdm", "juggler2", "juggler_back", "juggler_repeat", "juggler2_repeat", "fullscreen_res_in",
+                 "fullscreen_res_out", "f11_res_in", "f11_res_out", "iframes_juggler", "grid", "minimum", "grid_check", "rdm_hostgate"):
+        assert gone not in plan.COMPARED_STEPS, gone
+
+
+def test_what_took_the_restored_window_steps_is_gone_from_the_plan_the_measurement_and_the_judge():
+    judge, frame_table = load_window_geometry("judge"), load_window_geometry("frame_table")
+    for module, names in ((plan, ("GRID_DPRS", "HOSTGATE_DPRS", "GRID_WIDTHS", "GRID_HEIGHTS", "GRID_CHECK_POINTS", "MINIMUM_ASKED", "GRID_STEPS",
+                                  "JUGGLER_WIDTH", "JUGGLER_HEIGHT", "JUGGLER2_WIDTH", "juggler_height", "juggler2_height", "fits",
+                                  "grid_points", "NORMAL_DENSITY_DPRS", "NORMAL_DENSITY_PANELS", "NORMAL_DENSITY_STEPS",
+                                  "normal_density_panels", "qualifies_for_normal_density", "work_height_css", "TASKBAR_CSS")),
+                          (measure, ("JUGGLER_RESIZE", "JUGGLER_SEQUENCE", "JUGGLER_CLEAR", "RDM_ON", "RDM_OFF", "RDM_STATE", "LOAD_IN_TAB",
+                                     "RESIZE_CHROME_INNER", "CHROME_ROW", "HOSTGATE_PAGE", "capture_server")),
+                          (measure.Session, ("restored", "juggler", "juggler_call", "juggler_again", "juggler_repeat", "juggler2_repeat",
+                                             "juggler_back", "clear_juggler", "inner_row", "grid", "rdm_hostgate", "load")),
+                          (run_scale, ("normal_density_not_possible",)),
+                          (judge, ("grid_lines", "grid_problems", "hostgate_lines", "hostgate_problems", "repeat_lines", "normal_density_lines")),
+                          (frame_table, ("declared_chrome_height", "density_at"))):
+        for name in names:
+            assert not hasattr(module, name), (module.__name__, name)
 
 
 # ---------------------------------------------------------------------------- the order of a job
@@ -147,7 +105,7 @@ class Fakes:
 
 
 REQUEST = {"firefox_version": "159.0", "dpr": [1, 1.25, 1.5, 2], "launches": ["a", "b"],
-           "resolutions": [[1920, 1080], [2560, 1440]], "round": 5}
+           "resolutions": [[1920, 1080], [2560, 1440]], "round": 8}
 
 
 def meta_of(tmp_path, dpr_label):
@@ -162,8 +120,7 @@ def test_a_scale_reached_live_runs_a_and_b_then_the_derived_launch_then_m_at_eve
         ("p", (1920, 1080), "devPixelsPerPx", "1.25"),
         ("m", (1024, 768), "display", None), ("m", (1920, 1080), "display", None)]
     by_launch = {(c["launch"], c["mode"]): c["steps"] for c in fakes.calls}
-    assert by_launch[("a", "display")] == [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid", "minimum"], "the host-gate step is of scale 1 only"
-    assert by_launch[("b", "display")] == [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid_check"]
+    assert by_launch[("a", "display")] == by_launch[("b", "display")] == [*plan.CORE_STEPS, *plan.ROUND5_STEPS]
     assert by_launch[("p", "devPixelsPerPx")] == list(plan.CORE_STEPS), "p beside a display pair takes no round 5 step"
     assert all(c["steps"] == ["maximized"] for c in fakes.calls if c["launch"] == "m")
     meta = meta_of(tmp_path, "1.25")
@@ -185,7 +142,7 @@ def test_the_other_scales_do_not_run_the_devpixelsperpx_m_launches(monkeypatch, 
     fakes = Fakes(monkeypatch, tmp_path)
     run_scale.run(tmp_path, {}, REQUEST, 1.5, tmp_path)
     assert not [c for c in fakes.calls if c["mode"] == "devPixelsPerPx" and c["launch"] == "m"]
-    assert {tuple(c["steps"]) for c in fakes.calls if c["launch"] in ("a", "b")} == {plan.COMPARED_STEPS}, "no grid at 1.5"
+    assert {tuple(c["steps"]) for c in fakes.calls if c["launch"] in ("a", "b")} == {plan.COMPARED_STEPS}, "the same pair at every scale"
     assert [c["steps"] for c in fakes.calls if c["launch"] == "p"] == [list(plan.CORE_STEPS)]
 
 
@@ -230,166 +187,11 @@ def test_the_helpers_of_the_order():
     assert run_scale.why_not({"resolution": {"ok": True}, "reason": "no"}) == "no"
 
 
-def test_scale_1_takes_the_host_gate_step_last_on_launches_a_and_b(monkeypatch, tmp_path):
-    fakes = Fakes(monkeypatch, tmp_path)
-    run_scale.run(tmp_path, {}, REQUEST, 1.0, tmp_path)
-    by_launch = {(c["launch"], c["mode"]): c["steps"] for c in fakes.calls}
-    assert by_launch[("a", "display")] == [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid", "minimum", "rdm_hostgate"]
-    assert by_launch[("b", "display")] == [*plan.CORE_STEPS, *plan.ROUND5_STEPS, "grid_check", "rdm_hostgate"]
-    assert by_launch[("p", "devPixelsPerPx")] == list(plan.CORE_STEPS)
-
-
-def test_the_host_gate_results_are_kept_beside_raw_json_and_in_the_meta_hashes(monkeypatch, tmp_path):
-    fakes = Fakes(monkeypatch, tmp_path)
-    original = fakes.measure
-
-    def with_files(*args, **kw):
-        raw = original(*args, **kw)
-        if args[2] == "a" and "rdm_hostgate" in kw["steps_wanted"]:
-            raw["_attachments"] = {"hostgate-rdm-false.json": b'{"a":1}', "hostgate-rdm-true.json": b'{"b":2}'}
-        return raw
-
-    monkeypatch.setattr(run_scale.measure, "measure", with_files)
-    run_scale.run(tmp_path, {}, REQUEST, 1.0, tmp_path)
-    folder = tmp_path / "dpr1" / "1920x1080" / "a"
-    assert (folder / "hostgate-rdm-false.json").read_bytes() == b'{"a":1}' and (folder / "hostgate-rdm-true.json").read_bytes() == b'{"b":2}'
-    assert "_attachments" not in json.loads((folder / "raw.json").read_text(encoding="utf-8"))
-    hashes = meta_of(tmp_path, "1")["raw_sha256"]
-    assert {"1920x1080/a/raw.json", "1920x1080/a/hostgate-rdm-false.json", "1920x1080/a/hostgate-rdm-true.json"} <= set(hashes)
-
-
-# ---------------------------------------------------------------------------- launch n: normal density at scale 2
-
-
-def test_the_panels_of_launch_n_that_qualify_at_scale_2_are_the_two_tall_ones_in_the_order_asked():
-    assert plan.NORMAL_DENSITY_DPRS == (2.0,) and plan.NORMAL_DENSITY_ROLE == "normal density at scale 2"
-    assert plan.NORMAL_DENSITY_PANELS == ((3840, 2160), (2560, 1600), (2560, 1440))
-    assert plan.NORMAL_DENSITY_STEPS == ("maximized", "iframes_max") and not set(plan.NORMAL_DENSITY_STEPS) & {"restored", "juggler"}
-    assert plan.work_height_css((3840, 2160), 2.0) == 1032 and plan.work_height_css((2560, 1600), 2.0) == 752
-    assert plan.work_height_css((2560, 1440), 2.0) == 672 and plan.work_height_css((1600, 1200), 2.0) == 552
-    assert plan.normal_density_panels(2.0) == [(3840, 2160), (2560, 1600)], "2560x1440 leaves 672 CSS px: compact, never asked"
-    assert plan.qualifies_for_normal_density((2560, 1536), 2.0) and not plan.qualifies_for_normal_density((2560, 1535), 2.0)
-    assert not plan.qualifies_for_normal_density((1600, 1200), 2.0), "the panel every scale-2 capture used so far"
-
-
-def test_the_numbers_of_the_normal_density_rule_are_the_cores():
-    frame_table = load_window_geometry("frame_table")
-    core = frame_table.core_constants()
-    assert plan.TASKBAR_CSS == core.TASKBAR_PX
-    assert plan.NORMAL_DENSITY_FROM_CSS == core.AUTO_COMPACT_REFERENCE_TABSTRIP_CSS / core.AUTO_COMPACT_THRESHOLD
-    assert core.ui_density(plan.NORMAL_DENSITY_FROM_CSS) == "normal" and core.ui_density(plan.NORMAL_DENSITY_FROM_CSS - 0.001) == "compact"
-    assert frame_table.declared_chrome_height(2.0, "normal") == 170 and frame_table.declared_chrome_height(2.0, "compact") == 146
-    assert frame_table.density_at(719) == "compact" and frame_table.density_at(720) == "normal"
-    for panel in plan.normal_density_panels(2.0):
-        assert frame_table.density_at(plan.work_height_css(panel, 2.0)) == "normal", panel
-    assert frame_table.density_at(plan.work_height_css((2560, 1440), 2.0)) == "compact"
-
-
-def test_launch_n_is_reserved_so_a_request_cannot_name_it():
-    assert "n" in plan.RESERVED_LAUNCHES
-
-
-class NormalFakes(Fakes):
-    """Fakes whose scale 2 is live and whose settable panels are `settable` (the request's first resolution, 1920x1080, is not one)."""
-
-    def __init__(self, monkeypatch, tmp_path, settable=((1600, 1200), (3840, 2160), (2560, 1600), (2560, 1440)), live=(1.0, 2.0)):
-        super().__init__(monkeypatch, tmp_path, live=live, settable=settable,
-                         offered=((1024, 768), (1600, 1200), (2560, 1440), (3840, 2160)))
-
-
-N_REQUEST = dict(REQUEST, resolutions=[[1920, 1080], [1600, 1200], [2560, 1440]], round=7)
-
-
-def n_calls(fakes):
-    return [c for c in fakes.calls if c["launch"] == "n"]
-
-
-def n_raw(tmp_path, panel):
-    return json.loads((tmp_path / "dpr2" / panel / "n" / "raw.json").read_text(encoding="utf-8"))
-
-
-def test_scale_2_runs_launch_n_on_the_first_panel_that_is_set_with_maximized_and_iframes_max_only(monkeypatch, tmp_path):
-    fakes = NormalFakes(monkeypatch, tmp_path)
-    assert run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path) == 0
-    (call,) = n_calls(fakes)
-    assert call["resolution"] == [3840, 2160] and call["steps"] == ["maximized", "iframes_max"] and call["mode"] == "display"
-    assert n_raw(tmp_path, "3840x2160")["launch"] == "n"
-    order = [c["launch"] for c in fakes.calls]
-    assert order.index("p") < order.index("n") < order.index("m"), "after a, b and p, before the every-resolution launches"
-    nd = meta_of(tmp_path, "2")["normal_density"]
-    assert nd["role"] == "normal density at scale 2" and nd["set"] == [3840, 2160]
-    assert nd["panels_asked"] == [[3840, 2160], [2560, 1600]] and nd["panels_never_asked"] == [[2560, 1440]]
-    assert [t["panel"] for t in nd["tried"]] == [[3840, 2160]] and nd["tried"][0]["dpi_reached"] is True
-    assert "3840x2160/n/raw.json" in meta_of(tmp_path, "2")["raw_sha256"]
-
-
-def test_the_role_and_the_panels_tried_travel_in_the_display_record_of_launch_n(monkeypatch, tmp_path):
-    fakes = NormalFakes(monkeypatch, tmp_path)
-    seen = {}
-    original = fakes.measure
-
-    def spy(install_dir, dpr, launch, resolution, shown, *a, **kw):
-        if launch == "n":
-            seen.update(shown)
-        return original(install_dir, dpr, launch, resolution, shown, *a, **kw)
-
-    monkeypatch.setattr(run_scale.measure, "measure", spy)
-    run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path)
-    assert seen["role"] == "normal density at scale 2" and seen["panels_tried"][0]["panel"] == [3840, 2160]
-
-
-def test_when_3840x2160_is_not_set_launch_n_falls_back_to_2560x1600_and_never_to_2560x1440(monkeypatch, tmp_path):
-    fakes = NormalFakes(monkeypatch, tmp_path, settable=((1600, 1200), (2560, 1600), (2560, 1440)))
-    assert run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path) == 0
-    (call,) = n_calls(fakes)
-    assert call["resolution"] == [2560, 1600]
-    tried = meta_of(tmp_path, "2")["normal_density"]["tried"]
-    assert [t["panel"] for t in tried] == [[3840, 2160], [2560, 1600]]
-    assert tried[0]["resolution"]["ok"] is False and "resolution not set" in tried[0]["reason"] and tried[1]["reason"] is None
-    assert "2560x1600/n/raw.json" in meta_of(tmp_path, "2")["raw_sha256"]
-
-
-def test_when_no_qualifying_panel_is_set_launch_n_is_not_possible_with_the_reason_and_starts_no_browser(monkeypatch, tmp_path):
-    fakes = NormalFakes(monkeypatch, tmp_path, settable=((1600, 1200), (2560, 1440)))
-    assert run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path) == 0
-    assert n_calls(fakes) == [], "2560x1440 can be set but does not qualify: it is never launch n"
-    raw = n_raw(tmp_path, "3840x2160")
-    assert raw["launch"] == "n" and raw["error"] is None and raw["processes_left"] == 0
-    assert set(raw["steps"]) == {"maximized", "iframes_max"}
-    reason = raw["steps"]["maximized"]["not_possible"]
-    assert "3840x2160" in reason and "2560x1600" in reason and "resolution not set" in reason and "2560x1440" not in reason
-    assert raw["steps"]["iframes_max"]["not_possible"] == reason
-    assert raw["display"]["role"] == "normal density at scale 2" and len(raw["display"]["tried"]) == 2
-    meta = meta_of(tmp_path, "2")
-    assert meta["normal_density"]["set"] is None and "3840x2160/n/raw.json" in meta["raw_sha256"]
-
-
-def test_a_panel_where_the_scale_is_not_in_force_is_passed_over_for_the_next(monkeypatch, tmp_path):
-    fakes = NormalFakes(monkeypatch, tmp_path)
-    original = fakes.apply
-
-    def apply(dpr, resolution):
-        shown = original(dpr, resolution)
-        if resolution is not None and tuple(resolution) == (3840, 2160) and float(dpr) == 2.0:
-            shown.update(dpi_reached=False, effective_dpi=144, reason="outside the steps")
-        return shown
-
-    monkeypatch.setattr(run_scale.display, "apply", apply)
-    run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path)
-    (call,) = n_calls(fakes)
-    assert call["resolution"] == [2560, 1600]
-
-
-def test_the_time_budget_spent_makes_launch_n_not_possible_and_says_so(monkeypatch, tmp_path):
-    fakes = NormalFakes(monkeypatch, tmp_path)
-    monkeypatch.setattr(run_scale, "TIME_BUDGET_SECONDS", -1)
-    run_scale.run(tmp_path, {}, N_REQUEST, 2.0, tmp_path)
-    assert n_calls(fakes) == []
-    assert "time budget" in n_raw(tmp_path, "3840x2160")["steps"]["maximized"]["not_possible"]
-
-
-def test_the_other_scales_run_no_launch_n(monkeypatch, tmp_path):
-    fakes = NormalFakes(monkeypatch, tmp_path, live=(1.0, 1.25, 2.0))
-    for dpr in (1.0, 1.25):
-        run_scale.run(tmp_path, {}, N_REQUEST, dpr, tmp_path)
-    assert n_calls(fakes) == [] and meta_of(tmp_path, "1")["normal_density"] == {}
+def test_no_launch_of_any_scale_takes_a_restored_window_step(monkeypatch, tmp_path):
+    fakes = Fakes(monkeypatch, tmp_path, live=(1.0, 1.25, 1.5, 2.0))
+    for dpr in (1.0, 1.25, 1.5, 2.0):
+        run_scale.run(tmp_path, {}, REQUEST, dpr, tmp_path)
+    taken = {name for call in fakes.calls for name in call["steps"]}
+    assert taken == set(plan.COMPARED_STEPS), sorted(taken ^ set(plan.COMPARED_STEPS))
+    assert "n" not in {call["launch"] for call in fakes.calls}
+    assert not list(tmp_path.glob("dpr*/*/*/hostgate-*"))

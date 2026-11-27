@@ -80,7 +80,7 @@ def test_anything_but_a_release_version_is_refused(version):
         req.validate(dict(GOOD, firefox_version=version))
 
 
-@pytest.mark.parametrize("launches", [["a"], [], ["a", "a"], ["a", "B"], ["a", "bb"], ["a", 1], ["a", "p"], ["a", "q"], ["a", "m"], ["a", "n"], "ab", None])
+@pytest.mark.parametrize("launches", [["a"], [], ["a", "a"], ["a", "B"], ["a", "bb"], ["a", 1], ["a", "p"], ["a", "q"], ["a", "m"], "ab", None])
 def test_launches_are_at_least_two_distinct_letters_and_not_a_reserved_one(launches):
     with pytest.raises(req.RequestError, match="launches"):
         req.validate(dict(GOOD, launches=launches))

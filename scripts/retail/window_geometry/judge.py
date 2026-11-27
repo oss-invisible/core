@@ -4,22 +4,12 @@
 
 Red when:
   * a scale of the request has no run, a run has an error or leaves a process of the install folder alive, a run lacks
-    a step of its launch (a, b, p, q: maximized, restored, juggler, juggler_rdm, juggler2, juggler_back; m: maximized; and,
-    in the two launches that are compared, the fifteen steps of plan.ROUND5_STEPS: fullscreen, F11-style fullscreen,
-    iframes, popups, the repeated Juggler call). A step of round 5 that is `{"not_possible": <reason>}` is complete when it
-    has a non-empty reason, which is printed; `{"skipped": ...}` is complete as before;
-  * launch a differs from launch b (launch p from q) at a resolution that has both, on any number of those steps and of
-    the round 5 steps (the diff is printed); the grid, the minimum and the grid check are not part of that comparison.
-    What a frame read in its first moments (`early`, round 7) is not part of it: it is printed per moment, and the
+    a step of its launch (a, b, p, q: maximized; m: maximized; and, in the two launches that are compared, the eight steps
+    of plan.ROUND5_STEPS: fullscreen, F11-style fullscreen, iframes, popups). A step of round 5 that is
+    `{"not_possible": <reason>}` is complete when it has a non-empty reason, which is printed;
+  * launch a differs from launch b (launch p from q) at a resolution that has both, on any number of those steps (the diff is
+    printed). What a frame read in its first moments (`early`, round 7) is not part of it: it is printed per moment, and the
     differences between launch a and launch b (the timing `now` left out) are printed, never red;
-  * at the scales of plan.GRID_DPRS, launch a lacks its grid and minimum, launch b lacks its grid check, a grid row is
-    an error, or a point of the grid check does not show what launch a shows at that point (content top, size mode);
-  * at the scales of plan.HOSTGATE_DPRS, launches a and b lack their `rdm_hostgate` step, or the collection page did not
-    post its result WITHOUT inRDMPane (a missing POST WITH inRDMPane is printed as `RDM HANG` and is a finding, not red);
-  * launch n (round 7, scale 2: the maximized window and iframes_max on a panel whose work area holds the normal UI density) needs
-    its two steps, a record or `not_possible` with a reason; its maximized chrome height is PRINTED next to what the core declares
-    (chrome_height_device(scale, "normal") and the density rule at the measured availHeight) and is not judged; its border and
-    screenX are judged like every other launch's; it is compared with no other launch;
   * at every scale reached live (display mode), at every resolution, the MAXIMIZED step is not exactly what the core declares
     (invisible_core, read from the source of this checkout by frame_table.py): the invisible border (GetWindowRect width
     minus work-area width, halved), screenX = round-half-up(-border / dpr) and round(mozInnerScreenY * dpr) =
@@ -114,8 +104,6 @@ def required_steps(run: Dict[str, Any], compared: bool = False) -> Tuple[str, ..
     b, p with q) takes the round 5 steps too."""
     if run["launch"] == "m":
         return plan.MAXIMIZED_ONLY
-    if run["launch"] == "n":
-        return plan.NORMAL_DENSITY_STEPS
     return STEPS + EXTRA if compared else STEPS
 
 
@@ -124,7 +112,7 @@ def compared_runs(runs: Iterable[Dict[str, Any]]) -> set:
     the first two derived launches (p, q) of a scale; a launch alone is compared with nothing."""
     groups: Dict[Tuple[float, tuple, str], List[Dict[str, Any]]] = {}
     for run in runs:
-        if run.get("mode") == "display" and run.get("launch") not in ("m", "n"):
+        if run.get("mode") == "display" and run.get("launch") != "m":
             kind = "display"
         elif run.get("mode") == "devPixelsPerPx" and run.get("launch") in ("p", "q"):
             kind = "derived"
@@ -135,18 +123,17 @@ def compared_runs(runs: Iterable[Dict[str, Any]]) -> set:
 
 
 def step_is_complete(step: Any) -> bool:
-    """A step with its window record, one the capture says it skipped (Juggler's size did not fit the work area), or one it
-    says was not possible with a reason."""
+    """A step with its window record, or one the capture says was not possible with a reason."""
     if not isinstance(step, dict):
         return False
     if "not_possible" in step:
         return isinstance(step["not_possible"], str) and bool(step["not_possible"].strip())
-    return "skipped" in step or "window_rect" in (step.get("native") or {})
+    return "window_rect" in (step.get("native") or {})
 
 
 def chrome_line(step_name: str, step: Dict[str, Any]) -> str:
     """What the chrome says about the window after the step: its inner size, the content top (the stack's y, CSS), the size
-    mode and the window state (does Juggler's sequence leave the window maximized or restored?), and Windows' own rects."""
+    mode and the window state, and Windows' own rects."""
     chrome, native = step["chrome"], step["native"]
     stack = chrome.get("stack") or {}
     return (f"    {step_name} chrome: inner {chrome.get('innerWidth')}x{chrome.get('innerHeight')} stack y {stack.get('y')} "
@@ -174,128 +161,6 @@ def probe_line(step_name: str, step: Dict[str, Any]) -> Optional[str]:
             f"TouchEvent {touch.get('touchEvent')} ; visualViewport "
             + ("none" if viewport is None else " ".join(f"{k} {viewport[k]}" for k in sorted(viewport)))
             + f" ; root client {(probe.get('client') or {}).get('width')}x{(probe.get('client') or {}).get('height')}")
-
-
-def hostgate_lines(run: Dict[str, Any]) -> List[str]:
-    """The two outcomes of the collection page in the tab (without, then with inRDMPane)."""
-    step = run["steps"].get("rdm_hostgate")
-    if not step:
-        return []
-    if "skipped" in step:
-        return [f"    rdm_hostgate: skipped ({step['skipped']})"]
-    lines = []
-    for key, label in (("rdm_false", "false"), ("rdm_true", "true")):
-        entry = step.get(key) or {}
-        if entry.get("posted"):
-            lines.append(f"    rdm_hostgate inRDMPane={label}: posted in {entry.get('seconds')} s, {entry.get('bytes')} bytes, "
-                         f"sha256 {entry.get('sha256')}, inRDMPane read back {entry.get('inRDMPane')}")
-        elif key == "rdm_true":
-            lines.append(f"    rdm_hostgate inRDMPane={label}: RDM HANG (no POST in {entry.get('seconds')} s, "
-                         f"inRDMPane read back {entry.get('inRDMPane')})")
-        else:
-            lines.append(f"    rdm_hostgate inRDMPane={label}: NO POST in {entry.get('seconds')} s")
-    return lines
-
-
-def hostgate_problems(runs: Iterable[Dict[str, Any]], dpr: float) -> List[str]:
-    """Red: the step is missing, or the page did not post without inRDMPane. An RDM hang is not red."""
-    problems = []
-    for run in runs:
-        step = run["steps"].get("rdm_hostgate")
-        if step is None:
-            problems.append(f"dpr {dpr:g}: launch {run['launch']} has no rdm_hostgate")
-        elif "skipped" not in step and not (step.get("rdm_false") or {}).get("posted"):
-            problems.append(f"dpr {dpr:g}: launch {run['launch']}: host-gate-2.html did not post without inRDMPane")
-        elif "skipped" not in step and "rdm_true" not in step:
-            problems.append(f"dpr {dpr:g}: launch {run['launch']}: rdm_hostgate has no run with inRDMPane")
-    return problems
-
-
-def grid_cell(row: Dict[str, Any]) -> str:
-    """`y/device` of a grid row: the content top (the stack's y) in CSS and in device pixels; `-` skipped, ERR failed,
-    `*` not settled, `!` the chrome inner size is not the one asked."""
-    if "skipped" in row:
-        return "-"
-    if "error" in row:
-        return "ERR"
-    chrome, native = row["chrome"], row["native"]
-    y = chrome["stack"]["y"]
-    device = "?"
-    if "window_rect" in native:
-        device = (native["client_origin"][1] - native["window_rect"][1]) + half_up(y * chrome["devicePixelRatio"])
-    got = (chrome["innerWidth"], chrome["innerHeight"])
-    return f"{y:.2f}/{device}" + ("" if row.get("settled") else "*") + ("" if got == (row["w"], row["h"]) else "!")
-
-
-def row_summary(row: Dict[str, Any]) -> str:
-    chrome, page, native = row["chrome"], row["page"], row["native"]
-    return (f"chrome inner {chrome['innerWidth']}x{chrome['innerHeight']} sizemode {chrome.get('sizemode')} "
-            f"page inner {page['innerWidth']}x{page['innerHeight']} outer {page['outerWidth']}x{page['outerHeight']} "
-            f"stack y/height css {chrome['stack']['y']:.2f}/{chrome['stack']['height']:.2f} "
-            f"window rect {native.get('window_rect')} client rect {native.get('client_rect')}")
-
-
-def grid_lines(run: Dict[str, Any]) -> List[str]:
-    """The grid of a launch as a compact table (one line per height, `width:y/device` cells) and its minimum window."""
-    steps = run["steps"]
-    lines: List[str] = []
-    rows = steps.get("grid")
-    if rows:
-        widths = sorted({r["w"] for r in rows})
-        lines.append(f"    grid of restored windows, chrome inner W x H CSS -> content top y css/device "
-                     f"(- does not fit, * not settled, ! size differs from asked, ERR failed); widths {widths}")
-        by_point = {(r["w"], r["h"]): r for r in rows}
-        for height in sorted({r["h"] for r in rows}):
-            lines.append(f"      H {height}: " + " ".join(f"{w}:{grid_cell(by_point[(w, height)])}" for w in widths if (w, height) in by_point))
-        moved = [f"{r['w']}x{r['h']} -> {r['chrome']['innerWidth']}x{r['chrome']['innerHeight']}" for r in rows
-                 if "chrome" in r and (r["chrome"]["innerWidth"], r["chrome"]["innerHeight"]) != (r["w"], r["h"])]
-        if moved:
-            lines.append(f"      asked -> got (chrome inner): {', '.join(moved)}")
-    minimum = steps.get("minimum")
-    if minimum:
-        lines.append(f"    minimum window (asked {plan.MINIMUM_ASKED[0]}x{plan.MINIMUM_ASKED[1]} chrome inner css): "
-                     + (row_summary(minimum) if "chrome" in minimum else str(minimum)))
-    return lines
-
-
-def shown_at(row: Dict[str, Any]) -> Dict[str, Any]:
-    """What a grid row says the window shows: the content top in CSS and the size mode."""
-    chrome = row.get("chrome") or {}
-    return {"stack_y": (chrome.get("stack") or {}).get("y"), "sizemode": chrome.get("sizemode")}
-
-
-def grid_problems(first: Dict[str, Any], second: Dict[str, Any], dpr: float) -> Tuple[List[str], List[str]]:
-    """(lines, problems) of the grid rules for launch a (`first`) against launch b (`second`) at a scale of GRID_DPRS."""
-    lines: List[str] = []
-    problems: List[str] = []
-    steps_a, steps_b = first["steps"], second["steps"]
-    for step in ("grid", "minimum"):
-        if step not in steps_a:
-            problems.append(f"dpr {dpr:g}: launch {first['launch']} has no {step}")
-    if "grid_check" not in steps_b:
-        problems.append(f"dpr {dpr:g}: launch {second['launch']} has no grid_check")
-    for row in steps_a.get("grid", []):
-        if "error" in row:
-            problems.append(f"dpr {dpr:g}: grid point {row['w']}x{row['h']} failed: {row['error']}")
-    rows_a = {(r["w"], r["h"]): r for r in steps_a.get("grid", [])}
-    equal = 0
-    for row in steps_b.get("grid_check", []):
-        point = (row["w"], row["h"])
-        if point not in rows_a:
-            problems.append(f"dpr {dpr:g}: grid check point {point[0]}x{point[1]} is not in the grid of launch {first['launch']}")
-            continue
-        # Only what the window SHOWS at that point is compared: the content top and the size mode. The sizes
-        # reached are not: at a fractional scale resizeBy rounds from the size it starts at, so the device size a
-        # point lands on depends on the route there (run 45672953042, scale 1.25: 671.2 vs 672 CSS), not on Firefox.
-        diff = differences(shown_at(rows_a[point]), shown_at(row))
-        if not diff:
-            equal += 1
-            continue
-        lines.append(f"    grid check {point[0]}x{point[1]}: {len(diff)} difference(s) from launch {first['launch']}")
-        lines.extend(f"        {path}: {va!r} vs {vb!r}" for path, va, vb in diff)
-        problems.append(f"dpr {dpr:g}: grid check point {point[0]}x{point[1]} differs from launch {first['launch']} on {len(diff)} number(s)")
-    lines.append(f"dpr {dpr:g} grid check: {equal} of {len(steps_b.get('grid_check', []))} point(s) equal to launch {first['launch']}")
-    return lines, problems
 
 
 def core_steps_of(run: Dict[str, Any], with_early: bool = False) -> Dict[str, Any]:
@@ -381,11 +246,11 @@ def frames_lines(step_name: str, step: Dict[str, Any]) -> List[str]:
 
 
 EARLY_MOMENTS = ("parse", "dcl", "raf1", "raf2", "load")
-EARLY_STEPS = ("iframes_max", "iframes_juggler")
+EARLY_STEPS = ("iframes_max",)
 
 
 def early_lines(step_name: str, step: Dict[str, Any], dpr: float) -> List[str]:
-    """Per frame of iframes_max and iframes_juggler (same-origin and cross-site), per moment of its first life (parse, DOMContentLoaded,
+    """Per frame of iframes_max (same-origin and cross-site), per moment of its first life (parse, DOMContentLoaded,
     the first and the second animation frame, load): mozInnerScreenX/Y and screenX/Y the frame read then, next to its settled reading,
     the parent's mozInnerScreen and the window's client origin in CSS px. Measured, not judged."""
     if step_name not in EARLY_STEPS:
@@ -441,53 +306,6 @@ def fullscreen_line(step_name: str, step: Dict[str, Any]) -> List[str]:
             f"click {step.get('click')}"]
 
 
-def repeat_lines(steps: Dict[str, Any], dpr: float) -> List[str]:
-    """Each repeated Juggler call against the call it repeats (juggler_repeat against juggler, juggler2_repeat against juggler2):
-    the outer sizes and the window rects. The engine's model says the outer height shrinks by one border at each call at the
-    same size; this is the measure, not a check."""
-    return [line for first, again in (("juggler", "juggler_repeat"), ("juggler2", "juggler2_repeat"))
-            for line in repeat_line(steps, dpr, first, again)]
-
-
-def repeat_line(steps: Dict[str, Any], dpr: float, first_name: str, again_name: str) -> List[str]:
-    first, again = steps.get(first_name), steps.get(again_name)
-    if not first or not again or "native" not in first or "native" not in again or "chrome" not in first or "chrome" not in again:
-        return []
-    a, b = derived(first, dpr), derived(again, dpr)
-    outer = [b["page_outer"][0] - a["page_outer"][0], b["page_outer"][1] - a["page_outer"][1]]
-    size = [(b["window_rect"][2] - b["window_rect"][0]) - (a["window_rect"][2] - a["window_rect"][0]),
-            (b["window_rect"][3] - b["window_rect"][1]) - (a["window_rect"][3] - a["window_rect"][1])]
-    moved = [b["position_dev"][0] - a["position_dev"][0], b["position_dev"][1] - a["position_dev"][1]]
-    return [f"    {again_name} minus {first_name}: page outer css {outer} (outer {b['page_outer']} against {a['page_outer']}), "
-            f"window rect size dev {size}, position dev {moved}"]
-
-
-def normal_density_lines(run: Dict[str, Any], dpr: float, table: Dict[float, Any]) -> List[str]:
-    """Launch n, printed: the panel, the density the core's rule gives at the measured availHeight, and the maximized chrome height
-    (round(mozInnerScreenY * dpr), the formula of the `maximized_ui` check; and that minus the window's client top, device px)
-    next to what the core declares: chrome_height_device(scale, "normal") and the bar the density rule declares at that availHeight.
-    Measured, not judged."""
-    shown = run["display"]
-    head = f"    launch n ({plan.NORMAL_DENSITY_ROLE}): panel {run['resolution'][0]}x{run['resolution'][1]}"
-    maximized = run["steps"].get("maximized") or {}
-    if "not_possible" in maximized:
-        return [f"{head} NOT POSSIBLE ({maximized['not_possible']}) ; panels tried {shown.get('tried')}"]
-    content = maximized["content"]
-    avail = content["screen"]["availHeight"]
-    client_top = maximized["native"]["client_origin"][1]
-    top = half_up(content["mozInnerScreenY"] * dpr)
-    normal = frame_table.declared_chrome_height(dpr, "normal")
-    declared = frame_table.declared_maximized_ui(table[dpr], avail)
-    qualifies = frame_table.density_at(avail) == "normal"
-    return [f"{head} (resolution now {shown.get('resolution_now')}) "
-            f"screen.availHeight {avail} CSS = {'at least' if avail >= plan.NORMAL_DENSITY_FROM_CSS else 'below'} {plan.NORMAL_DENSITY_FROM_CSS}, "
-            f"the core's rule gives {frame_table.density_at(avail)}{'' if qualifies else ' (this panel does NOT hold the normal density)'}",
-            f"    launch n maximized chrome height: round(mozInnerScreenY {content['mozInnerScreenY']} * dpr {dpr:g}) = {top} device px ; "
-            f"minus the window's client top {client_top} = {top - client_top} ; core declares chrome_height_device({dpr:g}, 'normal') = {normal}, "
-            f"declared_maximized_ui at availHeight {avail} = {declared} ; "
-            f"measured {top} {'equals' if top == normal else 'differs from'} the normal {normal} (printed, not judged)"]
-
-
 def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: Dict[float, Any]) -> Dict[str, Any]:
     """{"red": bool, "problems": [...], "lines": [...]}"""
     problems: List[str] = []
@@ -510,24 +328,16 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
         dpr, shown = float(run["dpr_asked"]), run["display"]
         lines.append(f"{name_of(run)}: dpi_reached={shown.get('dpi_reached')} effective_dpi={shown.get('effective_dpi')} "
                      f"resolution_now={shown.get('resolution_now')}")
-        if run["launch"] == "n":
-            lines.extend(normal_density_lines(run, dpr, table))
         if run["mode"] == "display" and not shown.get("dpi_reached"):
-            if run["launch"] != "n":
-                lines.append(f"    not reachable live: derived path ({shown.get('reason')})")
+            lines.append(f"    not reachable live: derived path ({shown.get('reason')})")
         elif run["mode"] == "display":
             for name, what, got, want, ok in check_maximized(run, table):
-                judged = not (run["launch"] == "n" and name == "maximized_ui")
-                lines.append(f"    maximized {name}: {what} = {got} ; core declares {want} : "
-                             f"{'ok' if ok else 'DIFFERENT'}{'' if judged else ' (printed, not judged)'}")
-                if not ok and judged:
+                lines.append(f"    maximized {name}: {what} = {got} ; core declares {want} : {'ok' if ok else 'DIFFERENT'}")
+                if not ok:
                     problems.append(f"{name_of(run)}: maximized {name} is {got}, the core declares {want}")
         wanted = required_steps(run, id(run) in pairs)
         for step_name in wanted:
             step = run["steps"][step_name]
-            if "skipped" in step:
-                lines.append(f"    {step_name}: skipped ({step['skipped']})")
-                continue
             if "not_possible" in step:
                 lines.append(f"    {step_name}: NOT POSSIBLE ({step['not_possible']})")
                 continue
@@ -541,27 +351,14 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
             lines.extend(transformed_lines(step_name, step))
         for step_name in wanted:
             step = run["steps"][step_name]
-            line = probe_line(step_name, step) if not ({"skipped", "not_possible"} & set(step)) else None
+            line = probe_line(step_name, step) if "not_possible" not in step else None
             if line:
                 lines.append(line)
-        lines.extend(hostgate_lines(run))
-        if "restored" in run["steps"]:
-            lines.append(f"    restored size used {run.get('restored_size_used')}")
-        if "juggler" in run["steps"]:
-            lines.append(f"    juggler size used {run.get('juggler_size_used')}")
-        for name in ("juggler_repeat", "juggler2", "juggler2_repeat", "juggler_back"):
-            if name in run["steps"]:
-                lines.append(f"    {name} size used {run.get(name + '_size_used')}")
-        lines.extend(repeat_lines(run["steps"], dpr))
-        lines.extend(grid_lines(run))
-    for dpr in plan.NORMAL_DENSITY_DPRS:
-        if dpr in expected and any(float(r["dpr_asked"]) == dpr and r["launch"] != "n" for r in usable)                 and not any(float(r["dpr_asked"]) == dpr and r["launch"] == "n" for r in runs):
-            lines.append(f"dpr {dpr:g}: no launch n ({plan.NORMAL_DENSITY_ROLE}) was recorded (printed, not judged)")
     display_groups: Dict[Tuple[float, tuple], List[Dict[str, Any]]] = {}
     derived_groups: Dict[Tuple[float, tuple], List[Dict[str, Any]]] = {}
     for run in usable:
         key = (float(run["dpr_asked"]), tuple(run["resolution"]))
-        if run["mode"] == "display" and run["launch"] not in ("m", "n"):
+        if run["mode"] == "display" and run["launch"] != "m":
             display_groups.setdefault(key, []).append(run)
         elif run["mode"] == "devPixelsPerPx" and run["launch"] in ("p", "q"):
             derived_groups.setdefault(key, []).append(run)
@@ -582,12 +379,6 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
                 lines.append(f"dpr {dpr:g} launch {first['launch']} vs {other['launch']}: {len(early)} difference(s) in what the frames "
                              "read in their first moments (printed, not judged)")
                 lines.extend(f"    {path}: {va!r} vs {vb!r}" for path, va, vb in early)
-            if first["mode"] == "display" and dpr in plan.GRID_DPRS and first["display"].get("dpi_reached"):
-                more_lines, more_problems = grid_problems(first, group[1], dpr)
-                lines.extend(more_lines)
-                problems.extend(more_problems)
-                if dpr in plan.HOSTGATE_DPRS:
-                    problems.extend(hostgate_problems(group[:2], dpr))
     return {"red": bool(problems), "problems": problems, "lines": lines}
 
 

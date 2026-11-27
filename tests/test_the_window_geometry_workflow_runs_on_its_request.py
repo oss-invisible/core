@@ -6,7 +6,7 @@ one job per display scale. Held here, on the file itself:
   * the trigger is an event of the code (a pull request or a push to main that changes the request); no schedule, no
     dispatched run;
   * a first job validates the request; the capture job is a matrix of the scales it prints, on windows-2025, TEMP and TMP
-    on D:, 60 minutes at most, `fail-fast: false`;
+    on D:, 30 minutes at most, `fail-fast: false`;
   * the browser is started only by the scripts, never by the workflow; the build is fetched by the script that verifies it;
   * the artifact is named for the version and the scale, is uploaded even when a step is red, and is kept 90 days;
   * the `judge` job needs the matrix, runs `if: always()`, downloads every artifact and runs the judge script;
@@ -61,7 +61,7 @@ def test_the_capture_is_one_job_per_scale_on_windows_2025_with_temp_on_d():
     assert job["strategy"]["fail-fast"] is False
     assert job["strategy"]["matrix"] == {"dpr": "${{ fromJSON(needs.request.outputs.dpr) }}"}
     assert job["env"]["TEMP"] == D_TEMP and job["env"]["TMP"] == D_TEMP
-    assert job["timeout-minutes"] == 60, "the grid, round 5 and the every-resolution launches fill it (run_scale.TIME_BUDGET_SECONDS, 49 minutes)"
+    assert job["timeout-minutes"] == 30, "the jobs of round 7, restored-window steps and grid included, took 4 to 11 minutes (run_scale.TIME_BUDGET_SECONDS, 20)"
     assert "--dpr ${{ matrix.dpr }}" in _runs("capture")
 
 
@@ -91,8 +91,7 @@ def test_the_judge_waits_for_the_matrix_runs_always_and_reads_every_artifact():
 
 def test_the_marionette_exception_and_its_proof_are_in_the_header():
     header = TEXT.split("\non:")[0]
-    for needle in ("MARIONETTE EXCEPTION", "-marionette", "plain launch", "TargetRegistry.js setViewportSize: window.resizeBy",
-                   "WINDOW_FRAME_BY_DPR", "judge.py"):
+    for needle in ("MARIONETTE EXCEPTION", "-marionette", "plain launch", "maximizing the window", "WINDOW_FRAME_BY_DPR", "judge.py"):
         assert needle in header, needle
 
 
@@ -111,28 +110,38 @@ def test_every_script_it_runs_exists_and_every_action_is_pinned_like_retail_capt
 def test_the_every_resolution_launches_stop_with_the_minutes_the_setup_the_last_launch_and_the_upload_need():
     run_scale = load_window_geometry("run_scale")
     timeout_seconds = JOBS["capture"]["timeout-minutes"] * 60
-    assert run_scale.TIME_BUDGET_SECONDS == 49 * 60 and timeout_seconds - run_scale.TIME_BUDGET_SECONDS >= 10 * 60
+    assert run_scale.TIME_BUDGET_SECONDS == 20 * 60 and timeout_seconds - run_scale.TIME_BUDGET_SECONDS >= 10 * 60
 
 
-def test_the_header_says_what_round_5_added_and_why_the_job_has_sixty_minutes():
+def test_the_header_says_what_round_5_added():
     header = TEXT.split("\non:")[0]
-    for needle in ("Round 5", "fifteen steps", "iframes_transformed", "real click", "F11-style fullscreen", "cross-site iframe", "juggler2",
-                   "60 minutes (it had 45)", "TIME_BUDGET_SECONDS is 49 minutes"):
+    for needle in ("Round 5", "eight steps", "iframes_transformed", "real click", "F11-style fullscreen", "cross-site iframe"):
         assert needle in header, needle
 
 
-def test_the_header_says_what_round_7_adds_and_keeps_the_time_budget():
+def test_the_header_says_what_round_7_adds():
     header = TEXT.split("\non:")[0]
     for needle in ("Round 7 adds no step to the launches that are compared", "surface.html", "parse time", "DOMContentLoaded", "first and second animation frame",
-                   "`early`", "iframes_max, iframes_juggler", "iframes_transformed", "each frame is a new document", "not judged",
-                   "The time budget is kept", "the same 60 minutes", "the same 49 minutes"):
+                   "`early`", "iframes_max and iframes_transformed", "each frame is a new document", "not judged"):
         assert needle in header, needle
     assert header.index("Round 7") > header.index("Round 5"), "round 7 after round 5"
 
 
-def test_the_header_says_what_launch_n_measures_how_the_panel_is_chosen_and_why_it_runs_in_the_scale_2_job():
-    header = TEXT.split("\non:")[0]
-    for needle in ("Launch n", "normal density at scale 2", "3840x2160, 2560x1600", "EnumDisplaySettings read back", "2560x1440: 672 CSS px",
-                   "never asked", "`not_possible`", "next to the core's", "does not judge it", "inside the scale-2 job", "about three minutes"):
+def test_the_header_says_round_8_drops_the_restored_window_steps_and_launch_n_and_why():
+    header = " ".join(line.lstrip("# ").strip() for line in TEXT.split("\non:")[0].splitlines())
+    for needle in ("Round 8 takes the restored-window steps out of the plan, and so out of the judged set",
+                   "the restored-window feature is dropped from the product, so the capture no longer measures it",
+                   "Launch n", "the runner's display refuses panels above 1920x1080 (code -2)", "so it can never run there",
+                   "iframes_juggler (events.count 2 against 3 at dpr 1.5, run 46061552952) leaves with the step",
+                   "the only reason it leaves the verdict, not a way around the red",
+                   "The job has 30 minutes (it had 60)", "TIME_BUDGET_SECONDS is 20 minutes (it was 49)", "took 4 to 11 minutes"):
         assert needle in header, needle
-    assert header.index("Launch n") > header.index("Round 7")
+    assert header.index("Round 8") > header.index("Round 7") > header.index("Round 5")
+
+
+def test_the_header_no_longer_asks_for_any_restored_window_step_of_a_launch():
+    run_scale, plan = load_window_geometry("run_scale"), load_window_geometry("plan")
+    for needle in ("Juggler's whole sequence", "steps juggler", "a grid of restored windows and the minimum", "launch n"):
+        assert needle not in " ".join(run_scale.COMMAND_IN_WORDS.split()), needle
+    assert "grid" not in run_scale.PROOF_RULE and "launch n" not in run_scale.PROOF_RULE
+    assert not (set(plan.COMPARED_STEPS) & {"juggler", "restored", "iframes_juggler"})

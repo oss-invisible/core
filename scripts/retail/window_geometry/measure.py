@@ -1,6 +1,6 @@
-"""One measurement: retail Firefox, one window, maximized and then resized by exactly Juggler's call.
+"""One measurement: retail Firefox, one window, maximized.
 
-    python scripts/retail/window_geometry/measure.py --install DIR --build build.json --dpr 1 --launch a \
+    python scripts/retail/window_geometry/measure.py --install DIR --build build.json --dpr 1 --launch a
         --resolution 1920x1080 --out DIR [--mode devPixelsPerPx]
 
 The launch is `firefox.exe -no-remote -profile <fresh empty directory> -marionette <page url>`: a profile whose
@@ -9,35 +9,23 @@ in distribution/policies.json, and no MOZ_* variable but MOZ_REMOTE_ALLOW_SYSTEM
 the chrome context. Marionette is the one difference from retail-capture.yml; why it is allowed is in the header of
 .github/workflows/retail-window-geometry.yml.
 
-Steps (plan.py says which launch takes which), the six core steps each with the same fields (what the page reads, what the
-chrome reads, what Windows says about the top-level window, and a real mouse move over the content): `maximized`;
-`restored`, produced by the line of juggler/TargetRegistry.js (setViewportSize) that calls window.resizeBy; `juggler`,
-Juggler's whole sequence (styles on the browser and its stack, then that resizeBy) at 390x844 CSS; `juggler_rdm`, the
-same window with inRDMPane = true; `juggler2`, a second call in a row (inRDMPane back to false, the styles kept) at
-414 x the largest height <= 896 that fits (50 less when that is the first call's height); `juggler_back`, Juggler's
-sequence with the content size of the maximized window (is it maximized again, or restored at that size?). Then, after clearing what Juggler's sequence set: `grid` (restored windows at
-chrome inner sizes W x H, one compact row each), `minimum` (the smallest window Firefox gives) and `grid_check` (a few grid
-points again); and, last, `rdm_hostgate` (the core's collection page host-gate-2.html loaded in the tab under Juggler's
-sequence, without and then with inRDMPane, each result kept in its own file next to raw.json).
-
-Round 5 adds to launches a and b (p and q where no display launch could be made), in this order (plan.ROUND5_STEPS): on the
-maximized window, before any Juggler call, element fullscreen entered by a REAL click (SendInput on #fs, whose handler calls
+Steps (plan.py says which launch takes which). `maximized` has the same fields as every full record (what the page reads, what the
+chrome reads, what Windows says about the top-level window, and a real mouse move over the content). The steps of plan.ROUND5_STEPS, taken on launches a and b (p and q where no display launch could be made), in
+this order: on the maximized window, element fullscreen entered by a REAL click (SendInput on #fs, whose handler calls
 requestFullscreen; Marionette cannot give the user activation) and left by document.exitFullscreen() (`fullscreen_max_in`,
 `fullscreen_max_out`), F11-style fullscreen by window.fullScreen in the chrome (`f11_max_in`, `f11_max_out`), the main page with a
-same-origin and a cross-site iframe, each recording its own content record after real mouse moves over it (`iframes_max`), the same two origins as four iframes under CSS transforms (a container with scale(1.5), one with
-rotate(10deg), each holding a 300x120 frame, one at a time; every mouse event a frame saw at three points of its transformed area is
-kept: `iframes_transformed`), and two popups opened by a real click on #open, the second with left and top (`popup`, `popup_pos`; the popup page records its content
-record and Windows' rects of its window are kept; it is closed); then, right after `juggler` and `juggler_rdm` (inRDMPane back to
-false, styles kept), `juggler_repeat` (Juggler's sequence again at exactly juggler's size, the repeat of the first call); then, after `juggler2`, `juggler2_repeat` (Juggler's sequence
-again at exactly juggler2's size), the same four fullscreen steps (`fullscreen_res_*`, `f11_res_*`) and the iframes
-(`iframes_juggler`) on the window Juggler left. A step this browser did not allow is `{"not_possible": reason}`.
+same-origin and a cross-site iframe, each recording its own content record after real mouse moves over it (`iframes_max`), the same
+two origins as four iframes under CSS transforms (a container with scale(1.5), one with rotate(10deg), each holding a 300x120 frame,
+one at a time; every mouse event a frame saw at three points of its transformed area is kept: `iframes_transformed`), and two popups
+opened by a real click on #open, the second with left and top (`popup`, `popup_pos`; the popup page records its content
+record and Windows' rects of its window are kept; it is closed). A step this browser did not allow is
+`{"not_possible": reason}`.
 Writes OUT/raw.json. The result is valid only when no process of the install folder is left.
 """
 from __future__ import annotations
 
 import argparse
 import ctypes
-import hashlib
 import http.server
 import json
 import os
@@ -60,7 +48,6 @@ import marionette  # noqa: E402
 import plan  # noqa: E402
 import surfaces  # noqa: E402
 import run_retail_capture as launcher  # noqa: E402
-import capture_server  # noqa: E402
 from native import INPUT, MONITORINFO, POINT, RECT, WINDOWPLACEMENT, api, guarded  # noqa: E402
 
 FORMAT = "retail-window-geometry/1"
@@ -68,11 +55,6 @@ PAGE = HERE / "page.html"
 #: What PageServer serves, by path: the main page, the script every page runs, and the page of an iframe and of a popup.
 SERVED = {"/": ("page.html", "text/html; charset=utf-8"), "/page.js": ("page.js", "text/javascript; charset=utf-8"),
           "/surface.html": ("surface.html", "text/html; charset=utf-8")}
-#: The core's collection page, served by scripts/retail/capture_server.py (the page POSTs its result to it).
-HOSTGATE_PAGE = HERE.parents[2] / "captures" / "pages" / "host-gate-2.html"
-HOSTGATE_TIMEOUT = 120.0
-#: The size Juggler is asked for, in CSS pixels, and the fallback height when the work area is too small for it.
-RESIZE_WIDTH, RESIZE_HEIGHT, FALLBACK_HEIGHT, FRAME_ALLOWANCE_CSS = 390, 844, 400, 200
 HOLD_SECONDS, SETTLE_TIMEOUT, POLL_SECONDS = 1.0, 20.0, 0.25
 #: Where the mouse goes, as fractions of the content area.
 MOUSE_FRACTIONS = ((0.25, 0.3), (0.5, 0.5), (0.75, 0.7))
@@ -84,13 +66,6 @@ MOUSEEVENTF_MOVE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_VIRTUALDESK = 0x1, 0x8000, 0
 MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP = 0x2, 0x4
 SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 76, 77, 78, 79
 
-#: Juggler's line (juggler/TargetRegistry.js, setViewportSize), with `width` and `height` as arguments.
-JUGGLER_RESIZE = (
-    "const width = arguments[0], height = arguments[1];\n"
-    "const stackRect = gBrowser.selectedBrowser.closest('.browserStack').getBoundingClientRect(); "
-    "const toolbarTop = stackRect.y; "
-    "window.resizeBy(width - window.innerWidth, height + toolbarTop - window.innerHeight);\n"
-    "return true;")
 CHROME_STATE = """
 const rect = (r) => ({x: r.x, y: r.y, width: r.width, height: r.height});
 return {windowState: window.windowState, maximized: window.windowState === window.STATE_MAXIMIZED,
@@ -110,52 +85,6 @@ return {innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWid
   events: {count: m.count, dx: m.dx, dy: m.dy},
   probe: JSON.parse((window.wrappedJSObject || window).__probe())};"""
 CONTENT_SIZE = "return [window.outerWidth, window.outerHeight, window.innerWidth, window.innerHeight];"
-#: Juggler's whole sequence, juggler/TargetRegistry.js (setViewportSize) lines 999-1018 as they are, `this` being the
-#: tab and `width` / `height` the arguments, in chrome context on the selected browser. Left out: the stealth guard and
-#: `inRDMPane = true` (the step `juggler_rdm` sets it) and the wait for the content size (the capture waits itself).
-JUGGLER_SEQUENCE = (
-    "const width = arguments[0], height = arguments[1];\n"
-    "(function () {\n"
-    "this._linkedBrowser.style.setProperty('width', width + 'px');\n"
-    "this._linkedBrowser.style.setProperty('height', height + 'px');\n"
-    "this._linkedBrowser.style.setProperty('box-sizing', 'content-box');\n"
-    "this._linkedBrowser.closest('.browserStack').style.setProperty('overflow', 'auto');\n"
-    "this._linkedBrowser.closest('.browserStack').style.setProperty('contain', 'size');\n"
-    "this._linkedBrowser.closest('.browserStack').style.setProperty('scrollbar-width', 'none');\n"
-    "const stackRect = this._linkedBrowser.closest('.browserStack').getBoundingClientRect();\n"
-    "const toolbarTop = stackRect.y;\n"
-    "this._window.resizeBy(width - this._window.innerWidth, height + toolbarTop - this._window.innerHeight);\n"
-    "}).call({_linkedBrowser: gBrowser.selectedBrowser, _window: window});\n"
-    "return true;")
-#: What the grid and the minimum start from: every style the sequence set removed, inRDMPane back to false.
-JUGGLER_CLEAR = (
-    "const browser = gBrowser.selectedBrowser, stack = browser.closest('.browserStack');\n"
-    "for (const name of ['width', 'height', 'box-sizing']) browser.style.removeProperty(name);\n"
-    "for (const name of ['overflow', 'contain', 'scrollbar-width']) stack.style.removeProperty(name);\n"
-    "browser.browsingContext.inRDMPane = false;\n"
-    "return true;")
-RDM_ON = "gBrowser.selectedBrowser.browsingContext.inRDMPane = true; return true;"
-RDM_OFF = "gBrowser.selectedBrowser.browsingContext.inRDMPane = false; return true;"
-RDM_STATE = "return gBrowser.selectedBrowser.browsingContext.inRDMPane;"
-#: Load a URL in the selected tab from the chrome (it does not wait for the page, which may never finish).
-LOAD_IN_TAB = ("gBrowser.selectedBrowser.fixupAndLoadURIString(arguments[0], "
-               "{triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal()}); return true;")
-LOAD_IN_CONTENT = "window.location.assign(arguments[0]); return true;"
-#: Chrome inner size to W x H CSS (a restored window): resizeBy by the difference.
-RESIZE_CHROME_INNER = ("const w = arguments[0], h = arguments[1]; window.resizeBy(w - window.innerWidth, h - window.innerHeight); "
-                       "return true;")
-FRAME_CSS = "return [window.outerWidth - window.innerWidth, window.outerHeight - window.innerHeight];"
-CHROME_ROW = """
-const s = gBrowser.selectedBrowser.closest('.browserStack').getBoundingClientRect();
-return {windowState: window.windowState, sizemode: document.documentElement.getAttribute('sizemode'),
-  innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWidth: window.outerWidth,
-  outerHeight: window.outerHeight, devicePixelRatio: window.devicePixelRatio,
-  stack: {x: s.x, y: s.y, width: s.width, height: s.height}};"""
-CONTENT_ROW = ("return {innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWidth: window.outerWidth, "
-               "outerHeight: window.outerHeight};")
-#: Settling of the grid points: held 1 s, at most 10 s.
-GRID_TIMEOUT = 10.0
-RDM_WAIT_SECONDS = 0.5
 CHROME_SIZE = "return [window.windowState === window.STATE_MAXIMIZED, window.innerWidth, window.innerHeight, window.outerWidth, window.outerHeight];"
 PAGE_READY = "return !!(window.wrappedJSObject || window).__m;"
 RESET_EVENTS = "(window.wrappedJSObject || window).__reset(); return true;"
@@ -421,83 +350,6 @@ class Session:
         _, settled = wait_stable(read, ready=lambda v: v[0][0] is True)
         return dict(self.record(), settled=settled)
 
-    def restored(self, work_rect: Sequence[int], scale: float) -> Dict[str, Any]:
-        """Juggler's resize. 390x844 CSS of content when the work area holds it plus a frame, else 390x400."""
-        height = RESIZE_HEIGHT if (work_rect[3] - work_rect[1]) / scale >= RESIZE_HEIGHT + FRAME_ALLOWANCE_CSS else FALLBACK_HEIGHT
-        self.chrome(JUGGLER_RESIZE, [RESIZE_WIDTH, height])
-        _, settled = wait_stable(lambda: self.content("return [window.innerWidth, window.innerHeight];"))
-        return dict(self.record(), settled=settled, size_used={"width": RESIZE_WIDTH, "height": height})
-
-    def juggler(self, work_rect: Sequence[int], scale: float) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-        """(step juggler, step juggler_rdm, size used): Juggler's whole sequence at 390 x height CSS (844, or the largest
-        height the work area holds, rounded down to a multiple of 10), then the same window with inRDMPane = true."""
-        height = plan.juggler_height(work_rect, scale)
-        size = {"width": plan.JUGGLER_WIDTH, "height": height, "asked_height": plan.JUGGLER_HEIGHT,
-                "does_not_fit": height != plan.JUGGLER_HEIGHT}
-        if height is None:
-            skipped = {"skipped": "does_not_fit"}
-            return dict(skipped), dict(skipped), size
-
-        first = self.juggler_call(plan.JUGGLER_WIDTH, height)
-        self.chrome(RDM_ON)
-        self.client.execute_async_script(TWO_FRAMES, context="chrome")
-        time.sleep(RDM_WAIT_SECONDS)
-        _, settled = wait_stable(self.content_size)
-        return first, dict(self.record(), settled=settled), size
-
-    def content_size(self) -> Any:
-        return self.content("return [window.innerWidth, window.innerHeight];")
-
-    def juggler_call(self, width: int, height: int) -> Dict[str, Any]:
-        """One call of Juggler's whole sequence (as it is, on whatever the window and the styles are now), then the full
-        record of the window once the content size holds still."""
-        self.chrome(JUGGLER_SEQUENCE, [width, height])
-        _, settled = wait_stable(self.content_size)
-        return dict(self.record(), settled=settled)
-
-    def juggler_again(self, work_rect: Sequence[int], scale: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """(step juggler2, size used): the second call in a row, right after `juggler_rdm` with inRDMPane put back to false
-        and the styles of the first call kept (Juggler does not clear them between calls): 414 x plan.juggler2_height."""
-        height = plan.juggler2_height(work_rect, scale)
-        size = {"width": plan.JUGGLER2_WIDTH, "height": height, "max_height": plan.JUGGLER2_MAX_HEIGHT}
-        self.chrome(RDM_OFF)
-        if height is None:
-            return {"skipped": "does_not_fit"}, size
-        return self.juggler_call(plan.JUGGLER2_WIDTH, height), size
-
-    def juggler_repeat(self, work_rect: Sequence[int], scale: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """(step juggler_repeat, size used): Juggler's sequence once more, right after `juggler` and `juggler_rdm` (inRDMPane put
-        back to false, the styles kept, as `juggler2` does) and at exactly the size of `juggler`: the repeat of the FIRST call.
-        Measured, not judged (the judge prints it against `juggler`)."""
-        height = plan.juggler_height(work_rect, scale)
-        size = {"width": plan.JUGGLER_WIDTH, "height": height, "same_as": "juggler"}
-        self.chrome(RDM_OFF)
-        if height is None:
-            return {"skipped": "does_not_fit"}, size
-        return self.juggler_call(plan.JUGGLER_WIDTH, height), size
-
-    def juggler2_repeat(self, work_rect: Sequence[int], scale: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """(step juggler2_repeat, size used): Juggler's sequence once more, right after `juggler2` and at exactly its size, on
-        the window and the styles `juggler2` left. The engine's model says the outer height then shrinks by one border: measured,
-        not assumed (the judge prints the outer and window sizes of both steps)."""
-        height = plan.juggler2_height(work_rect, scale)
-        size = {"width": plan.JUGGLER2_WIDTH, "height": height, "same_as": "juggler2"}
-        if height is None:
-            return {"skipped": "does_not_fit"}, size
-        return self.juggler_call(plan.JUGGLER2_WIDTH, height), size
-
-    def juggler_back(self, maximized: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """(step juggler_back, size used): Juggler's sequence with the content size the maximized window gave the page
-        (its innerWidth x innerHeight in step `maximized`), to see whether the window goes back to maximized or stays
-        restored at that size. Adds `window_state` (the chrome's windowState, sizemode, maximized flag)."""
-        content = maximized["content"]
-        size = {"width": content["innerWidth"], "height": content["innerHeight"], "from_step": "maximized"}
-        step = self.juggler_call(size["width"], size["height"])
-        chrome = step["chrome"]
-        step["window_state"] = {"windowState": chrome.get("windowState"), "sizemode": chrome.get("sizemode"),
-                                "maximized": chrome.get("maximized")}
-        return step, size
-
     # ----- round 5: fullscreen, popups, iframes (the scripts and the points are in surfaces.py)
 
     def surface(self, names: Sequence[str], run: Callable[[], Sequence[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
@@ -569,15 +421,11 @@ class Session:
         _, settled = wait_stable(self.fullscreen_read, ready=lambda v: v[0][0] is False, timeout=surfaces.FULLSCREEN_TIMEOUT)
         return entered, dict(self.record(), settled=settled, fullscreen=self.fullscreen_facts())
 
-    def fullscreen(self, tag: str, fits: bool = True) -> Dict[str, Dict[str, Any]]:
-        """The four fullscreen steps of `tag` (`max`: the maximized window, `res`: the window Juggler left):
-        fullscreen_<tag>_in/out by a real click, f11_<tag>_in/out by window.fullScreen. `fits` False: skipped."""
-        element = (f"fullscreen_{tag}_in", f"fullscreen_{tag}_out")
-        window = (f"f11_{tag}_in", f"f11_{tag}_out")
-        if not fits:
-            return {name: {"skipped": "does_not_fit"} for name in element + window}
-        steps = self.surface(element, self.element_fullscreen)
-        steps.update(self.surface(window, self.window_fullscreen))
+    def fullscreen(self) -> Dict[str, Dict[str, Any]]:
+        """The four fullscreen steps of the maximized window: fullscreen_max_in/out by a real click, f11_max_in/out by
+        window.fullScreen."""
+        steps = self.surface(("fullscreen_max_in", "fullscreen_max_out"), self.element_fullscreen)
+        steps.update(self.surface(("f11_max_in", "f11_max_out"), self.window_fullscreen))
         return steps
 
     def new_windows(self, before: set) -> List[int]:
@@ -703,93 +551,13 @@ class Session:
                   for name in surfaces.TRANSFORMED_NAMES}
         return {"chrome": chrome, "native": native, "content": self.content(CONTENT_STATE), "settled": True, "frames": frames}
 
-    def load(self, url: str) -> None:
-        """Navigate the selected tab without waiting for the page: from the chrome, else from the page."""
-        try:
-            self.chrome(LOAD_IN_TAB, [url])
-        except Exception:  # noqa: BLE001 - the page's own navigation is the other way in
-            self.content(LOAD_IN_CONTENT, [url])
-
-    def rdm_hostgate(self, height: Optional[int], page: Path = HOSTGATE_PAGE, timeout: float = HOSTGATE_TIMEOUT,
-                     clock: Callable[[], float] = time.monotonic) -> Tuple[Dict[str, Any], Dict[str, bytes]]:
-        """Juggler's sequence again (390 x height), then host-gate-2.html loaded without inRDMPane and then with it. Waits for
-        the page's POST (`timeout` s). Returns (the step: per run whether it posted, the seconds, the size and sha256 of the
-        result; the result files by name, kept next to raw.json and not in it)."""
-        if height is None:
-            return {"skipped": "does_not_fit"}, {}
-        step: Dict[str, Any] = {"juggler_height": height, "timeout_seconds": timeout}
-        files: Dict[str, bytes] = {}
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            http, tls, recorder = capture_server.start(page, Path(tmp))
-            try:
-                self.chrome(JUGGLER_SEQUENCE, [plan.JUGGLER_WIDTH, height])
-                wait_stable(lambda: self.content("return [window.innerWidth, window.innerHeight];"))
-                for rdm in (False, True):
-                    label = "rdm" + str(rdm).lower()
-                    self.chrome(RDM_ON if rdm else RDM_OFF)
-                    recorder.result_event.clear()
-                    started = clock()
-                    self.load(f"http://127.0.0.1:{http.server_address[1]}/?{label}")
-                    posted = recorder.result_event.wait(timeout)
-                    entry: Dict[str, Any] = {"posted": posted, "seconds": round(clock() - started, 1), "bytes": 0, "sha256": None,
-                                             "inRDMPane": guarded(lambda: self.chrome(RDM_STATE))}
-                    result = Path(tmp) / f"{label}.json"
-                    if posted and result.is_file():
-                        data = result.read_bytes()
-                        entry.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
-                        files[f"hostgate-{label[:3]}-{label[3:]}.json"] = data
-                    step[f"{label[:3]}_{label[3:]}"] = entry
-            finally:
-                capture_server.stop(http, tls)
-        return step, files
-
-    def clear_juggler(self) -> None:
-        """Remove every style Juggler's sequence set and put inRDMPane back to false."""
-        self.chrome(JUGGLER_CLEAR)
-
-    def inner_row(self, width: int, height: int) -> Dict[str, Any]:
-        """Resize the chrome's inner size to width x height CSS, wait until it holds still (1 s hold, 10 s at most), and
-        return one compact row: what the chrome, the page and Windows say."""
-        self.chrome(RESIZE_CHROME_INNER, [width, height])
-
-        def read() -> Any:
-            chrome = self.chrome(CHROME_ROW)
-            return [chrome["innerWidth"], chrome["innerHeight"], chrome["windowState"], chrome["stack"]]
-
-        _, settled = wait_stable(read, timeout=GRID_TIMEOUT)
-        hwnd = self.hwnd()
-        native = guarded(lambda: window_record(hwnd))
-        keep = ("window_rect", "client_rect", "client_origin")
-        return {"w": width, "h": height, "settled": settled, "chrome": self.chrome(CHROME_ROW),
-                "page": self.content(CONTENT_ROW),
-                "native": {k: native[k] for k in keep} if all(k in native for k in keep) else native}
-
-    def grid(self, points: Sequence[Tuple[int, int]], scale: float, work_rect: Sequence[int]) -> List[Dict[str, Any]]:
-        """One row per point; a point whose outer size would not fit the work area is a row that says it was skipped."""
-        frame = self.chrome(FRAME_CSS)
-        rows: List[Dict[str, Any]] = []
-        failures = 0
-        for width, height in points:
-            if not plan.fits(width, height, frame, scale, work_rect):
-                rows.append({"w": width, "h": height, "skipped": "does_not_fit", "frame_css": frame})
-                continue
-            try:
-                rows.append(self.inner_row(width, height))
-                failures = 0
-            except Exception as exc:  # noqa: BLE001 - the row says what failed; the browser being gone ends the grid
-                rows.append({"w": width, "h": height, "error": f"{type(exc).__name__}: {exc}"})
-                failures += 1
-                if failures >= 3:
-                    raise
-        return rows
-
 
 def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int], display_result: Dict[str, Any],
             build: Dict[str, Any], mode: str = "display", prefs: Optional[Dict[str, Any]] = None,
             table: Optional[launcher.ProcessTable] = None,
             steps_wanted: Sequence[str] = plan.CORE_STEPS) -> Dict[str, Any]:
     """One launch, measured. Returns the raw record; it never raises for a failure of the browser (`error` says it).
-    `maximized` is always taken first (it gives the work area); the other steps are those of `steps_wanted`."""
+    `maximized` is always taken first; the other steps are those of `steps_wanted`."""
     table = table or launcher.ProcessTable()
     exe = install_dir / "firefox.exe"
     marionette_port = free_port()
@@ -825,16 +593,9 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
             session = Session(client, install_dir, table, urls)
             steps = raw["steps"]
             steps["maximized"] = session.maximized()
-            native = steps["maximized"]["native"]
-            scale = steps["maximized"]["chrome"]["devicePixelRatio"]
-            work = native.get("work_rect") or [0, 0, 0, 0]
-            # Juggler's sequence runs on the maximized window, as setViewportSize does on a fresh page: the
-            # toolbar height it reads (toolbarTop) is the maximized window's. Run 45672953042 ran it after the
-            # restored step, from a compact window, and measured that route instead.
-            # Round 5, on the maximized window and before any Juggler call: fullscreen (a real click; then F11-style), the
-            # iframes, the two popups.
+            # Round 5, on the maximized window: fullscreen (a real click; then F11-style), the iframes, the two popups.
             if "fullscreen_max_in" in steps_wanted:
-                steps.update(session.fullscreen("max"))
+                steps.update(session.fullscreen())
             if "iframes_max" in steps_wanted:
                 steps.update(session.surface(("iframes_max",), lambda: (session.iframes(),)))
             if "iframes_transformed" in steps_wanted:
@@ -842,35 +603,6 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
             for name, features in surfaces.POPUP_FEATURES:
                 if name in steps_wanted:
                     steps.update(session.surface((name,), lambda features=features: (session.popup(features),)))
-            if "juggler" in steps_wanted:
-                steps["juggler"], steps["juggler_rdm"], raw["juggler_size_used"] = session.juggler(work, scale)
-                if "juggler_repeat" in steps_wanted:
-                    steps["juggler_repeat"], raw["juggler_repeat_size_used"] = session.juggler_repeat(work, scale)
-                if "juggler2" in steps_wanted:
-                    steps["juggler2"], raw["juggler2_size_used"] = session.juggler_again(work, scale)
-                if "juggler2_repeat" in steps_wanted:
-                    steps["juggler2_repeat"], raw["juggler2_repeat_size_used"] = session.juggler2_repeat(work, scale)
-                # From the window Juggler's calls left (its styles still on the browser): fullscreen and the iframes.
-                fits = (raw.get("juggler2_size_used") or {}).get("height") is not None
-                if "fullscreen_res_in" in steps_wanted:
-                    steps.update(session.fullscreen("res", fits))
-                if "iframes_juggler" in steps_wanted:
-                    steps.update(session.surface(("iframes_juggler",), lambda: (session.iframes(),)) if fits
-                                 else {"iframes_juggler": {"skipped": "does_not_fit"}})
-                if "juggler_back" in steps_wanted:
-                    steps["juggler_back"], raw["juggler_back_size_used"] = session.juggler_back(steps["maximized"])
-                session.clear_juggler()
-            if "restored" in steps_wanted:
-                steps["restored"] = session.restored(work, scale)
-                raw["restored_size_used"] = steps["restored"].pop("size_used")
-            if "grid" in steps_wanted:
-                steps["grid"] = session.grid(plan.grid_points(), scale, work)
-            if "minimum" in steps_wanted:
-                steps["minimum"] = session.inner_row(*plan.MINIMUM_ASKED)
-            if "grid_check" in steps_wanted:
-                steps["grid_check"] = session.grid(plan.GRID_CHECK_POINTS, scale, work)
-            if "rdm_hostgate" in steps_wanted:
-                steps["rdm_hostgate"], raw["_attachments"] = session.rdm_hostgate((raw.get("juggler_size_used") or {}).get("height"))
             client.delete_session()
         except Exception as exc:  # noqa: BLE001 - the record says what failed
             raw["error"] = f"{type(exc).__name__}: {exc}"
@@ -886,9 +618,6 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
 
 def write_raw(raw: Dict[str, Any], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    raw = dict(raw)
-    for name, data in (raw.pop("_attachments", None) or {}).items():  # files kept beside raw.json, not in it
-        (out_dir / name).write_bytes(data)
     path = out_dir / "raw.json"
     path.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path

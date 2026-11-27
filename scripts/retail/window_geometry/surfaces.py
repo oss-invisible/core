@@ -2,7 +2,7 @@
 
 Round 5 adds, to the main window of launches a and b, surfaces besides the page of the window itself:
 
-  * element fullscreen and window (F11-style) fullscreen, from the maximized window and from the window Juggler left restored;
+  * element fullscreen and window (F11-style) fullscreen, from the maximized window;
   * a popup (`window.open` with width and height, and with left and top too) opened by a real click;
   * a same-origin and a cross-site iframe of the main page.
 

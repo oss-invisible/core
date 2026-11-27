@@ -6,13 +6,12 @@ what the core declares (frame_table.py reads the checked-out constants.py with t
     at the measured availHeight) at every scale: green;
   * the border one pixel off, screenX off, the content top off, at any scale and size reached live: red, naming what differs;
     the bar of a maximized window is judged at the measured availHeight (1.5 at 672 CSS: 109 green, 127 red);
-  * launch a different from launch b on one number of any of the six steps (maximized, restored, juggler, juggler_rdm, juggler2, juggler_back): red,
-    with the number printed; the grid, the minimum and the grid check are not in that comparison;
-  * round 5: the two launches that are compared (a and b; p and q) also need the fifteen steps of plan.ROUND5_STEPS (fullscreen,
-    F11-style fullscreen, iframes, popups, the repeated Juggler call), compare equal on each, and print each; a step recorded
-    as not possible is complete only with a reason, which is printed; a missing step is red;
-  * at the scales of the grid, launch a must have its grid and minimum, launch b its grid check, and every point of the check
-    must be exactly launch a's row at that point;
+  * launch a different from launch b on one number of any of the nine steps (the maximized step and plan.ROUND5_STEPS): red,
+    with the number printed;
+  * the two launches that are compared (a and b; p and q) need the eight steps of plan.ROUND5_STEPS (fullscreen, F11-style
+    fullscreen, iframes, iframes under transforms, popups), compare equal on each, and print each; a step recorded as not
+    possible is complete only with a reason, which is printed; a missing step is red;
+  * what a frame read in its first moments is printed per moment and never judged;
   * launch p must equal launch q (the derived path at a scale Windows did not reach);
   * launch m (every resolution Windows offers) needs the maximized step alone;
   * a scale whose display scale was not reached: "not reachable live: derived path", not red, whatever it measured;
@@ -35,17 +34,6 @@ plan = load_window_geometry("plan")
 frame_table = load_window_geometry("frame_table")
 TABLE = frame_table.load()
 WORK = [0, 0, 1920, 1032]
-
-
-def grid_row(w, h, dpr, skipped=False):
-    if skipped:
-        return {"w": w, "h": h, "skipped": "does_not_fit", "frame_css": [16, 16]}
-    return {"w": w, "h": h, "settled": True,
-            "chrome": {"windowState": 3, "sizemode": "normal", "innerWidth": w, "innerHeight": h, "outerWidth": w + 16,
-                       "outerHeight": h + 16, "devicePixelRatio": dpr, "stack": {"x": 0, "y": 73.0, "width": w, "height": h - 73}},
-            "page": {"innerWidth": w, "innerHeight": h - 73, "outerWidth": w + 16, "outerHeight": h + 16},
-            "native": {"window_rect": [4, 4, 4 + round((w + 16) * dpr), 4 + round((h + 16) * dpr)], "client_rect": [0, 0, 10, 10],
-                       "client_origin": [12, 8]}}
 
 
 def probe(dpr):
@@ -81,7 +69,7 @@ def frame_state(dpr):
 
 
 def round5_steps(step, rect, ui, dpr):
-    """The fifteen steps of round 5 of a launch whose window is `rect` with `ui` device pixels of chrome."""
+    """The eight steps of round 5 of a launch whose window is `rect` with `ui` device pixels of chrome."""
     steps = {}
     for name in plan.ROUND5_STEPS:
         if name.startswith("popup"):
@@ -98,20 +86,8 @@ def round5_steps(step, rect, ui, dpr):
     return steps
 
 
-def hostgate_step(false_posted=True, true_posted=True):
-    def entry(posted):
-        return {"posted": posted, "seconds": 14.2 if posted else 120.0, "bytes": 31234 if posted else 0,
-                "sha256": "ab" * 32 if posted else None, "inRDMPane": False}
-
-    return {"juggler_height": 844, "timeout_seconds": 120.0, "rdm_false": entry(false_posted), "rdm_true": entry(true_posted)}
-
-
-GRID = [(w, h) for w in (500, 800, 1280, 1366, 1536, 1900) for h in (450, 600, 672, 768, 816, 1000)]
-
-
-def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=True, table=TABLE, grid=None, dppx=None,
-             avail=None, ui=None):
-    """A run whose maximized step is what the core declares (the bar from the density rule at availHeight `avail` CSS, default the work area). `grid` None: what the launch has in the plan at the scales of the grid."""
+def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=True, table=TABLE, dppx=None, avail=None, ui=None):
+    """A run whose maximized step is what the core declares (the bar from the density rule at availHeight `avail` CSS, default the work area), and, in a launch of the plan that takes them, the eight steps of round 5."""
     frame = table[dpr]
     border = frame.border
     avail = (WORK[3] - WORK[1]) / dpr if avail is None else avail
@@ -132,31 +108,13 @@ def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=T
                         "events": {"count": 3, "dx": 7, "dy": 91}, "probe": probe(dpr)},
             "input": [{"asked": [1, 2], "cursor": [1, 2]}], "settled": True}
 
-    restored = [100, 120, 100 + 390 + 2 * border, 120 + 844 + 100]
     steps = {"maximized": step(window, ui)}
     if launch != "m":
-        steps.update({"restored": step(restored, frame.popup_ui), "juggler": step(restored, frame.popup_ui),
-                      "juggler_rdm": step(restored, frame.popup_ui), "juggler2": step(restored, frame.popup_ui),
-                      "juggler_back": dict(step(restored, frame.popup_ui), window_state={"windowState": 3, "sizemode": "normal", "maximized": False})})
-        steps.update(round5_steps(step, restored, frame.popup_ui, dpr))
-    if grid is None:
-        grid = mode == "display" and reached and float(dpr) in plan.GRID_DPRS and launch in ("a", "b")
-    if grid and launch == "a":
-        steps["grid"] = [grid_row(w, h, dpr) for w, h in GRID]
-        steps["minimum"] = grid_row(100, 100, dpr)
-        steps["minimum"]["chrome"].update(innerWidth=500, innerHeight=493)
-    if grid and launch == "b":
-        steps["grid_check"] = [grid_row(w, h, dpr) for w, h in plan.GRID_CHECK_POINTS]
-    if grid and float(dpr) in plan.HOSTGATE_DPRS and launch in ("a", "b"):
-        steps["rdm_hostgate"] = hostgate_step()
+        steps.update(round5_steps(step, window, ui, dpr))
     out = {"format": "retail-window-geometry/1", "dpr_asked": dpr, "mode": mode, "launch": launch, "resolution": list(resolution),
            "display": {"dpi_reached": reached, "effective_dpi": round(96 * dpr), "resolution_now": list(resolution),
                        "reason": None if reached else "the scale is outside the steps this monitor offers"},
-           "steps": steps, "restored_size_used": {"width": 390, "height": 844},
-           "juggler_size_used": {"width": 390, "height": 844, "asked_height": 844, "does_not_fit": False},
-           "juggler2_size_used": {"width": 414, "height": 896, "max_height": 896},
-           "juggler_back_size_used": {"width": 1900, "height": 900, "from_step": "maximized"},
-           "dev_px_per_px": dppx, "processes_left": 0, "error": None}
+           "steps": steps, "dev_px_per_px": dppx, "processes_left": 0, "error": None}
     return out
 
 
@@ -260,10 +218,10 @@ def test_the_bar_follows_the_density_rule_at_both_densities(dpr):
 
 def test_launch_a_and_launch_b_that_differ_by_one_number_are_red_and_the_number_is_printed():
     a, b = two_launches(1.0)
-    b["steps"]["restored"]["content"]["screenY"] += 1
+    b["steps"]["maximized"]["content"]["screenY"] += 1
     result = evaluate([a, b])
     assert result["red"] and any("differ" in p for p in result["problems"])
-    assert any("restored.content.screenY" in line for line in result["lines"])
+    assert any("maximized.content.screenY" in line for line in result["lines"])
 
 
 def test_equal_launches_report_no_difference():
@@ -283,7 +241,7 @@ def test_a_scale_whose_display_scale_was_not_reached_is_not_red_even_when_it_mea
 
 def test_a_scale_not_reached_still_needs_its_launches_to_agree():
     a, b = two_launches(2.0, reached=False)
-    b["steps"]["restored"]["content"]["innerWidth"] = 1
+    b["steps"]["maximized"]["content"]["innerWidth"] = 1
     assert evaluate([a, b])["red"]
 
 
@@ -295,11 +253,10 @@ def test_the_derived_path_is_reported_and_not_compared_with_the_table():
     assert any("(devPixelsPerPx)" in line for line in result["lines"])
 
 
-def test_the_restored_step_is_printed_with_its_borders_ui_position_and_css_values():
+def test_the_maximized_step_is_printed_with_its_borders_ui_position_and_css_values():
     result = evaluate(two_launches(1.25))
     text = "\n".join(result["lines"])
-    for needle in ("restored: border L/R/B 9/9/9", "ui ", "position dev [100, 120] css [80.0, 96.0]", "outer-inner css [36, 149]",
-                   "mozInnerScreenX/Y", "events(count,dx,dy) [3, 7, 91]", "restored size used {'width': 390, 'height': 844}"):
+    for needle in ("maximized: border L/R/B 9/9/9", "ui ", "outer-inner css [36, 149]", "mozInnerScreenX/Y", "events(count,dx,dy) [3, 7, 91]"):
         assert needle in text, needle
 
 
@@ -317,7 +274,7 @@ def test_a_run_with_a_process_left_or_an_error_is_red(change):
 
 def test_a_run_without_a_step_or_without_its_window_record_is_red():
     a, b = two_launches(1.0)
-    del a["steps"]["restored"]
+    del a["steps"]["popup"]
     assert evaluate([a, b])["red"]
     c, d = two_launches(1.0)
     c["steps"]["maximized"]["native"] = {"error": "no window"}
@@ -361,141 +318,20 @@ def test_the_judge_does_not_change_the_runs_it_is_given():
     assert runs == before
 
 
-# ---------------------------------------------------------------------------- round 2: Juggler's sequence, grid, p/q, m
+# ---------------------------------------------------------------------------- the maximized step, p/q, m
 
 
-@pytest.mark.parametrize("step", ["juggler", "juggler_rdm", "juggler2", "juggler_back", "maximized", "restored"])
-def test_launch_a_and_launch_b_differing_on_any_of_the_six_steps_is_red(step):
+def test_launch_a_and_launch_b_differing_on_the_maximized_step_is_red_and_the_number_is_printed():
     a, b = two_launches(1.0)
-    b["steps"][step]["content"]["innerHeight"] += 1
+    b["steps"]["maximized"]["content"]["innerHeight"] += 1
     result = evaluate([a, b])
-    assert result["red"] and any(f"{step}.content.innerHeight" in line for line in result["lines"])
+    assert result["red"] and any("maximized.content.innerHeight" in line for line in result["lines"])
 
 
-def test_the_grid_and_the_minimum_are_not_part_of_the_a_b_comparison():
-    a, b = two_launches(1.25)
-    a["steps"]["minimum"]["chrome"]["innerWidth"] += 7
-    a["steps"]["grid"][GRID.index((500, 600))]["chrome"]["stack"]["y"] += 3  # not a point of the grid check
-    result = evaluate([a, b])
-    assert not result["red"], result["problems"]
-    assert any("launch a vs b: 0 difference(s)" in line for line in result["lines"])
-
-
-def test_a_juggler_step_skipped_in_both_launches_is_not_red_and_in_one_only_is_red():
-    a, b = two_launches(1.5)
-    for run in (a, b):
-        run["steps"]["juggler"] = {"skipped": "does_not_fit"}
-        run["steps"]["juggler_rdm"] = {"skipped": "does_not_fit"}
-    result = evaluate([a, b])
-    assert not result["red"], result["problems"]
-    assert any("juggler: skipped (does_not_fit)" in line for line in result["lines"])
-    c, d = two_launches(1.5)
-    c["steps"]["juggler"] = {"skipped": "does_not_fit"}
-    assert evaluate([c, d])["red"]
-
-
-@pytest.mark.parametrize("step", ["juggler_rdm", "juggler2", "juggler_back"])
-def test_a_launch_without_one_of_the_juggler_steps_is_red_and_launch_m_does_not_need_them(step):
-    a, b = two_launches(1.0)
-    del b["steps"][step]
-    assert evaluate([a, b])["red"]
+def test_launch_m_does_not_need_the_round_5_steps():
     runs = two_launches(1.0) + [make_run(1.0, "m", resolution=(1280, 720))]
     assert set(runs[-1]["steps"]) == {"maximized"}
     assert not evaluate(runs)["red"]
-
-
-def test_the_juggler_steps_are_printed_with_page_screen_event_and_native_rects():
-    text = "\n".join(evaluate(two_launches(1.25))["lines"])
-    for step in ("juggler", "juggler_rdm", "juggler2", "juggler_back"):
-        for needle in (f"{step}: border L/R/B", f"{step} page: inner [1900, 900] outer [1936, 1049] screen [1536, 864]",
-                       "event dx/dy [7, 91]", "native client rect", "window rect [", "mozInnerScreenX/Y", "screenX/Y",
-                       "outer-inner css [36, 149]"):
-            assert needle in text, (step, needle)
-    assert "juggler size used {'width': 390, 'height': 844" in text
-    assert "juggler2 size used {'width': 414, 'height': 896" in text
-    assert "juggler_back size used {'width': 1900, 'height': 900, 'from_step': 'maximized'}" in text
-
-
-def test_the_juggler_steps_print_the_chrome_inner_size_stack_y_size_mode_and_window_state():
-    text = "\n".join(evaluate(two_launches(1.25))["lines"])
-    for step in ("juggler", "juggler2", "juggler_back"):
-        line = next(line for line in text.splitlines() if line.startswith(f"    {step} chrome:"))
-        for needle in ("inner ", "stack y ", "sizemode ", "windowState ", "native window rect [", "client rect ["):
-            assert needle in line, (step, needle)
-
-
-def test_a_juggler_back_that_does_not_end_maximized_in_one_launch_only_is_red():
-    a, b = two_launches(1.0)
-    assert a["steps"]["juggler_back"]["chrome"]["windowState"] == 1, "launch a: maximized again"
-    b["steps"]["juggler_back"]["chrome"]["windowState"] = 3
-    b["steps"]["juggler_back"]["chrome"]["sizemode"] = "normal"
-    result = evaluate([a, b])
-    assert result["red"] and any("juggler_back.chrome.windowState" in line for line in result["lines"])
-
-
-@pytest.mark.parametrize("what", ["a has no grid", "a has no minimum", "b has no grid_check", "a grid row failed",
-                                  "check point not in the grid"])
-def test_at_the_scales_of_the_grid_a_missing_or_failed_part_is_red(what):
-    a, b = two_launches(1.25)
-    if what == "a has no grid":
-        del a["steps"]["grid"]
-    elif what == "a has no minimum":
-        del a["steps"]["minimum"]
-    elif what == "b has no grid_check":
-        del b["steps"]["grid_check"]
-    elif what == "a grid row failed":
-        a["steps"]["grid"][3] = {"w": 500, "h": 600, "error": "MarionetteError: boom"}
-    else:
-        b["steps"]["grid_check"][0] = grid_row(501, 450, 1.25)
-    assert evaluate([a, b])["red"], what
-
-
-def test_a_grid_check_point_that_shows_another_content_top_is_red_and_the_number_is_printed():
-    a, b = two_launches(1.0)
-    b["steps"]["grid_check"][2]["chrome"]["stack"]["y"] += 12
-    result = evaluate([a, b])
-    assert result["red"] and any("grid check point 1366x768 differs" in p for p in result["problems"])
-    assert any("stack_y" in line for line in result["lines"])
-
-
-def test_a_grid_check_point_reached_at_another_size_but_showing_the_same_is_not_red():
-    """At a fractional scale resizeBy lands on a size that depends on where it starts (run 45672953042, 1.25)."""
-    a, b = two_launches(1.25)
-    b["steps"]["grid_check"][2]["native"]["window_rect"][3] += 1
-    b["steps"]["grid_check"][2]["chrome"]["innerHeight"] -= 0.8
-    assert not evaluate([a, b])["red"]
-    ok = evaluate(two_launches(1.0))
-    n = len(plan.GRID_CHECK_POINTS)
-    assert any(f"grid check: {n} of {n} point(s) equal" in line for line in ok["lines"])
-
-
-def test_a_point_that_does_not_fit_is_a_skipped_row_equal_on_both_sides():
-    a, b = two_launches(1.25)
-    a["steps"]["grid"][-1] = grid_row(1900, 1000, 1.25, skipped=True)
-    b["steps"]["grid_check"][4] = grid_row(1900, 1000, 1.25, skipped=True)
-    assert not evaluate([a, b])["red"]
-    b["steps"]["grid_check"][4] = grid_row(1900, 1000, 1.25)
-    assert evaluate([a, b])["red"]
-
-
-def test_the_grid_is_not_required_at_other_scales_or_when_the_scale_was_not_reached():
-    assert not evaluate(two_launches(1.5))["red"]
-    a, b = two_launches(1.25, reached=False)
-    assert "grid" not in a["steps"] and not evaluate([a, b])["red"]
-
-
-def test_the_grid_is_printed_as_a_table_per_height_with_the_content_top_and_the_minimum_window():
-    a, b = two_launches(1.25)
-    a["steps"]["grid"][0]["chrome"]["innerHeight"] = 453
-    a["steps"]["grid"][1]["settled"] = False
-    a["steps"]["grid"][2] = grid_row(500, 672, 1.25, skipped=True)
-    text = "\n".join(evaluate([a, b])["lines"])
-    first_line = text.split("H 450:")[1].splitlines()[0]
-    assert first_line.startswith(" 500:73.00/") and "!" in first_line
-    assert "500:-" in text and "*" in text.split("H 600:")[1].splitlines()[0]
-    assert "asked -> got (chrome inner): 500x450 -> 500x453" in text
-    assert "minimum window (asked 100x100 chrome inner css): chrome inner 500x493" in text
-    assert judge.grid_cell(grid_row(800, 600, 1.0)) == "73.00/" + str(4 + 73)
 
 
 def test_launch_p_and_launch_q_are_compared_like_a_and_b_when_the_display_scale_was_not_reached():
@@ -503,7 +339,7 @@ def test_launch_p_and_launch_q_are_compared_like_a_and_b_when_the_display_scale_
     result = evaluate([p, q])
     assert not result["red"], result["problems"]
     assert any("launch p vs q: 0 difference(s)" in line for line in result["lines"])
-    q["steps"]["juggler"]["content"]["innerWidth"] += 1
+    q["steps"]["maximized"]["content"]["innerWidth"] += 1
     assert evaluate([p, q])["red"]
     assert evaluate([p])["red"], "p alone compares with nothing"
 
@@ -535,12 +371,12 @@ def test_the_devpixelsperpx_launches_m_are_labelled_with_the_value_and_need_no_p
     assert "launch m (devPixelsPerPx 0.75)" in text and "launch m (devPixelsPerPx 0.5)" in text
 
 
-# ---------------------------------------------------------------------------- what an RDM page can read, and the host-gate page
+# ---------------------------------------------------------------------------- what the page reads
 
 
-def test_the_probe_of_the_page_is_printed_for_the_four_steps_on_one_line_each():
+def test_the_probe_of_the_page_is_printed_for_the_steps_that_have_one_on_one_line_each():
     text = "\n".join(evaluate(two_launches(1.25))["lines"])
-    for step in ("maximized", "restored", "juggler", "juggler_rdm"):
+    for step in ("maximized", "fullscreen_max_in", "iframes_max"):
         line = next(line for line in text.splitlines() if line.startswith(f"    {step} probe:"))
         for needle in ("screen 1536x864", "avail 1536x825 at 0,0", "colorDepth 24 pixelDepth 24", "orientation landscape-primary/0", "dpr 1.25",
                        "matchMedia width 1900 height 900 device-width 1536 device-height 864", "aspect-ratio x10000 21111",
@@ -550,11 +386,11 @@ def test_the_probe_of_the_page_is_printed_for_the_four_steps_on_one_line_each():
         assert "'(pointer: coarse)'" not in line, "only the queries that match are listed"
 
 
-def test_a_difference_in_what_the_page_reads_between_launch_a_and_launch_b_is_red_on_the_juggler_rdm_step():
+def test_a_difference_in_what_the_page_reads_between_launch_a_and_launch_b_is_red():
     a, b = two_launches(1.0)
-    b["steps"]["juggler_rdm"]["content"]["probe"]["matches"]["(pointer: coarse)"] = True
+    b["steps"]["fullscreen_max_in"]["content"]["probe"]["matches"]["(pointer: coarse)"] = True
     result = evaluate([a, b])
-    assert result["red"] and any("juggler_rdm.content.probe.matches" in line for line in result["lines"])
+    assert result["red"] and any("fullscreen_max_in.content.probe.matches" in line for line in result["lines"])
 
 
 def test_a_probe_missing_from_a_step_is_not_an_error_of_the_judge():
@@ -564,62 +400,13 @@ def test_a_probe_missing_from_a_step_is_not_an_error_of_the_judge():
     assert not evaluate([a, b])["red"]
 
 
-def test_the_host_gate_outcomes_are_printed_and_a_green_run_has_both_posted():
-    result = evaluate(two_launches(1.0))
-    assert not result["red"], result["problems"]
-    text = "\n".join(result["lines"])
-    assert "rdm_hostgate inRDMPane=false: posted in 14.2 s, 31234 bytes, sha256 " + "ab" * 32 in text
-    assert "rdm_hostgate inRDMPane=true: posted in 14.2 s" in text
+# ---------------------------------------------------------------------------- round 5: fullscreen, popups, iframes
 
 
-def test_no_post_under_rdm_is_an_rdm_hang_a_finding_and_not_red():
-    a, b = two_launches(1.0)
-    for run in (a, b):
-        run["steps"]["rdm_hostgate"] = hostgate_step(true_posted=False)
-    result = evaluate([a, b])
-    assert not result["red"], result["problems"]
-    assert any("rdm_hostgate inRDMPane=true: RDM HANG (no POST in 120.0 s" in line for line in result["lines"])
-
-
-def test_no_post_without_rdm_is_red():
-    a, b = two_launches(1.0)
-    b["steps"]["rdm_hostgate"] = hostgate_step(false_posted=False)
-    result = evaluate([a, b])
-    assert result["red"] and any("launch b: host-gate-2.html did not post without inRDMPane" in p for p in result["problems"])
-    assert any("NO POST in" in line for line in result["lines"])
-
-
-def test_a_missing_rdm_hostgate_step_is_red_at_scale_1_and_not_asked_elsewhere():
-    a, b = two_launches(1.0)
-    del a["steps"]["rdm_hostgate"]
-    assert any("launch a has no rdm_hostgate" in p for p in evaluate([a, b])["problems"])
-    assert "rdm_hostgate" not in two_launches(1.25)[0]["steps"] and not evaluate(two_launches(1.25))["red"]
-
-
-def test_a_skipped_rdm_hostgate_is_not_red_and_is_the_same_in_the_determinism_check():
-    a, b = two_launches(1.0)
-    for run in (a, b):
-        run["steps"]["rdm_hostgate"] = {"skipped": "does_not_fit"}
-    result = evaluate([a, b])
-    assert not result["red"], result["problems"]
-    assert any("rdm_hostgate: skipped (does_not_fit)" in line for line in result["lines"])
-
-
-def test_the_host_gate_step_is_not_part_of_the_a_b_comparison():
-    a, b = two_launches(1.0)
-    b["steps"]["rdm_hostgate"]["rdm_false"]["seconds"] = 99.0
-    b["steps"]["rdm_hostgate"]["rdm_false"]["sha256"] = "cd" * 32
-    assert not evaluate([a, b])["red"]
-
-
-# ---------------------------------------------------------------------------- round 5: fullscreen, popups, iframes, the repeated call
-
-
-def test_the_fifteen_steps_of_round_5_are_named_in_the_order_they_run_and_compared_with_the_six_core_steps():
+def test_the_eight_steps_of_round_5_are_named_in_the_order_they_run_and_compared_with_the_maximized_step():
     assert plan.ROUND5_STEPS == ("fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out", "iframes_max",
-                                 "iframes_transformed", "popup", "popup_pos", "juggler_repeat", "juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out",
-                                 "f11_res_in", "f11_res_out", "iframes_juggler")
-    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS and len(set(plan.COMPARED_STEPS)) == 21
+                                 "iframes_transformed", "popup", "popup_pos")
+    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS and len(set(plan.COMPARED_STEPS)) == 9
     a, b = two_launches(1.0)
     assert set(a["steps"]) >= set(plan.COMPARED_STEPS)
 
@@ -678,13 +465,11 @@ def bump(run, step, path):
     ("popup", "content.innerWidth", "popup.content.innerWidth"),
     ("popup_pos", "native.window_rect.0", "popup_pos.native.window_rect[0]"),
     ("iframes_max", "frames.cross.state.screenX", "iframes_max.frames.cross.state.screenX"),
-    ("iframes_juggler", "frames.same.input.0.cursor.0", "iframes_juggler.frames.same.input[0].cursor[0]"),
+    ("iframes_max", "frames.same.input.0.cursor.0", "iframes_max.frames.same.input[0].cursor[0]"),
     ("iframes_transformed", "frames.cross.state.screenX", "iframes_transformed.frames.cross.state.screenX"),
     ("fullscreen_max_in", "chrome.windowState", "fullscreen_max_in.chrome.windowState"),
-    ("f11_res_out", "fullscreen.window_fullScreen", "f11_res_out.fullscreen.window_fullScreen"),
-    ("juggler_repeat", "content.outerHeight", "juggler_repeat.content.outerHeight"),
-    ("juggler2_repeat", "content.outerHeight", "juggler2_repeat.content.outerHeight"),
-    ("fullscreen_res_in", "native.window_rect.1", "fullscreen_res_in.native.window_rect[1]")])
+    ("f11_max_out", "fullscreen.window_fullScreen", "f11_max_out.fullscreen.window_fullScreen"),
+    ("fullscreen_max_out", "native.window_rect.1", "fullscreen_max_out.native.window_rect[1]")])
 def test_launch_a_and_launch_b_differing_on_a_round_5_step_is_red_and_the_number_is_printed(step, path, printed):
     a, b = two_launches(1.0)
     bump(b, step, path)
@@ -719,19 +504,6 @@ def test_a_step_not_possible_in_one_launch_only_is_red_and_one_without_a_reason_
         assert result["red"] and any("iframes_max" in p for p in result["problems"]), reason
 
 
-def test_a_round_5_step_skipped_in_both_launches_is_green_and_in_one_only_is_red():
-    a, b = two_launches(1.5)
-    for run in (a, b):
-        for name in ("juggler_repeat", "juggler2_repeat", "fullscreen_res_in", "fullscreen_res_out", "f11_res_in", "f11_res_out", "iframes_juggler"):
-            run["steps"][name] = {"skipped": "does_not_fit"}
-    result = evaluate([a, b])
-    assert not result["red"], result["problems"]
-    assert any("iframes_juggler: skipped (does_not_fit)" in line for line in result["lines"])
-    c, d = two_launches(1.5)
-    c["steps"]["f11_res_in"] = {"skipped": "does_not_fit"}
-    assert evaluate([c, d])["red"]
-
-
 def test_every_round_5_step_is_printed_with_what_it_recorded():
     text = "\n".join(evaluate(two_launches(1.25))["lines"])
     lines = text.splitlines()
@@ -747,7 +519,7 @@ def test_every_round_5_step_is_printed_with_what_it_recorded():
                        "events(count,dx,dy) [3, 108, 72]"):
             assert needle in page, (name, needle)
     assert "features 'left=100,top=80,width=500,height=400'" in text and "features 'width=500,height=400'" in text
-    for step in ("iframes_max", "iframes_juggler"):
+    for step in ("iframes_max",):
         for frame in ("same", "cross"):
             line = next(line for line in lines if line.startswith(f"    {step} frame {frame} ("))
             for needle in ("rect css {", "inner [300, 120]", "outer [1936, 1049]", "screenX/Y [-7, -7]", "mozInnerScreenX/Y [10.0, 200.0]",
@@ -755,7 +527,7 @@ def test_every_round_5_step_is_printed_with_what_it_recorded():
                 assert needle in line, (step, frame, needle)
             assert any(other.startswith(f"    {step} frame {frame} probe:") for other in lines)
     assert "fullscreen_max_in fullscreen: {'window_fullScreen': True" in text and "'document_fullscreen': True" in text
-    assert "f11_res_out fullscreen: {'window_fullScreen': False" in text
+    assert "f11_max_out fullscreen: {'window_fullScreen': False" in text
 
 
 def test_the_transformed_iframes_are_printed_with_each_point_s_client_and_screen_and_are_not_judged():
@@ -785,47 +557,6 @@ def test_the_transformed_iframes_are_printed_with_each_point_s_client_and_screen
     assert evaluate([a, b])["red"]
 
 
-def test_the_repeat_of_the_first_juggler_call_is_printed_against_the_first_call_and_is_not_judged():
-    a, b = two_launches(1.0)
-    for run in (a, b):
-        run["steps"]["juggler_repeat"]["content"]["outerHeight"] -= 6
-        rect = run["steps"]["juggler_repeat"]["native"]["window_rect"]
-        run["steps"]["juggler_repeat"]["native"]["window_rect"] = rect[:3] + [rect[3] - 6]
-    result = evaluate([a, b])
-    assert not result["red"], result["problems"]
-    line = next(line for line in result["lines"] if line.startswith("    juggler_repeat minus juggler:"))
-    assert "page outer css [0, -6]" in line and "window rect size dev [0, -6]" in line and "position dev [0, 0]" in line
-    assert not any(other.startswith("    juggler2_repeat minus juggler2:") and "[0, -6]" in other for other in result["lines"])
-    a["juggler_repeat_size_used"] = {"width": 390, "height": 844, "same_as": "juggler"}
-    assert any("juggler_repeat size used {'width': 390, 'height': 844, 'same_as': 'juggler'}" in other
-               for other in evaluate([a, b])["lines"])
-    skipped = [make_run(1.0, "a"), make_run(1.0, "b")]
-    for run in skipped:
-        run["steps"]["juggler"] = {"skipped": "does_not_fit"}
-        run["steps"]["juggler_repeat"] = {"skipped": "does_not_fit"}
-    assert not any(other.startswith("    juggler_repeat minus") for other in evaluate(skipped)["lines"])
-
-
-def test_the_repeated_juggler_call_is_printed_against_the_second_call_and_is_not_judged():
-    a, b = two_launches(1.0)
-    for run in (a, b):
-        run["steps"]["juggler2_repeat"]["content"]["outerHeight"] -= 8
-        rect = run["steps"]["juggler2_repeat"]["native"]["window_rect"]
-        run["steps"]["juggler2_repeat"]["native"]["window_rect"] = rect[:3] + [rect[3] - 8]
-    result = evaluate([a, b])
-    assert not result["red"], result["problems"]
-    line = next(line for line in result["lines"] if line.startswith("    juggler2_repeat minus juggler2:"))
-    assert "page outer css [0, -8]" in line and "window rect size dev [0, -8]" in line and "position dev [0, 0]" in line
-    a["juggler2_repeat_size_used"] = {"width": 414, "height": 896, "same_as": "juggler2"}
-    assert any("juggler2_repeat size used {'width': 414, 'height': 896, 'same_as': 'juggler2'}" in other
-               for other in evaluate([a, b])["lines"])
-    skipped = [make_run(1.0, "a"), make_run(1.0, "b")]
-    for run in skipped:
-        run["steps"]["juggler2"] = {"skipped": "does_not_fit"}
-        run["steps"]["juggler2_repeat"] = {"skipped": "does_not_fit"}
-    assert not any(other.startswith("    juggler2_repeat minus") for other in evaluate(skipped)["lines"])
-
-
 def test_pixel_depth_is_in_the_probe_line_of_every_step_that_has_a_page_record():
     text = "\n".join(evaluate(two_launches(1.0))["lines"])
     for name in plan.COMPARED_STEPS:
@@ -843,7 +574,7 @@ def early_of(parse_x, now=1.0):
 
 
 def with_early(run, parse_x=0.0, now=1.0):
-    for step_name in ("iframes_max", "iframes_juggler"):
+    for step_name in ("iframes_max",):
         for frame in run["steps"][step_name]["frames"].values():
             frame["state"]["early"] = early_of(parse_x, now)
 
@@ -854,7 +585,7 @@ def test_the_early_reads_of_each_frame_are_printed_per_moment_next_to_the_settle
     with_early(b, 0.0, now=7.5)  # only the time differs
     result = evaluate([a, b])
     assert not result["red"], result["problems"]
-    for step_name in ("iframes_max", "iframes_juggler"):
+    for step_name in ("iframes_max",):
         for name in ("same", "cross"):
             lines = [line for line in result["lines"] if line.startswith(f"    {step_name} frame {name} early ")]
             assert len(lines) == 10, "five moments, in the two compared launches"
@@ -886,14 +617,14 @@ def test_a_frame_without_early_or_with_a_moment_not_reached_is_printed_so_and_is
     for run in (a, b):
         with_early(run)
         del run["steps"]["iframes_max"]["frames"]["same"]["state"]["early"]
-        del run["steps"]["iframes_juggler"]["frames"]["cross"]["state"]["early"]["raf2"]
-        run["steps"]["iframes_juggler"]["frames"]["same"]["state"]["early"]["load"] = {"error": "error: boom"}
+        del run["steps"]["iframes_max"]["frames"]["cross"]["state"]["early"]["raf2"]
+        run["steps"]["iframes_max"]["frames"]["cross"]["state"]["early"]["load"] = {"error": "error: boom"}
     result = evaluate([a, b])
     assert not result["red"], result["problems"]
     text = "\n".join(result["lines"])
     assert "iframes_max frame same early: none recorded" in text
-    assert "iframes_juggler frame cross early raf2: not reached" in text
-    assert "iframes_juggler frame same early load: mozInnerScreenX/Y [None, None]" in text and "error error: boom" in text
+    assert "iframes_max frame cross early raf2: not reached" in text
+    assert "iframes_max frame cross early load: mozInnerScreenX/Y [None, None]" in text and "error error: boom" in text
 
 
 def test_the_early_reads_are_in_no_other_step_and_a_difference_in_a_judged_number_of_a_frame_is_still_red():
@@ -904,107 +635,4 @@ def test_the_early_reads_are_in_no_other_step_and_a_difference_in_a_judged_numbe
     b["steps"]["iframes_max"]["frames"]["cross"]["state"]["screenX"] += 1
     result = evaluate([a, b])
     assert result["red"] and any("iframes_max.frames.cross.state.screenX" in line for line in result["lines"])
-    assert not any(" early " in line for line in result["lines"] if line.startswith("    juggler"))
-
-
-# ---------------------------------------------------------------------------- launch n: normal density at scale 2
-
-
-def make_n(dpr=2.0, resolution=(3840, 2160), avail=1032, ui=None, early=True):
-    """Launch n: the maximized step and iframes_max alone, on a panel whose work area is `avail` CSS px tall."""
-    run = make_run(dpr, "n", resolution=resolution, avail=avail, ui=ui)
-    run["steps"] = {name: run["steps"][name] for name in plan.NORMAL_DENSITY_STEPS}
-    run["display"]["role"] = plan.NORMAL_DENSITY_ROLE
-    if early:
-        for frame in run["steps"]["iframes_max"]["frames"].values():
-            frame["state"]["early"] = {m: {"mozInnerScreenX": 0.0, "mozInnerScreenY": 85.0, "screenX": -13, "screenY": -13, "now": 1.5}
-                                       for m in judge.EARLY_MOMENTS}
-    return run
-
-
-def n_not_possible(reason="no panel of the plan could be set with the scale in force: 3840x2160: resolution not set (code -2)"):
-    run = make_n()
-    run["steps"] = {name: {"not_possible": reason} for name in plan.NORMAL_DENSITY_STEPS}
-    run["display"].update(dpi_reached=False, reason=reason, tried=[{"panel": [3840, 2160]}])
-    return run
-
-
-def test_launch_n_needs_the_maximized_step_and_iframes_max_alone_and_is_compared_with_nothing():
-    assert judge.required_steps({"launch": "n"}, True) == plan.NORMAL_DENSITY_STEPS == ("maximized", "iframes_max")
-    a, b = two_launches(2.0)
-    n = make_n()
-    assert judge.compared_runs([a, b, n]) == {id(a), id(b)}
-    result = evaluate([a, b, n])
-    assert not result["red"], result["problems"]
-    assert not any(" vs n:" in line for line in result["lines"])
-
-
-def test_the_maximized_chrome_height_of_launch_n_is_printed_next_to_the_core_s_value_and_not_judged():
-    n = make_n()
-    result = evaluate(two_launches(2.0) + [n])
-    text = "\n".join(result["lines"])
-    assert "launch n (normal density at scale 2): panel 3840x2160" in text
-    assert "screen.availHeight 1032 CSS = at least 720, the core's rule gives normal" in text
-    assert "round(mozInnerScreenY 85.0 * dpr 2) = 170 device px" in text and "chrome_height_device(2, 'normal') = 170" in text
-    assert "declared_maximized_ui at availHeight 1032 = 170" in text and "measured 170 equals the normal 170 (printed, not judged)" in text
-    assert "maximized maximized_ui: round(mozInnerScreenY * dpr) at availHeight 1032 = 170 ; core declares 170 : ok (printed, not judged)" in text
-    n["steps"]["maximized"]["content"]["mozInnerScreenY"] = 160 / 2
-    other = evaluate(two_launches(2.0) + [n])
-    assert not other["red"], other["problems"]
-    assert "measured 160 differs from the normal 170 (printed, not judged)" in "\n".join(other["lines"])
-    assert "DIFFERENT (printed, not judged)" in "\n".join(other["lines"])
-
-
-def test_the_chrome_height_minus_the_client_top_is_printed_too():
-    n = make_n()
-    n["steps"]["maximized"]["native"]["client_origin"][1] = 8
-    text = "\n".join(evaluate(two_launches(2.0) + [n])["lines"])
-    assert "= 170 device px ; minus the window's client top 8 = 162" in text
-
-
-def test_the_border_and_screen_x_of_launch_n_are_judged_like_every_other_launch():
-    n = make_n()
-    n["steps"]["maximized"]["native"]["window_rect"][0] -= 1
-    result = evaluate(two_launches(2.0) + [n])
-    assert result["red"] and any("launch n (display)" in p and "maximized border" in p for p in result["problems"])
-    n = make_n()
-    n["steps"]["maximized"]["content"]["screenX"] += 1
-    assert evaluate(two_launches(2.0) + [n])["red"]
-
-
-def test_a_panel_that_does_not_hold_the_normal_density_says_so_in_the_line():
-    short = make_n(resolution=(2560, 1440), avail=672)
-    result = evaluate(two_launches(2.0) + [short])
-    assert not result["red"], result["problems"]
-    text = "\n".join(result["lines"])
-    assert "screen.availHeight 672 CSS = below 720, the core's rule gives compact (this panel does NOT hold the normal density)" in text
-
-
-def test_launch_n_not_possible_is_printed_with_its_reason_and_is_not_red():
-    result = evaluate(two_launches(2.0) + [n_not_possible()])
-    assert not result["red"], result["problems"]
-    text = "\n".join(result["lines"])
-    assert "launch n (normal density at scale 2): panel 3840x2160 NOT POSSIBLE (no panel of the plan could be set" in text
-    assert "not reachable live" not in "\n".join(line for line in result["lines"] if "launch n" in line)
-
-
-def test_launch_n_without_a_reason_or_without_a_step_or_with_an_error_is_red():
-    assert evaluate(two_launches(2.0) + [n_not_possible("  ")])["red"]
-    n = make_n()
-    del n["steps"]["iframes_max"]
-    assert evaluate(two_launches(2.0) + [n])["red"]
-    n = make_n()
-    n["error"] = "boom"
-    assert evaluate(two_launches(2.0) + [n])["red"]
-
-
-def test_a_scale_2_without_any_launch_n_says_so_and_is_not_red():
-    result = evaluate(two_launches(2.0))
-    assert not result["red"], result["problems"]
-    assert any("dpr 2: no launch n (normal density at scale 2) was recorded (printed, not judged)" in line for line in result["lines"])
-    assert not any("no launch n" in line for line in evaluate(two_launches(1.5))["lines"])
-
-
-def test_the_early_readings_of_the_frames_of_launch_n_are_printed_per_moment():
-    text = "\n".join(evaluate(two_launches(2.0) + [make_n()])["lines"])
-    assert text.count("iframes_max frame same early parse: mozInnerScreenX/Y [0.0, 85.0]") == 1 and "iframes_max frame cross early raf2:" in text
+    assert not any(" early " in line for line in result["lines"] if line.startswith("    iframes_transformed"))
