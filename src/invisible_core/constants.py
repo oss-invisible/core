@@ -181,6 +181,14 @@ def _frame(border: int, popup_ui: int, scale: float) -> WindowFrame:
 #: value is the device value divided by the scale with Gecko's rounding, done
 #: by the engine.
 #:
+#: popup_ui is measured on retail Firefox 159.0 at every scale: 72 / 89 / 106 /
+#: 140 device px from a window.open('width=500,height=400') popup's top, border
+#: included, to its content top, launches a and b identical (GitHub run
+#: oss-invisible/core 45952171443, capture round 5, catalogued in the private
+#: RetailCaptures repo at commit 4477c39, captures/WINDOW_GEOMETRY_POPUP_FRAME.csv).
+#: popup_position (4 device px on both axes, a popup opened without left/top) is
+#: measured in the same run, the same at every scale.
+#:
 #: The keys are the DOMAIN: the four scales the screen table gives personas
 #: (cpt_screen_given_class_tier.json). A scale outside it has no measured frame
 #: and is refused, never interpolated (engine rule 2).
@@ -196,9 +204,9 @@ def _frame(border: int, popup_ui: int, scale: float) -> WindowFrame:
 #: maximized, and every popup answered the same numbers.
 WINDOW_FRAME_BY_DPR: dict = {
     1.0: _frame(8, 72, 1.0),
-    1.25: _frame(9, 90, 1.25),
+    1.25: _frame(9, 89, 1.25),
     1.5: _frame(11, 106, 1.5),
-    2.0: _frame(13, 139, 2.0),
+    2.0: _frame(13, 140, 2.0),
 }
 
 def declared_maximized_ui(frame: WindowFrame, avail_height_css: float) -> int:
