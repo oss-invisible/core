@@ -648,6 +648,28 @@ jobs:
       - name: the wrapper commit it names pins this core
         run: |
           python3 scripts/wrapper_on_this_core.py check-wrapper-proof --file ci/wrapper-proof.json --wrapper wrapper-proof             --version "$(python3 scripts/wrapper_on_this_core.py tree-version)"
+      # THE SERIES RUN THE FILE NAMES (`series_run`, written by `write-wrapper-proof` from the `release-plan` artifact of the series' candidate run) must
+      # have concluded success, and its plan must name the same wrapper commit and the seal's series commit: the wrapper this core is proved with is
+      # the one the candidate ran. Downloaded with the job's token; a download that fails is red, never a pass. The tag does not repeat this (it
+      # repeats the file's checks only). The one release made before the rule (firefox-70, a build run with no plan) is allowed by the script, keyed to its seal.
+      - name: the series run it names ran that wrapper commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SERIES=oss-invisible/firefox_antidetect_patch
+          D="$RUNNER_TEMP/release-plan"
+          mkdir -p "$D"
+          RUN="$(python3 scripts/wrapper_on_this_core.py read-series-run --file ci/wrapper-proof.json)"
+          gh api "repos/$SERIES/actions/runs/$RUN" > "$D/run.json"
+          gh api "repos/$SERIES/actions/runs/$RUN/artifacts?name=release-plan&per_page=100" > "$D/artifacts.json"
+          ID="$(python3 scripts/wrapper_on_this_core.py artifact-id --artifacts "$D/artifacts.json")"
+          ZIP=()
+          if [ -n "$ID" ]; then
+            gh api "repos/$SERIES/actions/artifacts/$ID/zip" > "$D/release-plan.zip"
+            ZIP=(--zip "$D/release-plan.zip")
+          fi
+          python3 scripts/wrapper_on_this_core.py check-release-plan --file ci/wrapper-proof.json --seal src/invisible_core/seal.json \
+            --run "$D/run.json" "${ZIP[@]}"
       # The rule is scripts/wrapper_job_needed.py, one for every event: a push, a pull request,
       # a merge group; an event it does not know is red. The base and the head are the pull
       # request's or the merge group's. The body is untrusted: it reaches the script through

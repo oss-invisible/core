@@ -36,6 +36,11 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 SCRIPT = ROOT / "scripts" / "wrapper_on_this_core.py"
 SHA_NEW = "b39b7f65e128500175fbef36b718120956c5146b"   # wrapper release 0.60.0 (pins invisible_core==70.83.0): the first content of the proof file
+# The series run of the first content: the build run of firefox-70 (oss-invisible/firefox_antidetect_patch release.yml, workflow_dispatch on
+# 063dde5e829e465bd3fccb2857b399d130c6b7d4, concluded success), made before the rule, so it has no `release-plan` artifact (total_count 0).
+SERIES_RUN = 45854283146
+SERIES_COMMIT = "063dde5e829e465bd3fccb2857b399d130c6b7d4"
+PROOF = {"wrapper_commit": SHA_NEW, "series_run": SERIES_RUN}
 
 # The `released` versions of PUBLISHED.json of the core at tag v70.83.0 (commit 8ebfd09 of oss-invisible/core), in file order.
 CORE_RELEASED_AT_70_83_0 = """
@@ -162,17 +167,25 @@ def _write_proof(path: Path, value) -> Path:
 def test_the_proof_file_of_this_tree_is_well_formed_and_names_the_wrapper_that_pins_this_core():
     mod = _load_script()
     assert mod.read_wrapper_proof(ROOT / "ci" / "wrapper-proof.json") == SHA_NEW
+    assert mod.read_proof(ROOT / "ci" / "wrapper-proof.json") == PROOF
     # core main's _version.py is the number the wrapper release pins (70.83.0): the first content of the file.
     assert mod.tree_version(ROOT) == "70.83.0"
 
 
 @pytest.mark.parametrize("content", [
-    {"wrapper_commit": SHA_NEW[:7]},                     # a short sha
-    {"wrapper_commit": SHA_NEW.upper()},                 # not lower case
-    {"wrapper_commit": SHA_NEW + "0"},
-    {"wrapper_commit": 42},
-    {"wrapper_commit": "main"},
-    {"wrapper_commit": SHA_NEW, "note": "extra key"},
+    {**PROOF, "wrapper_commit": SHA_NEW[:7]},                     # a short sha
+    {**PROOF, "wrapper_commit": SHA_NEW.upper()},                 # not lower case
+    {**PROOF, "wrapper_commit": SHA_NEW + "0"},
+    {**PROOF, "wrapper_commit": 42},
+    {**PROOF, "wrapper_commit": "main"},
+    {**PROOF, "wrapper_commit": SHA_NEW, "note": "extra key"},
+    {"wrapper_commit": SHA_NEW},                          # no series_run
+    {"series_run": SERIES_RUN},                           # no wrapper_commit
+    {**PROOF, "series_run": "45854283146"},               # not an integer
+    {**PROOF, "series_run": True},
+    {**PROOF, "series_run": 0},
+    {**PROOF, "series_run": -5},
+    {**PROOF, "series_run": 1.5},
     {},
     [SHA_NEW],
     "{not json",
@@ -216,7 +229,7 @@ def _check(tmp_path, pyproject, version, declare=None, proof=None):
     wrapper, head = _wrapper_checkout(tmp_path, pyproject)
     path = tmp_path / "wrapper-proof.json"
     if proof is None:
-        _write_proof(path, {"wrapper_commit": declare or head})
+        _write_proof(path, {**PROOF, "wrapper_commit": declare or head})
     elif proof is not False:
         _write_proof(path, proof)
     return _run(["check-wrapper-proof", "--file", str(path), "--wrapper", str(wrapper), "--version", version])
@@ -253,7 +266,7 @@ def test_a_checkout_that_is_not_the_declared_commit_is_red(tmp_path, capsys):
 
 
 def test_a_short_sha_and_a_missing_file_are_red_even_if_the_pin_is_right(tmp_path):
-    assert _check(tmp_path, PYPROJECT_B39B7F65, "70.83.0", proof={"wrapper_commit": SHA_NEW[:7]}) == 1
+    assert _check(tmp_path, PYPROJECT_B39B7F65, "70.83.0", proof={**PROOF, "wrapper_commit": SHA_NEW[:7]}) == 1
     (tmp_path / "x").mkdir()
     assert _check(tmp_path / "x", PYPROJECT_B39B7F65, "70.83.0", proof=False) == 1
 
@@ -262,7 +275,7 @@ def test_a_checkout_with_no_pyproject_is_red(tmp_path):
     wrapper = tmp_path / "wrapper"
     wrapper.mkdir()
     _git(wrapper, "init", "-q")
-    path = _write_proof(tmp_path / "wrapper-proof.json", {"wrapper_commit": SHA_NEW})
+    path = _write_proof(tmp_path / "wrapper-proof.json", {**PROOF, "wrapper_commit": SHA_NEW})
     assert _run(["check-wrapper-proof", "--file", str(path), "--wrapper", str(wrapper), "--version", "70.83.0"]) == 1
 
 
@@ -271,7 +284,7 @@ def test_a_checkout_with_no_pyproject_is_red(tmp_path):
 @pytest.mark.parametrize("event, ref_type", [("push", "tag"), ("workflow_dispatch", "branch"), ("workflow_dispatch", None)])
 def test_a_tag_and_a_manual_run_check_out_the_commit_of_the_proof_file(tmp_path, event, ref_type):
     mod = _load_script()
-    path = _write_proof(tmp_path / "wrapper-proof.json", {"wrapper_commit": SHA_NEW})
+    path = _write_proof(tmp_path / "wrapper-proof.json", {**PROOF, "wrapper_commit": SHA_NEW})
     for body in (None, "wrapper-ref: feat/x\n"):  # a declaration in a body is not read on a release
         ref, why = mod.choose_wrapper_ref(event, body, ref_type=ref_type, proof_file=path)
         assert ref == SHA_NEW and "wrapper-proof.json" in why
@@ -282,7 +295,7 @@ def test_a_release_with_no_usable_proof_file_is_red_and_never_falls_back_to_main
     mod = _load_script()
     with pytest.raises(mod.WrapperRefError):
         mod.choose_wrapper_ref(event, None, ref_type=ref_type, proof_file=tmp_path / "missing.json")
-    path = _write_proof(tmp_path / "wrapper-proof.json", {"wrapper_commit": "abc"})
+    path = _write_proof(tmp_path / "wrapper-proof.json", {**PROOF, "wrapper_commit": "abc"})
     with pytest.raises(mod.WrapperRefError):
         mod.choose_wrapper_ref(event, None, ref_type=ref_type, proof_file=path)
 
@@ -299,7 +312,7 @@ def test_a_pull_request_a_push_to_main_and_a_merge_group_do_not_read_the_proof_f
 
 
 def test_the_wrapper_ref_command_writes_the_declared_commit_as_the_output_of_a_tag(tmp_path, monkeypatch):
-    path = _write_proof(tmp_path / "wrapper-proof.json", {"wrapper_commit": SHA_NEW})
+    path = _write_proof(tmp_path / "wrapper-proof.json", {**PROOF, "wrapper_commit": SHA_NEW})
     out = tmp_path / "out.txt"
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
@@ -341,7 +354,7 @@ def _bash() -> str:
 
 def _run_step(script: str, cwd: Path, env: dict) -> subprocess.CompletedProcess:
     py = Path(sys.executable).as_posix()
-    script = re.sub(r"\bpython (?=(\.\./)?scripts/)", f'"{py}" ', script)
+    script = re.sub(r"\bpython3? (?=(\.\./)?scripts/)", f'"{py}" ', script)
     script = re.sub(r'\bpython (?=("\$RUNNER_TEMP|-c ))', f'"{py}" ', script)   # the judge's own line
     full = {**os.environ, **env, "RUNNER_TEMP": (cwd / "_runner_temp").as_posix(), "GITHUB_ENV": (cwd / "_github_env").as_posix(),
             "GIT_CEILING_DIRECTORIES": cwd.parent.as_posix()}
@@ -665,3 +678,229 @@ def test_the_wrapper_commit_is_fetched_with_the_jobs_token_by_a_checkout_at_the_
     assert re.sub(r"\s+", "", str(checkout["with"].get("token", "${{github.token}}"))) == "${{github.token}}"
     check = next(s for s in steps if "check-wrapper-proof" in str(s.get("run", "")))
     assert steps.index(reader) < steps.index(checkout) < steps.index(check)
+
+
+# ----------------------------------------------------------------------------- the series run the proof file names
+
+import io  # noqa: E402
+import zipfile  # noqa: E402
+
+SEAL = json.loads((ROOT / "src" / "invisible_core" / "seal.json").read_text(encoding="utf-8"))
+OTHER_COMMIT = "a" * 40
+
+
+def _plan(**over) -> dict:
+    plan = {"run_id": 45900000001, "series_commit": SEAL["series_commit"], "wrapper_commit": SHA_NEW, "core_ref": "oss-invisible/core@ci/x",
+            "kind": "candidate"}
+    plan.update(over)
+    return plan
+
+
+def _zip_of(plan) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("release-plan.json", json.dumps(plan))
+    return buffer.getvalue()
+
+
+def _run_record(number=45900000001, conclusion="success", status="completed", head=SERIES_COMMIT) -> dict:
+    # the shape of GET /repos/oss-invisible/firefox_antidetect_patch/actions/runs/45854283146 (read 28/11): id, status, conclusion, head_sha
+    return {"id": number, "status": status, "conclusion": conclusion, "head_sha": head, "name": "release", "event": "workflow_dispatch"}
+
+
+def test_the_seal_of_this_tree_names_the_series_commit_the_first_content_was_made_before_the_rule_for():
+    assert SEAL["series_commit"] == SERIES_COMMIT
+
+
+def test_the_writer_writes_the_two_keys_from_a_candidate_plan(tmp_path, capsys):
+    plan = tmp_path / "release-plan.json"
+    plan.write_text(json.dumps(_plan()), encoding="utf-8")
+    out = tmp_path / "wrapper-proof.json"
+    assert _run(["write-wrapper-proof", "--plan", str(plan), "--seal", str(ROOT / "src" / "invisible_core" / "seal.json"), "--out", str(out)]) == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {"wrapper_commit": SHA_NEW, "series_run": 45900000001}
+    assert _load_script().read_proof(out) == {"wrapper_commit": SHA_NEW, "series_run": 45900000001}
+
+
+@pytest.mark.parametrize("over, why", [
+    ({"kind": "build"}, "not a candidate"),
+    ({"kind": "release"}, "not a candidate"),
+    ({"series_commit": OTHER_COMMIT}, "the plan of another series commit"),
+    ({"wrapper_commit": "abc"}, "a short wrapper sha"),
+    ({"run_id": "45900000001"}, "a run id that is not a number"),
+    ({"core_ref": ""}, "no core ref"),
+])
+def test_the_writer_refuses_a_plan_that_is_not_a_candidates_or_not_for_this_seal(tmp_path, over, why):
+    plan = tmp_path / "release-plan.json"
+    plan.write_text(json.dumps(_plan(**over)), encoding="utf-8")
+    out = tmp_path / "wrapper-proof.json"
+    assert _run(["write-wrapper-proof", "--plan", str(plan), "--seal", str(ROOT / "src" / "invisible_core" / "seal.json"), "--out", str(out)]) == 1, why
+    assert not out.exists(), "a refused plan left a proof file"
+
+
+def test_the_writer_refuses_a_plan_with_a_missing_key_and_a_plan_that_is_not_json(tmp_path):
+    seal = str(ROOT / "src" / "invisible_core" / "seal.json")
+    out = tmp_path / "wrapper-proof.json"
+    plan = tmp_path / "p.json"
+    plan.write_text(json.dumps({k: v for k, v in _plan().items() if k != "wrapper_commit"}), encoding="utf-8")
+    assert _run(["write-wrapper-proof", "--plan", str(plan), "--seal", seal, "--out", str(out)]) == 1
+    plan.write_text("{nope", encoding="utf-8")
+    assert _run(["write-wrapper-proof", "--plan", str(plan), "--seal", seal, "--out", str(out)]) == 1
+    assert _run(["write-wrapper-proof", "--plan", str(tmp_path / "none.json"), "--seal", seal, "--out", str(out)]) == 1
+    assert not out.exists()
+
+
+def _check_plan(proof, run, plan=None, seal=SEAL, zipped=True):
+    return _load_script().check_release_plan(proof, seal, run, _zip_of(plan) if (plan is not None and zipped) else None)
+
+
+def test_a_plan_that_names_the_wrapper_commit_and_the_seal_of_a_successful_run_is_green():
+    proof = {"wrapper_commit": SHA_NEW, "series_run": 45900000001}
+    assert _check_plan(proof, _run_record(), _plan()) == []
+
+
+@pytest.mark.parametrize("proof_over, run, plan_over, needle", [
+    ({"wrapper_commit": "c" * 40}, _run_record(), {}, "proved wrapper"),                   # the file names another wrapper commit
+    ({}, _run_record(conclusion="failure"), {}, "did not conclude success"),
+    ({}, _run_record(conclusion=None, status="in_progress"), {}, "did not conclude success"),
+    ({}, _run_record(conclusion="cancelled"), {}, "did not conclude success"),
+    ({}, _run_record(number=7), {}, "not that of run"),                                    # the record is another run's
+    ({}, _run_record(), {"series_commit": OTHER_COMMIT}, "is for series commit"),          # the plan was made for another seal
+    ({}, _run_record(), {"run_id": 45900000002}, "the plan names run"),
+])
+def test_the_check_is_red_on_a_wrapper_commit_mismatch_a_run_that_did_not_succeed_or_a_plan_of_another_seal(proof_over, run, plan_over, needle):
+    proof = {"wrapper_commit": SHA_NEW, "series_run": 45900000001, **proof_over}
+    problems = _check_plan(proof, run, _plan(**plan_over))
+    assert problems and any(needle in p for p in problems), problems
+
+
+def test_the_check_is_red_on_a_plan_that_is_not_a_candidates_or_cannot_be_read():
+    proof = {"wrapper_commit": SHA_NEW, "series_run": 45900000001}
+    assert any("candidate" in p for p in _check_plan(proof, _run_record(), _plan(kind="build")))
+    bad_zip = _load_script().check_release_plan(proof, SEAL, _run_record(), b"not a zip")
+    assert bad_zip and "cannot be read" in bad_zip[0]
+    empty = io.BytesIO()
+    with zipfile.ZipFile(empty, "w") as archive:
+        archive.writestr("other.json", "{}")
+    assert _load_script().check_release_plan(proof, SEAL, _run_record(), empty.getvalue())
+
+
+def test_no_plan_is_accepted_only_for_the_release_made_before_the_rule_and_only_on_its_own_seal():
+    mod = _load_script()
+    before = {"wrapper_commit": SHA_NEW, "series_run": SERIES_RUN}
+    assert mod.MADE_BEFORE_THE_RULE == {SERIES_COMMIT: SERIES_RUN}, "one entry, keyed to the series commit of firefox-70"
+    assert mod.check_release_plan(before, SEAL, _run_record(SERIES_RUN), None) == []
+    # another run, with no plan
+    assert any("no `release-plan` artifact" in p for p in mod.check_release_plan({**before, "series_run": SERIES_RUN + 1}, SEAL, _run_record(SERIES_RUN + 1), None))
+    # the same run number under another seal
+    other_seal = {**SEAL, "series_commit": OTHER_COMMIT}
+    assert any("no `release-plan` artifact" in p for p in mod.check_release_plan(before, other_seal, _run_record(SERIES_RUN, head=OTHER_COMMIT), None))
+    # the right run, but it did not run the seal's commit, or did not succeed
+    assert any("not the series commit" in p for p in mod.check_release_plan(before, SEAL, _run_record(SERIES_RUN, head=OTHER_COMMIT), None))
+    assert any("did not conclude success" in p for p in mod.check_release_plan(before, SEAL, _run_record(SERIES_RUN, conclusion="failure"), None))
+
+
+def test_artifact_id_names_the_live_release_plan_and_two_are_red():
+    mod = _load_script()
+    assert mod.artifact_id({"total_count": 0, "artifacts": []}) == ""
+    assert mod.artifact_id({"artifacts": [{"id": 9, "name": "release-plan", "expired": False}, {"id": 8, "name": "junit-py", "expired": False}]}) == "9"
+    assert mod.artifact_id({"artifacts": [{"id": 9, "name": "release-plan", "expired": True}]}) == ""
+    with pytest.raises(mod.ProofError):
+        mod.artifact_id({"artifacts": [{"id": 1, "name": "release-plan"}, {"id": 2, "name": "release-plan"}]})
+    with pytest.raises(mod.ProofError):
+        mod.artifact_id({})
+
+
+# the step of ci.yml, executed with a stand-in for `gh` that answers from files (no network)
+_FAKE_GH = r"""gh() {
+  [ "$1" = "api" ] || { echo "gh $*: not an api call" >&2; return 2; }
+  case "$2" in
+    repos/oss-invisible/firefox_antidetect_patch/actions/runs/*/artifacts*) cat "$FAKE/artifacts.json" ;;
+    repos/oss-invisible/firefox_antidetect_patch/actions/artifacts/*/zip) cat "$FAKE/plan.zip" ;;
+    repos/oss-invisible/firefox_antidetect_patch/actions/runs/*) cat "$FAKE/run.json" ;;
+    *) echo "gh: unexpected $2" >&2; return 1 ;;
+  esac
+}
+"""
+
+
+def _series_step(tmp_path: Path, proof: dict, run: dict, artifacts: dict, plan_zip: bytes | None, seal=SEAL) -> subprocess.CompletedProcess:
+    core = tmp_path / "core"
+    (core / "scripts").mkdir(parents=True)
+    (core / "ci").mkdir()
+    (core / "src" / "invisible_core").mkdir(parents=True)
+    shutil.copy(SCRIPT, core / "scripts" / "wrapper_on_this_core.py")
+    (core / "ci" / "wrapper-proof.json").write_text(json.dumps(proof), encoding="utf-8")
+    (core / "src" / "invisible_core" / "seal.json").write_text(json.dumps(seal), encoding="utf-8")
+    fake = tmp_path / "fake"
+    fake.mkdir()
+    (fake / "run.json").write_text(json.dumps(run), encoding="utf-8")
+    (fake / "artifacts.json").write_text(json.dumps(artifacts), encoding="utf-8")
+    if plan_zip is not None:
+        (fake / "plan.zip").write_bytes(plan_zip)   # no file: the download fails
+    step = _step("ci.yml", "wrapper-job-needed", "the series run it names ran that wrapper commit")
+    assert "GH_TOKEN" in step["env"] and "github.token" in step["env"]["GH_TOKEN"]
+    return _run_step(_FAKE_GH + step["run"], core, {"FAKE": fake.as_posix()})
+
+
+LISTED = {"total_count": 1, "artifacts": [{"id": 777, "name": "release-plan", "expired": False}]}
+NONE_LISTED = {"total_count": 0, "artifacts": []}
+
+
+def test_the_step_is_green_when_the_downloaded_plan_matches(tmp_path):
+    proof = {"wrapper_commit": SHA_NEW, "series_run": 45900000001}
+    done = _series_step(tmp_path, proof, _run_record(), LISTED, _zip_of(_plan()))
+    assert done.returncode == 0, done.stderr
+    assert "names this wrapper commit" in done.stdout
+
+
+def test_the_step_is_red_on_a_wrapper_commit_mismatch(tmp_path):
+    proof = {"wrapper_commit": "c" * 40, "series_run": 45900000001}
+    done = _series_step(tmp_path, proof, _run_record(), LISTED, _zip_of(_plan()))
+    assert done.returncode == 1 and "proved wrapper" in done.stderr, done.stderr
+
+
+def test_the_step_is_red_on_a_run_that_failed(tmp_path):
+    proof = {"wrapper_commit": SHA_NEW, "series_run": 45900000001}
+    done = _series_step(tmp_path, proof, _run_record(conclusion="failure"), LISTED, _zip_of(_plan()))
+    assert done.returncode == 1 and "did not conclude success" in done.stderr, done.stderr
+
+
+def test_the_step_is_red_when_the_download_fails_and_never_reads_it_as_no_plan(tmp_path):
+    proof = {"wrapper_commit": SHA_NEW, "series_run": 45900000001}
+    done = _series_step(tmp_path, proof, _run_record(), LISTED, None)   # the listing names an artifact whose zip cannot be downloaded
+    assert done.returncode != 0
+    done = _series_step(tmp_path / "again", {**proof, "series_run": SERIES_RUN}, _run_record(SERIES_RUN), LISTED, None)
+    assert done.returncode != 0, "a failed download of the pre-rule run's artifact was read as `no plan`"
+
+
+def test_the_step_is_red_on_a_run_that_has_no_plan_unless_it_is_the_one_made_before_the_rule(tmp_path):
+    proof = {"wrapper_commit": SHA_NEW, "series_run": 45900000001}
+    done = _series_step(tmp_path, proof, _run_record(), NONE_LISTED, None)
+    assert done.returncode == 1 and "no `release-plan` artifact" in done.stderr, done.stderr
+    done = _series_step(tmp_path / "pre", {"wrapper_commit": SHA_NEW, "series_run": SERIES_RUN}, _run_record(SERIES_RUN), NONE_LISTED, None)
+    assert done.returncode == 0, done.stderr
+    assert "made before the rule" in done.stdout
+
+
+def test_the_step_is_red_on_a_proof_file_with_no_series_run(tmp_path):
+    done = _series_step(tmp_path, {"wrapper_commit": SHA_NEW}, _run_record(), NONE_LISTED, None)
+    assert done.returncode == 1 and "series_run" in done.stderr
+
+
+def test_the_series_step_runs_on_every_event_in_the_same_light_job_with_the_jobs_token():
+    job = _load_workflow("ci.yml")["jobs"]["wrapper-job-needed"]
+    steps = job["steps"]
+    step = _step("ci.yml", "wrapper-job-needed", "the series run it names ran that wrapper commit")
+    assert "if" not in step and step in steps
+    assert steps.index(step) > steps.index(next(s for s in steps if "check-wrapper-proof" in str(s.get("run", ""))))
+    assert steps[-1] is not step, "the decision of `wrapper-job-needed` is not the last step any more"
+    run = step["run"]
+    assert "check-release-plan" in run and "artifact-id" in run and "read-series-run" in run
+    assert "git fetch" not in run and "curl" not in run
+    assert [s for s in steps if "wrapper_job_needed.py" in str(s.get("run", ""))][-1] is steps[-1]
+
+
+def test_the_tag_path_reads_the_two_keys_but_does_not_call_the_series():
+    for name in ("wrapper-on-this-core.yml", "wrapper-unit-on-this-core.yml"):
+        text = (WORKFLOWS / name).read_text(encoding="utf-8")
+        assert "check-release-plan" not in text and "firefox_antidetect_patch" not in text, f"{name} asks the series repository on the tag"
