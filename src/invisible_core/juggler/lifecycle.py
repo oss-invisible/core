@@ -443,8 +443,14 @@ class Lifecycle:
             f = self._frame(p["frameId"])
             if f is None:
                 return None
-            self._retire(p["frameId"], itself=False)
             nav = p.get("navigationId")
+            # ⛔ Only a NEW document retires them. A commit without an id, or
+            # the id this frame committed last, is the same document
+            # re-announced (below): its children are still its own, and
+            # nothing would attach them again (a goto to the same URL of an
+            # a-b-a page ended with 2 frames of 3).
+            if nav is not None and (not f._commits or f._commits[-1][1] != nav):
+                self._retire(p["frameId"], itself=False)
             if nav is not None:
                 self._forget_requests({f.id}, keep_navigation=nav)
             f.url = p.get("url", f.url)
