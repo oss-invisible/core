@@ -25,7 +25,12 @@ WHAT IS CHECKED, in the repository you are standing in:
   * its "wait for the index" step is scoped to that pull request and bounded:
     the index serves a new version some time after the upload, a run that does
     not wait reports a missing publish that happened two minutes earlier, and a
-    wait with no deadline hangs where it should fail;
+    wait with no deadline hangs where it should fail. The bound is the step's own
+    `deadline = time.monotonic() + N`, or the shared script
+    (`python scripts/ci_index_wait.py ...`) when that file is in the tree being
+    judged and holds the bounded deadline (`MAX_SECONDS` and
+    `deadline = monotonic() + min(seconds, MAX_SECONDS)`): a step that calls a
+    script that is missing or has no bound is refused;
   * every test file it runs keeps the caller's environment out of the venvs it
     builds: a module-level `_LEAKS` that covers `LEAKS` ([B349]);
   * when the repository's conftest loads `invisible_core.testing.world`, every
@@ -61,6 +66,26 @@ LEDGER = "PUBLISHED.json"
 WAIT_STEP = "wait for the index"
 
 _DEADLINE = re.compile(r"deadline\s*=\s*time\.monotonic\(\)\s*\+\s*\d+")
+
+#: The wait a repository may share instead of writing it in the step: one script that both polls and keeps a deadline.
+SHARED_WAIT = pathlib.PurePosixPath("scripts") / "ci_index_wait.py"
+_SHARED_CALL = re.compile(r"\bpython3?\s+scripts/ci_index_wait\.py\b")
+_SHARED_CAP = re.compile(r"^MAX_SECONDS\s*=\s*\d+(?:\.\d+)?\s*$", re.M)
+_SHARED_DEADLINE = re.compile(r"deadline\s*=\s*monotonic\(\)\s*\+\s*min\(\s*seconds\s*,\s*MAX_SECONDS\s*\)")
+
+
+def shared_wait_problem(root: "pathlib.Path | None") -> "str | None":
+    """Why the shared wait script cannot be taken as bounded; None when the tree at ``root`` holds it with its deadline."""
+    if root is None:
+        return ("its wait runs %s, which cannot be judged without the tree it is in (pass the tree to `problems`)" % SHARED_WAIT.as_posix())
+    path = pathlib.Path(root) / SHARED_WAIT
+    if not path.is_file():
+        return "its wait runs %s, which this tree does not have" % SHARED_WAIT.as_posix()
+    text = path.read_text(encoding="utf-8")
+    if not (_SHARED_CAP.search(text) and _SHARED_DEADLINE.search(text)):
+        return ("its wait runs %s, which has no bounded deadline (`MAX_SECONDS = N` and `deadline = monotonic() + min(seconds, MAX_SECONDS)`), "
+                "so a forgotten publish would hang the job instead of failing it" % SHARED_WAIT.as_posix())
+    return None
 
 #: What, left in the environment of a venv an install test builds, makes it
 #: measure something that is not what a user gets ([B349]). ONE definition. The
@@ -170,9 +195,11 @@ def _wait_step(text: str) -> "str | None":
     return None
 
 
-def problems(text: str) -> list:
+def problems(text: str, root: "pathlib.Path | None" = None) -> list:
     """What is wrong with a user-install workflow, as sentences; none when it is
-    wired to run on the ledger pull request and wait there, bounded."""
+    wired to run on the ledger pull request and wait there, bounded. ``root`` is the
+    tree the workflow is in: a wait that runs the shared script is bounded only if
+    the script is there and holds its deadline."""
     out = []
     events = triggers(text)
     if "release" in events:
@@ -193,7 +220,11 @@ def problems(text: str) -> list:
         if "github.event_name == 'pull_request'" not in step:
             out.append("its wait for the index is not scoped to the pull request it "
                        "runs on (`if: github.event_name == 'pull_request'`)")
-        if not _DEADLINE.search(step):
+        if not _DEADLINE.search(step) and _SHARED_CALL.search(step):
+            why = shared_wait_problem(root)
+            if why:
+                out.append(why)
+        elif not _DEADLINE.search(step):
             out.append("its wait for the index has no deadline "
                        "(`deadline = time.monotonic() + N`), so a forgotten publish "
                        "would hang the job instead of failing it")
@@ -249,7 +280,7 @@ def judge(root: pathlib.Path) -> list:
     """Every problem of this repository's install job, as (where, what)."""
     path = root / WORKFLOW
     text = path.read_text(encoding="utf-8")
-    found = [(WORKFLOW.as_posix(), problem) for problem in problems(text)]
+    found = [(WORKFLOW.as_posix(), problem) for problem in problems(text, root)]
     conftest = root / CONFTEST
     loads = conftest.is_file() and loads_world(conftest.read_text(encoding="utf-8"))
     found += [(WORKFLOW.as_posix(), problem) for problem in world_problems(text, loads)]

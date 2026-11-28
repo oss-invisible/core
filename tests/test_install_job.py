@@ -142,3 +142,66 @@ def test_no_autouse_fixture_imports_the_package_for_a_test_of_the_install_job():
     assert _autouse_fixtures_that_import_the_package(old) == ["_geoip_check_memory_is_per_test"]
     conftest = (_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
     assert _autouse_fixtures_that_import_the_package(conftest) == []
+
+
+# ---- the wait may be the shared script, when the tree being judged holds it, bounded ------------------------------------------------------------
+
+_SHARED_STEP = """      - name: wait for the index to serve this version
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: python scripts/ci_index_wait.py --dist-from-pyproject pyproject.toml --version-env INVPW_E2E_VERSION
+"""
+# The lines of oss-invisible/playwright scripts/ci_index_wait.py (06bb578a) that carry the bound.
+_BOUNDED_SCRIPT = """MAX_SECONDS = 600.0
+
+
+def wait_for_index(says, *, need=3, poll=15.0, seconds=MAX_SECONDS, monotonic=None, sleep=None):
+    deadline = monotonic() + min(seconds, MAX_SECONDS)
+"""
+_UNBOUNDED_SCRIPT = "def wait_for_index(says, *, need=3, poll=15.0):\n    while not says():\n        pass\n"
+
+
+def _shared_workflow() -> str:
+    return "name: user-install\n\n%s\njobs:\n  install:\n    runs-on: ubuntu-24.04\n    steps:\n%s" % (_GOOD_ON_TEXT, _SHARED_STEP)
+
+
+_GOOD_ON_TEXT = install_job._GOOD_ON
+
+
+def _tree(tmp_path, script):
+    if script is not None:
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "ci_index_wait.py").write_text(script, encoding="utf-8")
+    return tmp_path
+
+
+def test_a_wait_that_runs_the_shared_script_is_bounded_when_the_tree_holds_it_with_its_deadline(tmp_path):
+    assert install_job.problems(_shared_workflow(), _tree(tmp_path, _BOUNDED_SCRIPT)) == []
+
+
+def test_a_wait_that_runs_a_script_with_no_bounded_deadline_is_refused(tmp_path):
+    [problem] = install_job.problems(_shared_workflow(), _tree(tmp_path, _UNBOUNDED_SCRIPT))
+    assert "no bounded deadline" in problem and "ci_index_wait.py" in problem
+
+
+def test_a_wait_that_runs_a_script_the_tree_does_not_have_is_refused(tmp_path):
+    [problem] = install_job.problems(_shared_workflow(), _tree(tmp_path, None))
+    assert "does not have" in problem
+
+
+def test_a_wait_that_runs_the_script_is_refused_when_no_tree_is_given():
+    [problem] = install_job.problems(_shared_workflow())
+    assert "without the tree" in problem
+
+
+def test_the_script_form_is_judged_by_judge_with_the_tree_it_is_given(tmp_path):
+    (tmp_path / install_job.WORKFLOW.parent).mkdir(parents=True)
+    (tmp_path / install_job.WORKFLOW).write_text(_shared_workflow(), encoding="utf-8")
+    _tree(tmp_path, _UNBOUNDED_SCRIPT)
+    assert any("no bounded deadline" in what for _, what in install_job.judge(tmp_path))
+
+
+def test_the_inline_deadline_is_still_accepted_and_a_step_with_neither_is_still_refused(tmp_path):
+    assert install_job.problems(install_job._workflow(install_job._GOOD_ON)) == []
+    assert install_job.problems(install_job._workflow(install_job._GOOD_ON, bounded=False), _tree(tmp_path, _BOUNDED_SCRIPT))
+    assert any("no deadline" in p for p in install_job.problems(install_job._workflow(install_job._GOOD_ON, bounded=False)))
