@@ -204,3 +204,19 @@ def chrome_height_device(scale: float, density: str) -> int:
     else:
         raise ValueError("density must be 'normal' or 'compact', not %r" % (density,))
     return _offset_device(boxes, scale)
+
+
+# --- The display scales Windows offers ----------------------------------------
+#
+#: Percentages of Settings > System > Display > Scale on Windows 11: an array of
+#: twelve uint32 values in the .rdata of SettingsHandlers_Display.dll
+#: 10.0.26100.8117 (sha256 8162D2F9A2A2AFC43A8AB7369F099873357505B059505D457DD80D77A14072BA,
+#: RVA 0x59488) and in three other 26100 System32 files (RetailCaptures
+#: analysis/window-geometry/metrics-dpi/scale-list/). The array is the superset
+#: Windows can show; its reader was not disassembled. The core accepts exactly
+#: these scales and refuses any other (a 133% screen is a machine no Windows
+#: draws).
+WINDOWS_SCALE_PERCENTS: tuple = (100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500)
+#: The same as scales (1.0 .. 5.0); every one is exact in binary floating point.
+WINDOWS_SCALES: tuple = tuple(percent / 100 for percent in WINDOWS_SCALE_PERCENTS)
+

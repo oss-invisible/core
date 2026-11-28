@@ -145,16 +145,20 @@ def test_the_popup_toolbar_between_the_measured_scales_is_the_popup_frame_model(
 
 
 @pytest.mark.unit
-def test_the_frame_table_is_built_from_the_functions_over_the_persona_scales():
-    assert tuple(WINDOW_FRAME_BY_DPR) == FRAME_SCALES == SCALES
+def test_the_frame_table_is_built_from_the_functions_and_matches_the_measurements():
+    assert FRAME_SCALES == SCALES  # what the persona pool samples today
     for scale, frame in WINDOW_FRAME_BY_DPR.items():
         dpi = wf.dpi_of_scale(scale)
-        assert frame.border == wf.border(dpi) == MEASURED_BORDER[scale]
-        assert frame.popup_client_top == wf.popup_client_top(dpi) == MEASURED_POPUP_CLIENT_TOP[scale]
-        assert frame.popup_ui == wf.popup_ui(scale) == MEASURED_POPUP_UI[scale]
+        assert frame.border == wf.border(dpi)
+        assert frame.popup_client_top == wf.popup_client_top(dpi)
+        assert frame.popup_ui == wf.popup_ui(scale)
         assert frame.ui_normal == chrome_height_device(scale, "normal")
         assert frame.ui_compact == chrome_height_device(scale, "compact")
         assert frame.popup_position == 4
+    for scale in SCALES:  # the measured ones
+        frame = WINDOW_FRAME_BY_DPR[scale]
+        assert (frame.border, frame.popup_client_top, frame.popup_ui) == (
+            MEASURED_BORDER[scale], MEASURED_POPUP_CLIENT_TOP[scale], MEASURED_POPUP_UI[scale])
 
 
 def _prefs(scale, seed=7, panel=(2048, 1280)):
@@ -184,7 +188,7 @@ def test_the_written_prefs_are_the_functions_at_each_scale(scale, seed):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("density,tabstrip,navbar", [("normal", 44, 40), ("compact", 36, 36)])
-@pytest.mark.parametrize("scale", [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0])
+@pytest.mark.parametrize("scale", wf.WINDOWS_SCALES)
 def test_the_bar_is_the_retail_offset_of_the_browser_element_rounded_once(scale, density, tabstrip, navbar):
     """Retail's content offset is the <browser> element's offset in the chrome, in app units,
     divided by the app units per device pixel and rounded once (FromAppUnitsRounded:
@@ -266,3 +270,65 @@ def test_the_font_term_is_real_code_and_binds_at_a_tiny_dpi():
     dpi = 12
     assert wf.caption_font_height(dpi) + 2 > wf.muldiv(22, dpi, 96)
     assert wf.caption(dpi) == wf.caption_font_height(dpi) + 2 + 1
+
+
+# --- the accepted scales: exactly the ones Windows offers ---------------------
+#
+# The list is read from the 26100 settings binaries (SettingsHandlers_Display.dll
+# 10.0.26100.8117, RVA 0x59488; RetailCaptures analysis/window-geometry/metrics-dpi/scale-list/).
+
+@pytest.mark.unit
+def test_the_accepted_scales_are_the_ones_windows_offers():
+    assert wf.WINDOWS_SCALE_PERCENTS == (100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500)
+    assert wf.WINDOWS_SCALES == (1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0)
+    assert tuple(WINDOW_FRAME_BY_DPR) == wf.WINDOWS_SCALES
+    assert set(FRAME_SCALES) <= set(WINDOW_FRAME_BY_DPR)  # the sampled pool is a subset, never a limit
+    assert [wf.dpi_of_scale(s) for s in wf.WINDOWS_SCALES] == [
+        96, 120, 144, 168, 192, 216, 240, 288, 336, 384, 432, 480]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scale", wf.WINDOWS_SCALES)
+def test_every_accepted_scale_has_the_frame_from_the_formulas(scale):
+    dpi = wf.dpi_of_scale(scale)
+    _, _, border, cap, top = METRICS_BY_DPI[dpi]            # the metrics-dpi table
+    frame = WINDOW_FRAME_BY_DPR[scale]
+    assert (frame.border, frame.popup_client_top) == (border, top) and wf.caption(dpi) == cap
+    assert frame.popup_ui == top + wf.popup_toolbar(scale)
+    assert frame.ui_normal == chrome_height_device(scale, "normal")
+    assert frame.ui_compact == chrome_height_device(scale, "compact")
+    assert frame.ui_compact < frame.ui_normal
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scale", wf.WINDOWS_SCALES)
+def test_the_popup_toolbar_is_the_nav_bar_and_border_rounded_once_at_every_accepted_scale(scale):
+    from fractions import Fraction
+    from math import floor
+
+    au_per_dev = floor(60 / scale + 0.5)
+    border_au = max(au_per_dev, floor(60 / au_per_dev) * au_per_dev)
+    expected = floor(Fraction(40 * 60 + border_au, au_per_dev) + Fraction(1, 2))
+    assert wf.popup_toolbar(scale) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scale", wf.WINDOWS_SCALES)
+def test_every_accepted_scale_has_prefs_equal_to_the_functions(scale):
+    p = generate_profile(seed=5, pin={"screen.width": 3840, "screen.height": 2160, "screen.dpr": scale})
+    prefs = translate_profile_to_prefs(p, timezone="America/New_York")
+    dpi = wf.dpi_of_scale(scale)
+    assert prefs["zoom.stealth.screen.frame_border"] == wf.border(dpi)
+    assert prefs["zoom.stealth.screen.popup_client_top"] == wf.popup_client_top(dpi)
+    assert prefs["zoom.stealth.screen.popup_ui"] == wf.popup_ui(scale)
+    density = "compact" if 36 / p.screen.css_avail_height > 0.05 else "normal"
+    assert prefs["zoom.stealth.screen.maximized_ui"] == chrome_height_device(scale, density)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scale", [1.33, 1.1, 1.8, 0.75, 2.75, 3.25, 5.5])
+def test_a_scale_windows_does_not_offer_has_no_frame(scale):
+    assert scale not in WINDOW_FRAME_BY_DPR
+    p = generate_profile(seed=5, pin={"screen.dpr": scale})
+    with pytest.raises(ValueError, match="Windows does not offer"):
+        p.screen.frame

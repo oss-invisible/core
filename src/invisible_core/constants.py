@@ -27,7 +27,7 @@ from ._version import CORE_REVISION, __version__ as PKG_VERSION
 from .seal import active_seal, normalize_arch
 from .window_frame import (  # noqa: F401  (re-exported: the frame functions live in window_frame.py)
     CONTENT_BORDER_CSS, NAVBAR_CSS_COMPACT, NAVBAR_CSS_NORMAL, TABSTRIP_CSS_COMPACT,
-    TABSTRIP_CSS_NORMAL, apd, border, caption, chrome_height_device, dpi_of_scale, popup_client_top,
+    TABSTRIP_CSS_NORMAL, WINDOWS_SCALES, apd, border, caption, chrome_height_device, dpi_of_scale, popup_client_top,
     popup_toolbar, popup_ui,
 )
 
@@ -153,16 +153,18 @@ def _frame(scale: float) -> WindowFrame:
         ui_compact=chrome_height_device(scale, "compact"))
 
 
-#: The display scales the screen table gives personas
-#: (cpt_screen_given_class_tier.json): the DOMAIN of the frame table. A scale
-#: outside it is refused, never interpolated (engine rule 2), although every
-#: function of window_frame.py computes at any scale.
+#: The display scales the persona pool SAMPLES today
+#: (cpt_screen_given_class_tier.json): a subset of what is accepted, kept until a
+#: sourced frequency exists for the other scales of WINDOWS_SCALES. It limits
+#: what is drawn, never what is accepted.
 FRAME_SCALES: tuple = (1.0, 1.25, 1.5, 2.0)
 
 #: The window frame per display scale, BUILT from the functions of
 #: window_frame.py (border from the Windows non-client metrics at the scale's
 #: dpi, popup frame and main-window bar from the CSS and Gecko's snapping): no
-#: value is typed. Retail Firefox 159.0 on Windows 11 measures, in device px at
+#: value is typed. The keys are the DOMAIN: the twelve scales Windows offers
+#: (window_frame.WINDOWS_SCALES, from the binaries of the Settings app). A scale
+#: outside it has no frame and is refused, never interpolated (engine rule 2). Retail Firefox 159.0 on Windows 11 measures, in device px at
 #: scales 1 / 1.25 / 1.5 / 2, border 8 / 9 / 11 / 13, popup client top 31 / 38 /
 #: 45 / 58, popup_ui 72 / 89 / 106 / 140 and a bar of 85 / 106 / 127 / (170)
 #: normal and 73 / 91 / 109 / 146 compact (RetailCaptures
@@ -176,7 +178,7 @@ FRAME_SCALES: tuple = (1.0, 1.25, 1.5, 2.0)
 #: Firefox (a 768-pixel-tall screen, no resize border): it described a window
 #: at the screen origin with no side border, which Windows never draws
 #: maximized, and every popup answered the same numbers.
-WINDOW_FRAME_BY_DPR: dict = {scale: _frame(scale) for scale in FRAME_SCALES}
+WINDOW_FRAME_BY_DPR: dict = {scale: _frame(scale) for scale in WINDOWS_SCALES}
 
 
 def declared_maximized_ui(frame: WindowFrame, avail_height_css: float) -> int:

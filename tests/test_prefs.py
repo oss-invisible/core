@@ -103,11 +103,13 @@ def test_the_window_frame_is_declared_in_device_pixels_per_scale(dpr, frame, vie
 
 
 @pytest.mark.unit
-def test_a_scale_with_no_measured_frame_is_refused():
-    """The frame is measured at the four persona scales and nowhere else; a
-    frame interpolated for 1.75 would be one no Windows machine draws."""
-    p = generate_profile(seed=7, pin={"screen.dpr": 1.75})
-    with pytest.raises(ValueError, match="no measured window frame"):
+@pytest.mark.parametrize("scale", [1.33, 1.1, 0.75, 2.75, 5.5])
+def test_a_scale_windows_does_not_offer_is_refused(scale):
+    """The frame exists at the twelve scales Windows offers (100..500%) and
+    nowhere else; a frame interpolated for 133% would be one no Windows
+    machine draws."""
+    p = generate_profile(seed=7, pin={"screen.dpr": scale})
+    with pytest.raises(ValueError, match="Windows does not offer"):
         translate_profile_to_prefs(p, timezone="America/New_York")
 
 
