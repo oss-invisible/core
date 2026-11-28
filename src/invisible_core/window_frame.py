@@ -220,3 +220,38 @@ WINDOWS_SCALE_PERCENTS: tuple = (100, 125, 150, 175, 200, 225, 250, 300, 350, 40
 #: The same as scales (1.0 .. 5.0); every one is exact in binary floating point.
 WINDOWS_SCALES: tuple = tuple(percent / 100 for percent in WINDOWS_SCALE_PERCENTS)
 
+# --- Which of those scales a screen offers ------------------------------------
+#
+#: The smallest effective resolution Windows keeps at a scale: the long side at
+#: least 800 and the short side at least 600 (win32kfull.sys 10.0.26100.9974
+#: DxgkEngQueryWin32InfoPlatform, RVA 0x22f7b0: the scale collection's 0x320 and
+#: 0x258; applied by dxgkrnl.sys 10.0.26100.9974 DpiInternal::
+#: CalculateMinMaxOverride, RVA 0x5f298, with unsigned truncating division, the
+#: same for portrait and landscape). RetailCaptures analysis/window-geometry/
+#: metrics-dpi/scale-list/README.md, "Which scales a monitor offers" (proved by
+#: disassembly; the 13 resolutions of the GitHub runner agree).
+MIN_EFFECTIVE_LONG_SIDE: int = 800
+MIN_EFFECTIVE_SHORT_SIDE: int = 600
+
+
+def max_offered_scale(width_px: int, height_px: int) -> int:
+    """The largest scale, in percent, Windows offers on a screen of this native
+    resolution in device px (100 when none passes the bar)."""
+    long_side, short_side = max(width_px, height_px), min(width_px, height_px)
+    passing = [percent for percent in WINDOWS_SCALE_PERCENTS
+               if long_side * 100 // percent >= MIN_EFFECTIVE_LONG_SIDE
+               and short_side * 100 // percent >= MIN_EFFECTIVE_SHORT_SIDE]
+    return max(passing, default=100)
+
+
+def offered_scales(width_px: int, height_px: int) -> tuple:
+    """Every scale, in percent, Windows offers on this screen: the table from
+    100 up to max_offered_scale."""
+    top = max_offered_scale(width_px, height_px)
+    return tuple(percent for percent in WINDOWS_SCALE_PERCENTS if percent <= top)
+
+
+def offers_scale(scale: float, width_px: int, height_px: int) -> bool:
+    """Whether a display scale (1.25 = 125%) is one Windows offers on this screen."""
+    return int(floor(scale * 100 + 0.5)) in offered_scales(width_px, height_px)
+

@@ -100,13 +100,21 @@ class ScreenProfile:
         and a frame interpolated between two scales is a frame no Windows
         machine draws."""
         try:
-            return WINDOW_FRAME_BY_DPR[self.dpr]
+            frame = WINDOW_FRAME_BY_DPR[self.dpr]
         except KeyError:
             raise ValueError(
                 "Windows does not offer the display scale %r: the scales it "
                 "offers are %s (constants.WINDOW_FRAME_BY_DPR)"
                 % (self.dpr, ", ".join(str(k) for k in WINDOW_FRAME_BY_DPR))
             ) from None
+        if not offers_scale(self.dpr, self.width, self.height):
+            raise ValueError(
+                "Windows does not offer %d%% on a %dx%d screen: it keeps at "
+                "least 800x600 effective pixels, so this screen offers up to "
+                "%d%% (window_frame.max_offered_scale)"
+                % (round(self.dpr * 100), self.width, self.height,
+                   max_offered_scale(self.width, self.height)))
+        return frame
 
     @property
     def avail_device_width(self) -> int:
@@ -654,6 +662,7 @@ SCREEN_REFRESH_HZ = 60
 from ..constants import (  # noqa: E402,F401
     TASKBAR_PX, WINDOW_FRAME_BY_DPR, WindowFrame, declared_maximized_ui,
 )
+from ..window_frame import max_offered_scale, offers_scale  # noqa: E402,F401
 
 #: The five Windows English (United States) voices, in the order the binary
 #: parses them (`name|lang|default|local`). See HardwareProfile.voices for why

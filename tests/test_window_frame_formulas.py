@@ -315,7 +315,8 @@ def test_the_popup_toolbar_is_the_nav_bar_and_border_rounded_once_at_every_accep
 @pytest.mark.unit
 @pytest.mark.parametrize("scale", wf.WINDOWS_SCALES)
 def test_every_accepted_scale_has_prefs_equal_to_the_functions(scale):
-    p = generate_profile(seed=5, pin={"screen.width": 3840, "screen.height": 2160, "screen.dpr": scale})
+    width, height = (3840, 2160) if scale <= 3.5 else (7680, 4320)  # a panel that offers the scale
+    p = generate_profile(seed=5, pin={"screen.width": width, "screen.height": height, "screen.dpr": scale})
     prefs = translate_profile_to_prefs(p, timezone="America/New_York")
     dpi = wf.dpi_of_scale(scale)
     assert prefs["zoom.stealth.screen.frame_border"] == wf.border(dpi)
@@ -332,3 +333,93 @@ def test_a_scale_windows_does_not_offer_has_no_frame(scale):
     p = generate_profile(seed=5, pin={"screen.dpr": scale})
     with pytest.raises(ValueError, match="Windows does not offer"):
         p.screen.frame
+
+
+# --- which of the scales a screen offers --------------------------------------
+#
+# Rule: the effective resolution at a scale stays at least 800x600 (long side,
+# short side). RetailCaptures analysis/window-geometry/metrics-dpi/scale-list/
+# README.md "Which scales a monitor offers" and scripts/scale_model.py (win32kfull
+# DxgkEngQueryWin32InfoPlatform RVA 0x22f7b0, dxgkrnl CalculateMinMaxOverride
+# RVA 0x5f298, build 26100.9974); its model output is the expectations below.
+
+@pytest.mark.unit
+@pytest.mark.parametrize("w,h,top,offered", [
+    (1920, 1080, 175, (100, 125, 150, 175)),
+    (1600, 1200, 200, (100, 125, 150, 175, 200)),
+    (1366, 768, 125, (100, 125)),
+    (2560, 1440, 225, (100, 125, 150, 175, 200, 225)),
+    (3840, 2160, 350, (100, 125, 150, 175, 200, 225, 250, 300, 350)),
+    (1280, 720, 100, (100,)),
+    (640, 480, 100, (100,)),
+])
+def test_the_scales_a_screen_offers_are_the_model_of_the_binaries(w, h, top, offered):
+    assert wf.max_offered_scale(w, h) == top
+    assert wf.offered_scales(w, h) == offered
+    assert wf.max_offered_scale(h, w) == top and wf.offered_scales(h, w) == offered  # portrait
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("w,h", [(1920, 1080), (1600, 1200), (2560, 1440), (3840, 2160), (1366, 768)])
+def test_the_bar_is_800_by_600_effective_pixels(w, h):
+    top = wf.max_offered_scale(w, h)
+    long_side, short_side = max(w, h), min(w, h)
+    assert long_side * 100 // top >= 800 and short_side * 100 // top >= 600
+    above = [p for p in wf.WINDOWS_SCALE_PERCENTS if p > top]
+    assert all(long_side * 100 // p < 800 or short_side * 100 // p < 600 for p in above)
+
+
+# The GitHub runner's own records (RetailCaptures captures/firefox-159.0/github-runner/*/*/meta.json,
+# display.*.dpi min_rel / max_rel from DisplayConfigGetDeviceInfo type -3, recommended 100%):
+# resolution -> highest offered percent, SCALES[max_rel] of the 12-entry table (max_rel 0/0/1/1/0/1/2/1/2/2/4/3/3
+# in the order below; scale_model.py's runner check reports 13 records, 0 mismatches).
+RUNNER_RESOLUTIONS = {
+    (640, 480): 100, (800, 600): 100, (1024, 768): 125, (1152, 864): 125, (1280, 720): 100,
+    (1280, 800): 125, (1280, 1024): 150, (1366, 768): 125, (1440, 900): 150, (1600, 900): 150,
+    (1600, 1200): 200, (1680, 1050): 175, (1920, 1080): 175,
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("res,top", sorted(RUNNER_RESOLUTIONS.items()))
+def test_the_runner_resolutions_give_the_recorded_maximum(res, top):
+    assert wf.max_offered_scale(*res) == top
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("w,h,scale,offered", [
+    (1920, 1080, 1.75, True), (1920, 1080, 2.0, False), (1600, 1200, 2.0, True),
+    (1366, 768, 1.5, False), (3840, 2160, 3.5, True), (3840, 2160, 4.0, False),
+])
+def test_a_scale_the_screen_does_not_offer_is_refused(w, h, scale, offered):
+    p = generate_profile(seed=7, pin={"screen.width": w, "screen.height": h, "screen.dpr": scale})
+    assert wf.offers_scale(scale, w, h) is offered
+    if offered:
+        assert p.screen.frame == WINDOW_FRAME_BY_DPR[scale]
+    else:
+        with pytest.raises(ValueError, match="does not offer %d%% on a %dx%d screen" % (scale * 100, w, h)):
+            p.screen.frame
+        with pytest.raises(ValueError, match="does not offer"):
+            translate_profile_to_prefs(p, timezone="America/New_York")
+
+
+@pytest.mark.unit
+def test_the_persona_pool_only_draws_screens_at_scales_windows_offers():
+    """Every (screen, scale) of cpt_screen_given_class_tier.json is offered by Windows: the
+    refusal never breaks a seed. Known-bad if the table gains e.g. 1920x1080 at 200%."""
+    import json
+    from importlib import resources
+
+    table = json.loads((resources.files("invisible_core._fpforge") / "data"
+                        / "cpt_screen_given_class_tier.json").read_text(encoding="utf-8"))["table"]
+    pairs = {(e["value"]["w"], e["value"]["h"], e["value"]["dpr"]) for rows in table.values() for e in rows}
+    assert len(pairs) == 15
+    not_offered = sorted(c for c in pairs if not wf.offers_scale(c[2], c[0], c[1]))
+    assert not_offered == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("seed", range(0, 400, 7))
+def test_a_drawn_persona_always_has_a_frame(seed):
+    assert generate_profile(seed=seed).screen.frame
+
