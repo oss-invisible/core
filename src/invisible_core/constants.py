@@ -25,6 +25,11 @@ from typing import NamedTuple
 from ._retail import table as _retail_table
 from ._version import CORE_REVISION, __version__ as PKG_VERSION
 from .seal import active_seal, normalize_arch
+from .window_frame import (  # noqa: F401  (re-exported: the frame functions live in window_frame.py)
+    CONTENT_BORDER_CSS, NAVBAR_CSS_COMPACT, NAVBAR_CSS_NORMAL, TABSTRIP_CSS_COMPACT,
+    TABSTRIP_CSS_NORMAL, WINDOWS_SCALES, apd, border, caption, chrome_height_device, dpi_of_scale, popup_client_top,
+    popup_toolbar, popup_ui,
+)
 
 _SEAL = active_seal()
 
@@ -75,57 +80,20 @@ TASKBAR_PX: int = 48
 
 # --- The browser chrome above the page, Firefox 159 -------------------------
 #
-# What the window client top to the content top is made of, and what decides
-# it. Read from the retail 159.0 browser/omni.ja (sha256 e079c395...a610; the
-# analysis is RetailCaptures analysis/window-geometry/chrome-density/README.md,
-# files and lines below are inside that omni.ja). Each term is CSS px at scale 1.
+# The window frame (resize border, caption, popup toolbar, the bar above a main
+# window's content) is computed from the integers of its sources in
+# window_frame.py, at any scale. Here: the density rule and the frame per scale.
 #
-# The height is a density attribute set by script, not a media query:
+# The bar's height is a density attribute set by script, not a media query:
 # browser.js gUIDensity switches the window to "compact" by itself while
 # browser.uidensity has no user value (a fresh profile has none).
 
-#: Tab strip: --tab-min-height (tabs.css L9, L16) + 2 x --tab-margin-block
-#: (tab.tokens.css L145, tabs.css L80-86); #tabbrowser-tabs min-height
-#: (tabs.css L50, L189). Normal 32 + 2 x 6, compact 28 + 2 x 4.
-TABSTRIP_CSS_NORMAL: int = 32 + 2 * 6
-TABSTRIP_CSS_COMPACT: int = 28 + 2 * 4
-
-#: Nav bar: --urlbar-height (urlbar/variables.css L14, L31) + 2 x
-#: --urlbar-padding-block of 4 (urlbar.tokens.css L26, urlbar.css L197).
-#: Normal 32 + 2 x 4, compact 28 + 2 x 4.
-NAVBAR_CSS_NORMAL: int = 32 + 2 * 4
-NAVBAR_CSS_COMPACT: int = 28 + 2 * 4
-
-#: .browserContainer border-block-start, --border-width (content-area.css L53,
-#: L70). Layout snaps it down to whole device pixels, at least one.
-CONTENT_BORDER_CSS: int = 1
-
 #: AUTO_COMPACT_REFERENCE_TABSTRIP_HEIGHT (browser.js gUIDensity).
 AUTO_COMPACT_REFERENCE_TABSTRIP_CSS: int = 36
-#: browser.compactmode.auto.threshold, default "0.05" (firefox.js).
+#: browser.compactmode.auto.threshold, default "0.05" (firefox.js). The window is
+#: compact when 36 / H > 0.05, i.e. H < 36 / 0.05 = 720 CSS px; H = 720 is normal
+#: (36 / 720 is not greater than 0.05).
 AUTO_COMPACT_THRESHOLD: float = 0.05
-#: The window is compact when 36 / H > 0.05, i.e. H < 36 / 0.05 = 720 CSS px;
-#: H = 720 is normal (36 / 720 is not greater than 0.05).
-AUTO_COMPACT_BELOW_CSS: float = AUTO_COMPACT_REFERENCE_TABSTRIP_CSS / AUTO_COMPACT_THRESHOLD
-#: The same bound as the integer the engine reads; it must be exact, because the
-#: pref is an integer.
-AUTO_COMPACT_BELOW_CSS_INT: int = int(AUTO_COMPACT_BELOW_CSS)
-assert AUTO_COMPACT_BELOW_CSS_INT == AUTO_COMPACT_BELOW_CSS, "the compact bound is not an integer"
-
-#: Firefox's smallest main window, chrome inner size in CSS px (width, height).
-#: Measured live on retail 159.0 at scales 1 and 1.25, 500 wide at all four
-#: (GitHub runs oss-invisible/core 45657528859, 45672953042, 45679625406;
-#: RetailCaptures efb8d8f).
-MIN_INNER_CSS: tuple = (500, 120)
-
-#: Where a restored main window sits after Juggler's resize, device px on both
-#: axes. Measured live at scales 1, 1.25, 1.5 and 2 (same runs as MIN_INNER_CSS).
-RESTORED_POSITION: int = 4
-
-
-def _half_up(value: float) -> int:
-    """Round half up, as layout snaps a box edge to a device pixel."""
-    return int(value + 0.5)
 
 
 def ui_density(reference_height_css: float) -> str:
@@ -146,20 +114,6 @@ def density_reference_height(avail_height_css: float, chrome_inner_height_css: f
     return chrome_inner_height_css
 
 
-def chrome_height_device(scale: float, density: str) -> int:
-    """The chrome height above the content in device px, from the window
-    client top to the content top, the same for a maximized and a restored
-    window: tab strip and nav bar each snapped half up, plus the border."""
-    if density == "compact":
-        tabstrip, navbar = TABSTRIP_CSS_COMPACT, NAVBAR_CSS_COMPACT
-    elif density == "normal":
-        tabstrip, navbar = TABSTRIP_CSS_NORMAL, NAVBAR_CSS_NORMAL
-    else:
-        raise ValueError("density must be 'normal' or 'compact', not %r" % (density,))
-    border = max(1, int(CONTENT_BORDER_CSS * scale))
-    return _half_up(tabstrip * scale) + _half_up(navbar * scale) + border
-
-
 class WindowFrame(NamedTuple):
     """The window frame of Windows Firefox at one display scale, in DEVICE
     pixels."""
@@ -169,6 +123,9 @@ class WindowFrame(NamedTuple):
     border: int
     #: A popup: from the window top, border included, to the content top.
     popup_ui: int
+    #: A popup: from the window top, border included, to the top of its client
+    #: area, in device px.
+    popup_client_top: int
     #: Where a popup opened without left/top is put, on both axes.
     popup_position: int
     #: Chrome height above the content with the normal density, maximized or
@@ -178,46 +135,51 @@ class WindowFrame(NamedTuple):
     ui_normal: int
     #: Chrome height above the content with the compact density.
     ui_compact: int
-    #: Where a restored main window sits, on both axes (RESTORED_POSITION).
-    restored_position: int
 
 
-def _frame(border: int, popup_ui: int, scale: float) -> WindowFrame:
+#: Where a popup opened without left/top is put, device px on both axes: the
+#: screenX="4" screenY="4" of browser.xhtml L17, applied by LoadPositionFromXUL
+#: (popup-frame README, Q2). The engine reads it as a pref; it is not a function
+#: of the scale.
+POPUP_POSITION: int = 4
+
+
+def _frame(scale: float) -> WindowFrame:
+    dpi = dpi_of_scale(scale)
     return WindowFrame(
-        border=border, popup_ui=popup_ui, popup_position=4,
+        border=border(dpi), popup_ui=popup_ui(scale), popup_client_top=popup_client_top(dpi),
+        popup_position=POPUP_POSITION,
         ui_normal=chrome_height_device(scale, "normal"),
-        ui_compact=chrome_height_device(scale, "compact"),
-        restored_position=RESTORED_POSITION)
+        ui_compact=chrome_height_device(scale, "compact"))
 
 
-#: The window frame per display scale. The resize border and the popup frame
-#: were measured on retail Firefox on Windows 11, lending the display scale (the
-#: workbench's scripts/window_geometry/scales.py): a page reads screenX,
-#: outerWidth - availWidth and mozInnerScreenY in one line each. The border is
-#: the same for a restored and a maximized window, confirmed live at all four
-#: scales (8/9/11/13). In device pixels the four rows are one rule; every CSS
-#: value is the device value divided by the scale with Gecko's rounding, done
-#: by the engine.
-#:
-#: The keys are the DOMAIN: the four scales the screen table gives personas
-#: (cpt_screen_given_class_tier.json). A scale outside it has no measured frame
-#: and is refused, never interpolated (engine rule 2).
-#:
-#: ui_normal / ui_compact are computed (chrome_height_device), not typed: 85 /
-#: 73, 106 / 91, 127 / 109, 170 / 146, the first seven measured live on
-#: Firefox 159.0 (the runs listed at MIN_INNER_CSS), 170 the model's value.
+#: The display scales the persona pool SAMPLES today
+#: (cpt_screen_given_class_tier.json): a subset of what is accepted, kept until a
+#: sourced frequency exists for the other scales of WINDOWS_SCALES. It limits
+#: what is drawn, never what is accepted.
+FRAME_SCALES: tuple = (1.0, 1.25, 1.5, 2.0)
+
+#: The window frame per display scale, BUILT from the functions of
+#: window_frame.py (border from the Windows non-client metrics at the scale's
+#: dpi, popup frame and main-window bar from the CSS and Gecko's snapping): no
+#: value is typed. The keys are the DOMAIN: the twelve scales Windows offers
+#: (window_frame.WINDOWS_SCALES, from the binaries of the Settings app). A scale
+#: outside it has no frame and is refused, never interpolated (engine rule 2). Retail Firefox 159.0 on Windows 11 measures, in device px at
+#: scales 1 / 1.25 / 1.5 / 2, border 8 / 9 / 11 / 13, popup client top 31 / 38 /
+#: 45 / 58, popup_ui 72 / 89 / 106 / 140 and a bar of 85 / 106 / 127 / (170)
+#: normal and 73 / 91 / 109 / 146 compact (RetailCaptures
+#: captures/WINDOW_GEOMETRY_*.csv; tests/test_window_frame_formulas.py); they
+#: are the tests of the formulas. 170 (scale 2, normal) is not measured: the
+#: GitHub Windows runner offers no 200% screen with availHeight >= 720 CSS
+#: (capture round 7, run 46061552952).
 #:
 #: ⛔ It replaces CHROME_W = 0 and CHROME_H = 85 with window_x = window_y = 0,
 #: from a 2026-08-09 measurement of a window that was not a maximized Windows
 #: Firefox (a 768-pixel-tall screen, no resize border): it described a window
 #: at the screen origin with no side border, which Windows never draws
 #: maximized, and every popup answered the same numbers.
-WINDOW_FRAME_BY_DPR: dict = {
-    1.0: _frame(8, 72, 1.0),
-    1.25: _frame(9, 90, 1.25),
-    1.5: _frame(11, 106, 1.5),
-    2.0: _frame(13, 139, 2.0),
-}
+WINDOW_FRAME_BY_DPR: dict = {scale: _frame(scale) for scale in WINDOWS_SCALES}
+
 
 def declared_maximized_ui(frame: WindowFrame, avail_height_css: float) -> int:
     """The chrome height of a maximized window, in device px, to declare: the
