@@ -292,7 +292,7 @@ def test_the_pages_load_the_one_script_and_the_main_page_has_the_two_buttons_the
     assert PAGE_HTML.count('<script src="/page.js"></script>') == 1 and PAGE_HTML.count("<script>") == 1, "the one inline script is the early one"
     assert SURFACE_HTML.count('<script src="/page.js"></script>') == 1
     assert 'id="fs"' in PAGE_HTML and 'id="open"' in PAGE_HTML and "position:fixed" in PAGE_HTML
-    assert "requestFullscreen()" in PAGE_JS and "window.open(window.__popupUrl, \"_blank\", window.__popupFeatures)" in PAGE_JS
+    assert "requestFullscreen()" in PAGE_JS and "window.open(window.__popupUrl, window.__popupName || \"_blank\", window.__popupFeatures)" in PAGE_JS
     assert PAGE_JS.count("pixelDepth: s.pixelDepth") == 1 and "pixelDepth: screen.pixelDepth" in PAGE_JS
 
 
@@ -422,6 +422,101 @@ def test_a_popup_without_its_page_is_not_possible():
     browser = Browser()
     browser.urls.pop("popup")
     assert browser.surface(("popup",), lambda: (browser.popup("width=500,height=400"),)) == {"popup": {"not_possible": "no popup page was served"}}
+
+
+class TwoPopups(Browser):
+    """popup_second's model: each REAL click on #open opens a window named by the last SET_POPUP (the next handle; the second one
+    sits 26 device px right and down of the first, as Windows staggers it); KEEP_POPUP keeps the current one; each window closes
+    on its own. `live_at_click` is what was open at each click, `set_calls` what each SET_POPUP was given."""
+
+    def __init__(self, second_opens=True, **kw):
+        super().__init__(**kw)
+        self.second_opens, self.live, self.current, self.kept, self.next_handle = second_opens, [], None, None, 2
+        self.live_at_click, self.set_calls = [], []
+
+    def offset(self, handle):
+        return 26 * [h for h, _ in self.live].index(handle)
+
+    def windows(self):
+        return [1] + [h for h, _ in self.live]
+
+    def native(self, hwnd):
+        if hwnd == 1:
+            return dict(NATIVE)
+        k = self.offset(hwnd)
+        return {"client_origin": [108 + k, 152 + k], "client_rect": [0, 0, 500, 400], "window_rect": [100 + k, 80 + k, 616 + k, 620 + k]}
+
+    def click(self, point):
+        self.clicks.append(tuple(point))
+        if tuple(point) == button_centre("open") and self.opens and (self.second_opens or not self.live):
+            self.live_at_click.append([name for _, name in self.live])
+            name = self.set_calls[-1][2] if self.set_calls else "_blank"
+            self.live.append((self.next_handle, name))
+            self.current, self.next_handle = self.next_handle, self.next_handle + 1
+        return {"asked": list(point), "cursor": list(point), "buttons_sent": [1, 1]}
+
+    def close(self, handle):
+        self.live = [(h, n) for h, n in self.live if h != handle]
+        self.log.append(("close", handle))
+
+    def content(self, script, args=None):
+        if script == surfaces.SET_POPUP:
+            self.set_calls.append(list(args))
+        if script == surfaces.POPUP_READY:
+            return any(h == self.current for h, _ in self.live)
+        if script == surfaces.POPUP_SIZE:
+            k = self.offset(self.current)
+            return [500, 400, 516, 540, 100 + k, 80 + k]
+        if script == surfaces.KEEP_POPUP:
+            self.kept = self.current
+            return True
+        if script == surfaces.POPUP_CLOSE:
+            self.close(self.current)
+            return True
+        if script == surfaces.KEPT_CLOSE:
+            self.close(self.kept)
+            return True
+        return super().content(script, args)
+
+
+def test_popup_second_opens_p1_then_p2_by_two_real_clicks_with_no_left_or_top_keeps_p1_open_and_closes_both():
+    browser = TwoPopups()
+    step = browser.surface(("popup_second",), lambda: (browser.popup_second(),))["popup_second"]
+    assert browser.clicks == [button_centre("open"), button_centre("open")], "two REAL clicks on #open"
+    assert browser.set_calls == [[URLS["popup"], "width=500,height=400", "p1"], [URLS["popup"], "width=500,height=400", "p2"]]
+    assert browser.live_at_click == [[], ["p1"]], "p1 is open when p2 is asked for"
+    assert browser.live == [] and ("close", 3) in browser.log and ("close", 2) in browser.log
+    assert browser.log.index(("close", 3)) < browser.log.index(("close", 2)), "p2 (the current popup) first, then the kept p1"
+    assert step["features"] == "width=500,height=400" and "left" not in step["features"] and "top" not in step["features"]
+    assert step["name"] == "p2" and step["windows_opened"] == 1 and step["closed"] is True and step["settled"] is True
+
+
+def test_the_second_popup_records_what_popup_records_and_the_first_its_screen_position_and_window_rect():
+    browser = TwoPopups()
+    step = browser.popup_second()
+    assert step["first"]["name"] == "p1" and step["first"]["windows_opened"] == 1
+    assert (step["first"]["screenX"], step["first"]["screenY"]) == (100, 80)
+    assert step["first"]["native"]["window_rect"] == [100, 80, 616, 620], "p1's own window rect, read before p2 opened"
+    assert step["native"]["window_rect"] == [126, 106, 642, 646], "p2 at the offset the stagger gives (26, 26) in this model"
+    assert step["native"]["client_origin"] == [134, 178]
+    assert step["content"]["innerWidth"] == 500 and step["content"]["probe"]["screen"]["pixelDepth"] == 24
+    assert step["content"]["early"] == POPUP_EARLY
+    assert [m["asked"] for m in step["input"]] == [list(p) for p in surfaces.client_points(step["native"])]
+    assert ("foreground", 3) in browser.log and browser.log.index("popup_reset") < browser.log.index(("close", 3))
+
+
+def test_a_first_popup_that_does_not_open_is_not_possible_with_that_reason_and_nothing_is_left_open():
+    browser = TwoPopups(opens=False)
+    steps = browser.surface(("popup_second",), lambda: (browser.popup_second(),))
+    assert steps == {"popup_second": {"not_possible": "no first popup window opened after a real click on the button"}}
+    assert browser.live == [] and browser.clicks == [button_centre("open")]
+
+
+def test_a_second_popup_that_does_not_open_is_not_possible_and_the_first_is_closed_too():
+    browser = TwoPopups(second_opens=False)
+    steps = browser.surface(("popup_second",), lambda: (browser.popup_second(),))
+    assert steps == {"popup_second": {"not_possible": "no second popup window opened after a real click on the button"}}
+    assert browser.live == [] and ("close", 2) in browser.log, "the cleanup closes the first popup too"
 
 
 # ---------------------------------------------------------------------------- iframes

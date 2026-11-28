@@ -4,11 +4,11 @@
 
 Red when:
   * a scale of the request has no run, a run has an error or leaves a process of the install folder alive, a run lacks
-    a step of its launch (a, b, p, q: maximized; m: maximized; and, in the two launches that are compared, the eight steps
-    of plan.ROUND5_STEPS: fullscreen, F11-style fullscreen, iframes, popups). A step of round 5 that is
+    a step of its launch (a, b, p, q: maximized; m: maximized; and, in the two launches that are compared, the steps of
+    plan.ROUND5_STEPS: fullscreen, F11-style fullscreen, iframes, popups; popup_second is printed, not judged). A step of round 5 that is
     `{"not_possible": <reason>}` is complete when it has a non-empty reason, which is printed;
   * launch a differs from launch b (launch p from q) at a resolution that has both, on any number of those steps (the diff is
-    printed). What a page or a frame read in its first moments (`early`: the frames of round 7, the maximized window's page and
+    printed; the steps of plan.PRINTED_STEPS, `popup_second`, are compared and printed but not judged on their values). What a page or a frame read in its first moments (`early`: the frames of round 7, the maximized window's page and
     the popups' pages of round 8) is not part of it: it is printed per moment next to the settled reading and the window's client
     origin, and the differences between launch a and launch b (the timing `now` left out) are printed, never red;
   * at every scale reached live (display mode), at every resolution, the MAXIMIZED step is not exactly what the core declares
@@ -105,7 +105,7 @@ def required_steps(run: Dict[str, Any], compared: bool = False) -> Tuple[str, ..
     b, p with q) takes the round 5 steps too."""
     if run["launch"] == "m":
         return plan.MAXIMIZED_ONLY
-    return STEPS + EXTRA if compared else STEPS
+    return STEPS + plan.round5_of(run["mode"]) if compared else STEPS
 
 
 def compared_runs(runs: Iterable[Dict[str, Any]]) -> set:
@@ -239,6 +239,31 @@ def popup_lines(step_name: str, step: Dict[str, Any], dpr: float, frame: Any = N
             f"windows opened {step.get('windows_opened')} closed {step.get('closed')} settled {step.get('settled')}"]
 
 
+def second_popup_lines(step_name: str, step: Dict[str, Any], dpr: float) -> List[str]:
+    """popup_second: the first popup (p1, kept open) beside the second (p2): screenX/Y and window rect of each, and where Windows put
+    p2 against p1 in device px (the stagger Firefox applies is round(22 * scale) when they are within round(4 * scale)). Printed only."""
+    first = step.get("first")
+    if not isinstance(first, dict):
+        return [f"    {step_name} first popup: none recorded"]
+    p1_rect, p2_rect = (first.get("native") or {}).get("window_rect"), (step.get("native") or {}).get("window_rect")
+    offset = [p2_rect[0] - p1_rect[0], p2_rect[1] - p1_rect[1]] if p1_rect and p2_rect else None
+    return [f"    {step_name} first popup {first.get('name')} (window.open features {first.get('features')!r}): screenX/Y "
+            f"{[first.get('screenX'), first.get('screenY')]} native window rect {p1_rect} ; second window rect {p2_rect} "
+            f"offset of the second from the first, device px {offset} (scale {dpr:g}: stagger {round(22 * dpr)} within {round(4 * dpr)})"]
+
+
+def printed_differences(first: Dict[str, Any], other: Dict[str, Any]) -> List[Tuple[str, Any, Any]]:
+    """The differences between two launches in the steps of plan.PRINTED_STEPS (popup_second), what the page read in its first moments
+    left out: printed, never red."""
+    def only_printed(run: Dict[str, Any]) -> Dict[str, Any]:
+        steps = copy.deepcopy({n: run["steps"][n] for n in plan.PRINTED_STEPS if n in run["steps"]})
+        for step in steps.values():
+            if isinstance(step, dict) and isinstance(step.get("content"), dict):
+                step["content"].pop("early", None)
+        return steps
+    return differences(only_printed(first), only_printed(other))
+
+
 def frames_lines(step_name: str, step: Dict[str, Any]) -> List[str]:
     """The records of the iframes of an `iframes_*` step: each frame's own view, and the probe it read."""
     lines = []
@@ -260,7 +285,7 @@ def frames_lines(step_name: str, step: Dict[str, Any]) -> List[str]:
 EARLY_MOMENTS = ("parse", "dcl", "raf1", "raf2", "load")
 EARLY_STEPS = ("iframes_max",)
 #: The steps whose own page records `content.early`: the maximized window's page, and the page of each popup.
-PAGE_EARLY_STEPS = ("maximized", "popup", "popup_pos")
+PAGE_EARLY_STEPS = ("maximized", "popup", "popup_second", "popup_pos")
 
 
 def moment_lines(label: str, early: Any, settled: str) -> List[str]:
@@ -379,6 +404,8 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
                 continue
             if "chrome" not in step:  # a popup: its own page and its own window, no chrome record of the main window
                 lines.extend(popup_lines(step_name, step, dpr, table.get(dpr)))
+                if step_name == "popup_second":
+                    lines.extend(second_popup_lines(step_name, step, dpr))
                 lines.extend(page_early_lines(step_name, step, dpr))
                 continue
             lines.extend(standard_lines(step_name, step, dpr))
@@ -413,6 +440,10 @@ def evaluate(runs: List[Dict[str, Any]], expected_dprs: Iterable[float], table: 
                     lines.append(f"    {path}: {va!r} vs {vb!r}")
                 if diff:
                     problems.append(f"dpr {dpr:g}: launch {first['launch']} and {other['launch']} differ on {len(diff)} number(s)")
+                printed = printed_differences(first, other)
+                lines.append(f"dpr {dpr:g} launch {first['launch']} vs {other['launch']}: {len(printed)} difference(s) in the steps "
+                             f"{list(plan.PRINTED_STEPS)} (printed, not judged)")
+                lines.extend(f"    {path}: {va!r} vs {vb!r}" for path, va, vb in printed)
                 early = early_differences(first, other)
                 lines.append(f"dpr {dpr:g} launch {first['launch']} vs {other['launch']}: {len(early)} difference(s) in what the pages and "
                              "the frames read in their first moments (printed, not judged)")

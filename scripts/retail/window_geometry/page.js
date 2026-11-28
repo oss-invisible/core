@@ -77,7 +77,7 @@ window.__state = () => JSON.stringify({
 
 // A real click on #fs enters element fullscreen and a real click on #open opens the popup: Marionette cannot give a page the
 // user activation either needs, so the capture clicks them with SendInput. The popup is opened with the url and the features the
-// capture stored in window.__popupUrl and window.__popupFeatures.
+// capture stored in window.__popupUrl, window.__popupFeatures and window.__popupName (the window's target name).
 window.__fsError = null;
 window.__popup = null;
 addEventListener("DOMContentLoaded", () => {
@@ -86,7 +86,7 @@ addEventListener("DOMContentLoaded", () => {
     document.documentElement.requestFullscreen().catch((e) => { window.__fsError = String(e); });
   });
   if (open) open.addEventListener("click", () => {
-    window.__popup = window.open(window.__popupUrl, "_blank", window.__popupFeatures);
+    window.__popup = window.open(window.__popupUrl, window.__popupName || "_blank", window.__popupFeatures);
   });
 });
 

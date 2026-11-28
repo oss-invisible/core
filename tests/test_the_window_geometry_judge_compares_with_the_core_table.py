@@ -8,8 +8,8 @@ what the core declares (frame_table.py reads the checked-out constants.py with t
     the bar of a maximized window is judged at the measured availHeight (1.5 at 672 CSS: 109 green, 127 red);
   * launch a different from launch b on one number of any of the nine steps (the maximized step and plan.ROUND5_STEPS): red,
     with the number printed;
-  * the two launches that are compared (a and b; p and q) need the eight steps of plan.ROUND5_STEPS (fullscreen, F11-style
-    fullscreen, iframes, iframes under transforms, popups), compare equal on each, and print each; a step recorded as not
+  * the two launches that are compared (a and b; p and q) need the steps of plan.ROUND5_STEPS (fullscreen, F11-style
+    fullscreen, iframes, iframes under transforms, popups, popup_second), compare equal on each (popup_second only printed), and print each; a step recorded as not
     possible is complete only with a reason, which is printed; a missing step is red;
   * what a frame read in its first moments is printed per moment and never judged;
   * launch p must equal launch q (the derived path at a scale Windows did not reach);
@@ -69,7 +69,7 @@ def frame_state(dpr):
 
 
 def round5_steps(step, rect, ui, dpr):
-    """The eight steps of round 5 of a launch whose window is `rect` with `ui` device pixels of chrome."""
+    """The nine steps of round 5 of a launch whose window is `rect` with `ui` device pixels of chrome."""
     steps = {}
     for name in plan.ROUND5_STEPS:
         if name.startswith("popup"):
@@ -87,7 +87,7 @@ def round5_steps(step, rect, ui, dpr):
 
 
 def make_run(dpr, launch="a", resolution=(1920, 1080), mode="display", reached=True, table=TABLE, dppx=None, avail=None, ui=None):
-    """A run whose maximized step is what the core declares (the bar from the density rule at availHeight `avail` CSS, default the work area), and, in a launch of the plan that takes them, the eight steps of round 5."""
+    """A run whose maximized step is what the core declares (the bar from the density rule at availHeight `avail` CSS, default the work area), and, in a launch of the plan that takes them, the nine steps of round 5."""
     frame = table[dpr]
     border = frame.border
     avail = (WORK[3] - WORK[1]) / dpr if avail is None else avail
@@ -403,10 +403,11 @@ def test_a_probe_missing_from_a_step_is_not_an_error_of_the_judge():
 # ---------------------------------------------------------------------------- round 5: fullscreen, popups, iframes
 
 
-def test_the_eight_steps_of_round_5_are_named_in_the_order_they_run_and_compared_with_the_maximized_step():
+def test_the_nine_steps_of_round_5_are_named_in_the_order_they_run_and_compared_with_the_maximized_step():
     assert plan.ROUND5_STEPS == ("fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out", "iframes_max",
-                                 "iframes_transformed", "popup", "popup_pos")
-    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS and len(set(plan.COMPARED_STEPS)) == 9
+                                 "iframes_transformed", "popup", "popup_second", "popup_pos")
+    assert plan.COMPARED_STEPS == plan.CORE_STEPS + tuple(s for s in plan.ROUND5_STEPS if s != "popup_second")
+    assert len(set(plan.COMPARED_STEPS)) == 9
     a, b = two_launches(1.0)
     assert set(a["steps"]) >= set(plan.COMPARED_STEPS)
 
@@ -748,3 +749,44 @@ def test_the_early_reads_are_taken_out_of_every_judged_step_and_kept_only_when_a
     assert all("early" not in step["content"] for step in judge.core_steps_of(run).values() if "content" in step)
     assert all("early" in judge.core_steps_of(run, with_early=True)[name]["content"] for name in ("maximized", "popup", "popup_pos"))
     assert "early" in run["steps"]["maximized"]["content"], "the run itself is not changed"
+
+
+# ---------------------------------------------------------------------------- round 8: popup_second, printed and compared, not judged
+
+
+def test_popup_second_is_compared_a_with_b_and_printed_but_a_difference_in_its_values_is_not_red():
+    a, b = two_launches(1.0)
+    b["steps"]["popup_second"]["native"]["window_rect"][0] += 26
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    assert any("dpr 1 launch a vs b: 1 difference(s) in the steps ['popup_second'] (printed, not judged)" in line for line in result["lines"])
+    assert any(line.startswith("    popup_second.native.window_rect[0]: 100 vs 126") for line in result["lines"])
+    assert any("dpr 1 launch a vs b: 0 difference(s)" in line for line in result["lines"]), "the judged comparison has none"
+
+
+def test_the_first_popup_and_the_offset_of_the_second_from_it_are_printed_in_device_px_and_not_judged():
+    a, b = two_launches(1.0)
+    for run in (a, b):
+        run["steps"]["popup_second"]["first"] = {"name": "p1", "features": "width=500,height=400", "screenX": 100, "screenY": 80,
+                                                 "native": {"window_rect": [100, 80, 616, 620]}, "windows_opened": 1, "settled": True}
+        run["steps"]["popup_second"]["native"]["window_rect"] = [126, 106, 642, 646]
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    line = next(line for line in result["lines"] if line.startswith("    popup_second first popup p1"))
+    assert "screenX/Y [100, 80]" in line and "offset of the second from the first, device px [26, 26]" in line
+    assert "(scale 1: stagger 22 within 4)" in line
+
+
+def test_the_first_moments_of_the_second_popup_are_printed_like_the_popup_s_and_are_not_judged():
+    a, b = two_launches(1.0)
+    with_page_early(a, steps=("popup_second",))
+    with_page_early(b, steps=("popup_second",), now=4.0)
+    result = evaluate([a, b])
+    assert not result["red"], result["problems"]
+    assert any(line.startswith("    popup_second early parse: ") for line in result["lines"])
+
+
+def test_popup_second_is_taken_by_the_display_pair_and_not_by_the_derived_pair():
+    assert "popup_second" in judge.required_steps({"launch": "a", "mode": "display"}, True)
+    assert "popup_second" not in judge.required_steps({"launch": "p", "mode": "devPixelsPerPx"}, True)
+

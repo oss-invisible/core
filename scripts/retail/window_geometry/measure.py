@@ -19,7 +19,8 @@ requestFullscreen; Marionette cannot give the user activation) and left by docum
 same-origin and a cross-site iframe, each recording its own content record after real mouse moves over it (`iframes_max`), the same
 two origins as four iframes under CSS transforms (a container with scale(1.5), one with rotate(10deg), each holding a 300x120 frame,
 one at a time; every mouse event a frame saw at three points of its transformed area is kept: `iframes_transformed`), and two popups
-opened by a real click on #open, the second with left and top (`popup`, `popup_pos`; the popup page records its content
+opened by a real click on #open, the second with left and top (`popup`, `popup_pos`), and between them two popups at once, the
+first kept open while the second opens (`popup_second`: the second popup's record, and the first's screenX/Y and rect; the popup page records its content
 record, its first moments (`content.early`) and Windows' rects of its window are kept; it is closed). A step this browser did not allow is
 `{"not_possible": reason}`.
 Writes OUT/raw.json. The result is valid only when no process of the install folder is left.
@@ -472,6 +473,69 @@ class Session:
         step["closed"] = closed
         return step
 
+    def popup_second(self) -> Dict[str, Any]:
+        """Two popups from the main page, the second while the first stays open. A REAL click on #open opens p1 (window.open with
+        the target name p1 and width and height, no left or top); p1's screenX/Y and its window's rect are read and it stays open;
+        a second REAL click on #open opens p2 the same way. p2 records what `popup` records (its content record after real mouse
+        moves over it, its window's rects, what it read in its first moments). Where Windows puts p2 against p1 is what is recorded,
+        not assumed: Firefox staggers a new window when another window is within round(4 * scale) device px of its position. Both
+        are closed."""
+        if "popup" not in self.urls:
+            raise surfaces.StepNotPossible("no popup page was served")
+        before = set(self.windows())
+        names = surfaces.SECOND_POPUP_NAMES
+        chrome = self.chrome(CHROME_STATE)
+        hwnd = self.hwnd()
+        main_native = self.native(hwnd)
+        point = surfaces.region_points(chrome, main_native, self.content(surfaces.ELEMENT_RECT, ["open"]),
+                                       surfaces.CLICK_FRACTION)[0]
+        try:
+            self.content(surfaces.SET_POPUP, [self.urls["popup"], surfaces.SECOND_POPUP_FEATURES, names[0]])
+            self.foreground(hwnd)
+            first_click = self.click(point)
+            opened, _ = wait_stable(lambda: self.new_windows(before), ready=bool, hold=0.5, timeout=surfaces.POPUP_TIMEOUT)
+            if not opened:
+                raise surfaces.StepNotPossible("no first popup window opened after a real click on the button")
+            loaded, _ = wait_stable(lambda: self.content(surfaces.POPUP_READY), ready=bool, hold=0, timeout=surfaces.POPUP_TIMEOUT)
+            if not loaded:
+                raise surfaces.StepNotPossible("the first popup window opened but its page did not load")
+            first_size, first_settled = wait_stable(lambda: self.content(surfaces.POPUP_SIZE))
+            first_screen = first_size[4:6]
+            first = {"name": names[0], "features": surfaces.SECOND_POPUP_FEATURES, "click": first_click, "settled": first_settled,
+                     "windows_opened": len(opened), "screenX": first_screen[0], "screenY": first_screen[1],
+                     "native": self.native(opened[0])}
+            self.content(surfaces.KEEP_POPUP)
+            self.content(surfaces.SET_POPUP, [self.urls["popup"], surfaces.SECOND_POPUP_FEATURES, names[1]])
+            self.foreground(hwnd)
+            second_click = self.click(point)
+            both, _ = wait_stable(lambda: self.new_windows(before), ready=lambda v: len(v) >= 2, hold=0.5,
+                                  timeout=surfaces.POPUP_TIMEOUT)
+            fresh = [h for h in both if h not in opened]
+            if len(fresh) != 1:
+                raise surfaces.StepNotPossible("no second popup window opened after a real click on the button")
+            loaded, _ = wait_stable(lambda: self.content(surfaces.POPUP_READY), ready=bool, hold=0, timeout=surfaces.POPUP_TIMEOUT)
+            if not loaded:
+                raise surfaces.StepNotPossible("the second popup window opened but its page did not load")
+            _, settled = wait_stable(lambda: self.content(surfaces.POPUP_SIZE))
+            native = self.native(fresh[0])
+            self.foreground(fresh[0])
+            self.content(surfaces.POPUP_RESET)
+            moves = self.move(surfaces.client_points(native)) if "client_rect" in native else []
+            time.sleep(0.3)
+            content = json.loads(self.content(surfaces.POPUP_STATE))
+            content["early"] = json.loads(self.content(surfaces.POPUP_EARLY))
+            step = {"features": surfaces.SECOND_POPUP_FEATURES, "name": names[1], "first": first, "windows_opened": len(fresh),
+                    "native": native, "input": moves, "settled": settled, "click": second_click, "content": content}
+        finally:
+            for script in (surfaces.POPUP_CLOSE, surfaces.KEPT_CLOSE):
+                try:
+                    self.content(script)
+                except Exception:  # noqa: BLE001 - cleanup only; the closed reading below says what is left
+                    pass
+        _, closed = wait_stable(lambda: self.new_windows(before), ready=lambda v: not v, hold=0.3, timeout=surfaces.POPUP_TIMEOUT)
+        step["closed"] = closed
+        return step
+
     def iframes(self) -> Dict[str, Any]:
         """The main page with a same-origin and a cross-site iframe (both local): each frame records its full content record
         (inner, outer, screenX/Y, mozInnerScreen, devicePixelRatio, probe, the mouse events) after real mouse moves over it, and what the
@@ -610,6 +674,8 @@ def measure(install_dir: Path, dpr: float, launch: str, resolution: Sequence[int
             for name, features in surfaces.POPUP_FEATURES:
                 if name in steps_wanted:
                     steps.update(session.surface((name,), lambda features=features: (session.popup(features),)))
+                if name == "popup" and "popup_second" in steps_wanted:
+                    steps.update(session.surface(("popup_second",), lambda: (session.popup_second(),)))
             client.delete_session()
         except Exception as exc:  # noqa: BLE001 - the record says what failed
             raw["error"] = f"{type(exc).__name__}: {exc}"

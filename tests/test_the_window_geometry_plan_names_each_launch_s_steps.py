@@ -37,11 +37,12 @@ def test_each_launch_takes_the_steps_of_the_plan(launch, first, expected):
     assert plan.steps_for(launch, ["a", "b", "c"], first) == expected
 
 
-def test_the_steps_of_the_plan_are_the_maximized_one_and_the_eight_of_round_5_and_no_restored_window_step():
+def test_the_steps_of_the_plan_are_the_maximized_one_and_the_nine_of_round_5_and_no_restored_window_step():
     assert plan.CORE_STEPS == ("maximized",) and plan.MAXIMIZED_ONLY == ("maximized",)
     assert plan.ROUND5_STEPS == ("fullscreen_max_in", "fullscreen_max_out", "f11_max_in", "f11_max_out", "iframes_max",
-                                 "iframes_transformed", "popup", "popup_pos")
-    assert plan.COMPARED_STEPS == plan.CORE_STEPS + plan.ROUND5_STEPS and len(set(plan.COMPARED_STEPS)) == 9
+                                 "iframes_transformed", "popup", "popup_second", "popup_pos")
+    assert plan.COMPARED_STEPS == plan.CORE_STEPS + tuple(s for s in plan.ROUND5_STEPS if s != "popup_second")
+    assert len(set(plan.COMPARED_STEPS)) == 9
     assert plan.RESERVED_LAUNCHES == ("p", "q", "m") and plan.DEVPX_VALUES == (0.75, 0.5)
     assert plan.derived_steps(True) == list(plan.CORE_STEPS), "p beside a display pair is not compared"
     assert plan.derived_steps(False) == list(plan.COMPARED_STEPS), "p and q are the pair when no display launch could be made"
@@ -142,7 +143,7 @@ def test_the_other_scales_do_not_run_the_devpixelsperpx_m_launches(monkeypatch, 
     fakes = Fakes(monkeypatch, tmp_path)
     run_scale.run(tmp_path, {}, REQUEST, 1.5, tmp_path)
     assert not [c for c in fakes.calls if c["mode"] == "devPixelsPerPx" and c["launch"] == "m"]
-    assert {tuple(c["steps"]) for c in fakes.calls if c["launch"] in ("a", "b")} == {plan.COMPARED_STEPS}, "the same pair at every scale"
+    assert {tuple(c["steps"]) for c in fakes.calls if c["launch"] in ("a", "b")} == {plan.CORE_STEPS + plan.ROUND5_STEPS}, "the same pair at every scale"
     assert [c["steps"] for c in fakes.calls if c["launch"] == "p"] == [list(plan.CORE_STEPS)]
 
 
@@ -192,6 +193,15 @@ def test_no_launch_of_any_scale_takes_a_restored_window_step(monkeypatch, tmp_pa
     for dpr in (1.0, 1.25, 1.5, 2.0):
         run_scale.run(tmp_path, {}, REQUEST, dpr, tmp_path)
     taken = {name for call in fakes.calls for name in call["steps"]}
-    assert taken == set(plan.COMPARED_STEPS), sorted(taken ^ set(plan.COMPARED_STEPS))
+    assert taken == set(plan.CORE_STEPS + plan.ROUND5_STEPS), sorted(taken ^ set(plan.CORE_STEPS + plan.ROUND5_STEPS))
     assert "n" not in {call["launch"] for call in fakes.calls}
     assert not list(tmp_path.glob("dpr*/*/*/hostgate-*"))
+
+
+def test_popup_second_runs_right_after_popup_in_launches_a_and_b_and_is_printed_and_not_judged():
+    assert plan.ROUND5_STEPS[plan.ROUND5_STEPS.index("popup") + 1] == "popup_second"
+    assert plan.PRINTED_STEPS == ("popup_second",) and "popup_second" not in plan.COMPARED_STEPS
+    assert plan.round5_of("display") == plan.ROUND5_STEPS
+    assert plan.round5_of("devPixelsPerPx") == tuple(s for s in plan.ROUND5_STEPS if s != "popup_second")
+    assert plan.steps_for("a", ["a", "b"], True)[-2:] == ["popup_second", "popup_pos"]
+

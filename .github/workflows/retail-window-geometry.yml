@@ -16,12 +16,12 @@ name: retail-window-geometry
 #
 # What a job measures (plan.py), per scale: the maximized step at every resolution Windows offers (launch m) and, at scale 1, at
 # devPixelsPerPx 0.75 and 0.5; at a scale Windows does not reach (2) only the devPixelsPerPx launches p and q. Round 5 adds to
-# launches a and b (p and q at a scale Windows does not reach) eight steps (plan.ROUND5_STEPS): on the maximized window element
+# launches a and b (p and q at a scale Windows does not reach) nine steps (plan.ROUND5_STEPS): on the maximized window element
 # fullscreen entered by a real click (SendInput on a button whose handler calls requestFullscreen: Marionette cannot give the user
 # activation) and left by exitFullscreen, F11-style fullscreen (window.fullScreen), a same-origin and a cross-site iframe (both
 # local), the same two origins under scale(1.5) and rotate(10deg) (iframes_transformed: four frames one at a time, every mouse
 # event each saw at three points of its transformed area, about 20 seconds per compared launch) and two popups opened by a real
-# click (width and height; and with left and top). Every step's content record carries the page's probe (screen.pixelDepth included).
+# click (width and height; and with left and top), and between them `popup_second` (round 8, see below). Every step's content record carries the page's probe (screen.pixelDepth included).
 # Round 7 adds no step to the launches that are compared. The frame page (surface.html) starts with an inline script that stores
 # what the frame reads at parse time, at DOMContentLoaded, at the first and second animation frame and at load (mozInnerScreenX/Y,
 # screenX/Y, outer and inner size, devicePixelRatio, performance.now), and the frame's record answer carries it as `early`
@@ -42,6 +42,12 @@ name: retail-window-geometry
 # as `content.early`, and so does each popup (its page is surface.html, which already had the script). The judge prints one line per
 # moment next to the settled reading and the window's client origin, and the differences of launch a and b in them with `now` left
 # out; none of it is judged.
+# Round 8 also adds `popup_second` (plan.PRINTED_STEPS), after `popup` in launches a and b: a real click on #open opens the first
+# popup p1 (window.open with the target name p1, width and height, no left or top), p1 stays open, and a second real click opens p2
+# the same way. p2 records what `popup` records (screenX/Y, outer, inner, mozInnerScreen, dpr, its window's rects, client origin, its
+# first moments); p1's screenX/Y and window rect are recorded beside it. Firefox staggers a new window by round(22 * scale) device px
+# when another window is within round(4 * scale) of its position, so p2 is expected at (26, 26) device px at scale 1; that is not
+# assumed, the offset is recorded. The judge prints it and compares launch a and b, never red on the values; a missing record is red.
 # The job has 30 minutes (it had 60) and run_scale.TIME_BUDGET_SECONDS is 20 minutes (it was 49): the jobs of round 7, with the
 # restored-window steps and the grid still in them, took 4 to 11 minutes, and the steps that remain are the shorter part of them.
 #

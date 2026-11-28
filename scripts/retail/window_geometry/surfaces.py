@@ -20,8 +20,11 @@ FRAME_FRACTIONS = ((0.25, 0.3), (0.5, 0.5), (0.75, 0.7))
 #: Where the real mouse goes over a popup's content: fractions of its CLIENT area, low enough to be under the popup's own bar.
 POPUP_FRACTIONS = ((0.25, 0.55), (0.5, 0.7), (0.75, 0.85))
 
-#: `window.open` features of the two popups, and the step each is recorded in.
+#: `window.open` features of the two popups, and the step each is recorded in (popup_second sits between them: see measure.py).
 POPUP_FEATURES = (("popup", "width=500,height=400"), ("popup_pos", "left=100,top=80,width=500,height=400"))
+#: The names of popup_second's two windows (window.open's target name) and the features of both: neither has left or top.
+SECOND_POPUP_NAMES = ("p1", "p2")
+SECOND_POPUP_FEATURES = "width=500,height=400"
 
 #: Names of the two iframes, in the order they are recorded, and why each is one.
 FRAME_NAMES = ("same", "cross")
@@ -63,7 +66,12 @@ _POPUP = _PAGE + "const p = w.__popup; "
 #: and the popup's (page.html and surface.html start with the same inline script, which stores window.__early); a JSON string.
 EARLY = _PAGE + "return JSON.stringify(w.__early || null);"
 #: Store what the click on #open opens (arguments: url, features).
-SET_POPUP = _PAGE + "w.__popupUrl = arguments[0]; w.__popupFeatures = arguments[1]; w.__popup = null; return true;"
+SET_POPUP = (_PAGE + "w.__popupUrl = arguments[0]; w.__popupFeatures = arguments[1]; w.__popupName = arguments[2] || '_blank'; "
+             "w.__popup = null; return true;")
+#: Keep the popup that is open (the first of popup_second) apart from the next click's popup, and read or close it.
+KEEP_POPUP = _PAGE + "w.__kept = w.__popup; return true;"
+KEPT_POSITION = _PAGE + "const k = w.__kept; return k && !k.closed ? [k.screenX, k.screenY] : null;"
+KEPT_CLOSE = _PAGE + "const k = w.__kept; try { if (k && !k.closed) k.close(); } catch (e) {} return true;"
 #: The popup is open, its page is loaded and has page.js's recorder.
 POPUP_READY = (_POPUP + "try { return !!(p && !p.closed && p.document && p.document.readyState === 'complete' && p.__m); } "
                "catch (e) { return false; }")

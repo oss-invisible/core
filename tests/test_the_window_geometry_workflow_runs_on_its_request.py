@@ -115,7 +115,7 @@ def test_the_every_resolution_launches_stop_with_the_minutes_the_setup_the_last_
 
 def test_the_header_says_what_round_5_added():
     header = TEXT.split("\non:")[0]
-    for needle in ("Round 5", "eight steps", "iframes_transformed", "real click", "F11-style fullscreen", "cross-site iframe"):
+    for needle in ("Round 5", "nine steps", "iframes_transformed", "real click", "F11-style fullscreen", "cross-site iframe", "popup_second"):
         assert needle in header, needle
 
 
