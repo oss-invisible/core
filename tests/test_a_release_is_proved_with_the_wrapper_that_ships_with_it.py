@@ -342,6 +342,7 @@ def _bash() -> str:
 def _run_step(script: str, cwd: Path, env: dict) -> subprocess.CompletedProcess:
     py = Path(sys.executable).as_posix()
     script = re.sub(r"\bpython (?=(\.\./)?scripts/)", f'"{py}" ', script)
+    script = re.sub(r'\bpython (?=("\$RUNNER_TEMP|-c ))', f'"{py}" ', script)   # the judge's own line
     full = {**os.environ, **env, "RUNNER_TEMP": (cwd / "_runner_temp").as_posix(), "GITHUB_ENV": (cwd / "_github_env").as_posix(),
             "GIT_CEILING_DIRECTORIES": cwd.parent.as_posix()}
     (cwd / "_runner_temp").mkdir(exist_ok=True)
@@ -451,25 +452,45 @@ def test_an_unknown_event_stays_red(tmp_path):
 
 # ----------------------------------------------------------------------------- the judge of the wrapper's unit suite
 
-def _judge_files(where: Path, who: str) -> None:
+# A stand-in for the wrapper's ci_verdict.py `judge`: it records what the step handed it (its arguments, and the folder of fragments next to the list
+# it was given) in $RUNNER_TEMP/judge-seen.json. The NEW one has the text of the option a judge of the fragments has (`--main-has-no-fragments`, added by
+# oss-invisible/playwright 29a93aae, branch ci/required-suites-fragments), which is all the step looks for; the OLD one is a judge with no fragments.
+_STUB_JUDGE = """import json, os, pathlib, sys
+argv = sys.argv[2:]
+folder = pathlib.Path(argv[argv.index("--main-required") + 1]).with_name("required-suites.d")
+seen = {"argv": argv, "files": sorted(p.name for p in folder.iterdir()) if folder.is_dir() else None,
+        "consumed": (folder / "consumed.json").read_text(encoding="utf-8") if (folder / "consumed.json").exists() else None}
+pathlib.Path(os.environ["RUNNER_TEMP"], "judge-seen.json").write_text(json.dumps(seen), encoding="utf-8")
+"""
+_NEW_JUDGE = "# judge of main, a judge with fragments: --main-has-no-fragments\n" + _STUB_JUDGE
+_OLD_JUDGE = "# judge of main, from before the fragments\n" + _STUB_JUDGE
+
+
+def _judge_files(where: Path, who: str, judge: str | None = None, folder: bool = False) -> None:
     (where / "scripts").mkdir(exist_ok=True)
     (where / "ci").mkdir(exist_ok=True)
-    (where / "scripts" / "ci_verdict.py").write_text(f"# judge of {who}\n", encoding="utf-8")
+    (where / "scripts" / "ci_verdict.py").write_text(judge or f"# judge of {who}\n", encoding="utf-8")
+    if folder:
+        (where / "ci" / "required-suites.d").mkdir(exist_ok=True)
+        (where / "ci" / "required-suites.d" / "consumed.json").write_text(f'{{"folder": "{who}"}}\n', encoding="utf-8")
+        (where / "ci" / "required-suites.d" / f"{who.replace(' ', '-')}.json").write_text('{"wrapper.unit.all.linux": 2}\n', encoding="utf-8")
     (where / "ci" / "required-suites.json").write_text(f'{{"list": "{who}"}}\n', encoding="utf-8")
     (where / "ci" / "retired-tests.json").write_text(f'{{"retired": "{who}"}}\n', encoding="utf-8")
 
 
-def _wrapper_with_origin(tmp_path: Path, version: str, released: list) -> Path:
+def _wrapper_with_origin(tmp_path: Path, version: str, released: list, judge: str | None = None, release_folder: bool = False,
+                         main_folder: bool = False) -> Path:
     """A wrapper checkout (one commit, as `actions/checkout` leaves it) whose origin has main and the tag v<previous>."""
     origin = tmp_path / "origin"
     origin.mkdir(parents=True)
     _git(origin, "init", "-q", "-b", "main")
-    _judge_files(origin, "the release")   # what every released tag holds
+    _judge_files(origin, "the release", judge, release_folder)   # what every released tag holds
     _git(origin, "add", "-A")
     _git(origin, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "release")
     for v in released:
         _git(origin, "tag", f"v{v}")
-    _judge_files(origin, "main")          # main, and the declared commit on it, have moved on
+    shutil.rmtree(origin / "ci" / "required-suites.d", ignore_errors=True)
+    _judge_files(origin, "main", judge, main_folder)   # main, and the declared commit on it, have moved on
     (origin / "pyproject.toml").write_text(f'[project]\nname = "invisible_playwright"\nversion = "{version}"\n', encoding="utf-8")
     (origin / "PUBLISHED.json").write_text(json.dumps(_published(released)), encoding="utf-8")
     _git(origin, "add", "-A")
@@ -539,6 +560,58 @@ def test_on_a_pull_request_and_a_push_the_judge_and_the_list_both_come_from_main
         read = _read_for_the_judge(tmp_path / str(n), EVENT=event, REF_TYPE="branch")
         assert read == {"ci_verdict.py": "# judge of main", "required-suites.json": '{"list": "main"}',
                         "retired-tests.json": '{"retired": "main"}'}, read
+
+
+def _run_the_judge_step(tmp_path: Path, judge: str, release_folder: bool, main_folder: bool, **env) -> tuple[dict, Path]:
+    """Both steps of the unit job, as written, with the judge replaced by a stand-in that records what it was given."""
+    wrapper = _wrapper_with_origin(tmp_path, "0.60.0", WRAPPER_RELEASED_AT_0_60_0, judge, release_folder, main_folder)
+    chooser = _step_running("wrapper-unit-on-this-core.yml", "wrapper-unit-on-this-core", "previous-release")["run"]
+    step = _step_running("wrapper-unit-on-this-core.yml", "wrapper-unit-on-this-core", 'ci_verdict.py" judge')["run"]
+    done = _run_step(chooser, wrapper, env)
+    assert done.returncode == 0, done.stderr
+    ref = (wrapper / "_github_env").read_text(encoding="utf-8").strip().split("=", 1)[1]
+    done = _run_step(step, wrapper, {**env, "JUDGE_REF": ref, "SUITE_OS": "linux"})
+    assert done.returncode == 0, done.stderr
+    return json.loads((wrapper / "_runner_temp" / "judge-seen.json").read_text(encoding="utf-8")), wrapper
+
+
+RELEASE_EVENT = {"EVENT": "push", "REF_TYPE": "tag"}
+PULL_REQUEST_EVENT = {"EVENT": "pull_request", "REF_TYPE": "branch"}
+
+
+@pytest.mark.parametrize("env, who", [(RELEASE_EVENT, "the-release"), (PULL_REQUEST_EVENT, "main")])
+def test_a_ref_that_has_the_folder_of_fragments_has_it_copied_next_to_the_list_and_no_flag_is_passed(tmp_path, env, who):
+    seen, wrapper = _run_the_judge_step(tmp_path, _NEW_JUDGE, release_folder=True, main_folder=True, **env)
+    assert seen["files"] == ["consumed.json", f"{who}.json"], seen   # the folder of THE REF the list was read from, whole
+    assert json.loads(seen["consumed"]) == {"folder": who.replace("-", " ")}
+    assert "--main-has-no-fragments" not in seen["argv"], seen
+    assert seen["argv"][seen["argv"].index("--main-required") + 1].endswith("main/required-suites.json")
+
+
+@pytest.mark.parametrize("env", [RELEASE_EVENT, PULL_REQUEST_EVENT])
+def test_a_ref_with_no_folder_and_a_judge_that_knows_the_flag_passes_it(tmp_path, env):
+    seen, _ = _run_the_judge_step(tmp_path, _NEW_JUDGE, release_folder=False, main_folder=False, **env)
+    assert seen["files"] is None and seen["argv"][-1] == "--main-has-no-fragments", seen
+
+
+@pytest.mark.parametrize("env", [RELEASE_EVENT, PULL_REQUEST_EVENT])
+def test_a_ref_with_no_folder_and_a_judge_from_before_the_fragments_passes_nothing(tmp_path, env):
+    seen, _ = _run_the_judge_step(tmp_path, _OLD_JUDGE, release_folder=False, main_folder=False, **env)
+    assert seen["files"] is None and "--main-has-no-fragments" not in seen["argv"], seen
+    assert seen["argv"][-1].endswith("main/required-suites.json"), seen
+
+
+def test_a_release_whose_tag_has_the_folder_while_main_has_not_reads_the_folder_of_the_tag(tmp_path):
+    """The folder follows the ref the list is read from, not main: a tag newer than the fragments hands its own."""
+    seen, _ = _run_the_judge_step(tmp_path, _NEW_JUDGE, release_folder=True, main_folder=False, **RELEASE_EVENT)
+    assert seen["files"] == ["consumed.json", "the-release.json"] and "--main-has-no-fragments" not in seen["argv"], seen
+
+
+def test_the_fragments_are_copied_by_a_step_that_is_red_when_the_archive_or_the_extract_fails():
+    run = _step_running("wrapper-unit-on-this-core.yml", "wrapper-unit-on-this-core", 'ci_verdict.py" judge')["run"]
+    assert 'git archive "$JUDGE_REF" ci/required-suites.d | tar -x' in run
+    assert "|| true" not in run and "|| :" not in run, "a failed archive or extract would read as `no folder`"
+    assert "set +e" not in run and "set +o pipefail" not in run
 
 
 def test_the_unit_judge_script_is_always_origin_main_and_the_list_ref_cannot_be_unset():

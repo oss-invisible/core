@@ -142,4 +142,15 @@ jobs:
           git show origin/main:scripts/ci_verdict.py > "$RUNNER_TEMP/main/ci_verdict.py"
           git show "$JUDGE_REF:ci/required-suites.json" > "$RUNNER_TEMP/main/required-suites.json"
           if git cat-file -e "$JUDGE_REF:ci/retired-tests.json"; then git show "$JUDGE_REF:ci/retired-tests.json" > "$RUNNER_TEMP/main/retired-tests.json"; fi
-          python "$RUNNER_TEMP/main/ci_verdict.py" judge --required ci/required-suites.json --suite "wrapper.unit.all.$SUITE_OS" --os "$SUITE_OS" --junit "$RUNNER_TEMP/unit-junit.xml" --binary "$(python -c 'import sys; print(sys.executable)')" --main-required "$RUNNER_TEMP/main/required-suites.json"
+          # The fragments of the floors (ci/required-suites.d) sit next to the list, and main's judge reads them there. The ref has the folder: it is
+          # copied (a failed archive or extract is red, never "no folder"). It has none (a release older than the fragments): main's judge is told
+          # so, when it knows the option; a judge that does not know fragments yet gets nothing, as before them.
+          FRAGMENTS=()
+          if git cat-file -e "$JUDGE_REF:ci/required-suites.d" 2> /dev/null; then
+            mkdir "$RUNNER_TEMP/fragments"
+            git archive "$JUDGE_REF" ci/required-suites.d | tar -x -C "$RUNNER_TEMP/fragments"
+            mv "$RUNNER_TEMP/fragments/ci/required-suites.d" "$RUNNER_TEMP/main/required-suites.d"
+          elif grep -q -- '--main-has-no-fragments' "$RUNNER_TEMP/main/ci_verdict.py"; then
+            FRAGMENTS=(--main-has-no-fragments)
+          fi
+          python "$RUNNER_TEMP/main/ci_verdict.py" judge --required ci/required-suites.json --suite "wrapper.unit.all.$SUITE_OS" --os "$SUITE_OS" --junit "$RUNNER_TEMP/unit-junit.xml" --binary "$(python -c 'import sys; print(sys.executable)')" --main-required "$RUNNER_TEMP/main/required-suites.json" "${FRAGMENTS[@]}"
