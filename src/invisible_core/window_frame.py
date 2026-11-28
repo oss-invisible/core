@@ -53,11 +53,24 @@ FRAME_EXTRA_PX: int = 3
 #: idx 0x1d, RVA 0x2098e1.
 PADDED_BORDER_MAX_PX: int = 100
 #: SM_CYCAPTION = SM_CYSIZE + 1, the literal +1 of idx 2, RVA 0x20977a. SM_CYSIZE
-#: is max(EngMulDiv(CaptionHeight, dpi, 96), captionFontHeight + 2), RVA 0x20988d;
-#: the font term cannot bind with the default 9 pt Segoe UI caption font at any
-#: dpi of 96 or more (metrics-dpi README, "Why the caption-font clamp does not
-#: bind"), so it is not computed.
+#: is max(EngMulDiv(CaptionHeight, dpi, 96), captionFontHeight(dpi) + 2), RVA
+#: 0x20988d (metrics-dpi README, claims 6 and 11).
 CAPTION_EXTRA_PX: int = 1
+#: The "+ 2" of the caption-font clamp, same RVA.
+CAPTION_FONT_EXTRA_PX: int = 2
+
+# The caption font: WindowMetrics CaptionFont default, Segoe UI 9 pt. Its pixel
+# height at a dpi is the GDI tmHeight (tmAscent + tmDescent) of that font at
+# lfHeight = -MulDiv(9, dpi, 72) (CreateFont's documented point-to-height rule).
+CAPTION_FONT_PT: int = 9
+#: Segoe UI metrics read as data from C:/Windows/Fonts/segoeui.ttf, "Version
+#: 5.72", sha256 704EADA12961A27FD271F7D3B09E2066520E758390C1776744EFF430FEE30F6E
+#: (head.unitsPerEm, OS/2.usWinAscent, OS/2.usWinDescent; RetailCaptures
+#: analysis/window-geometry/metrics-dpi/caption-font/). GDI takes tmAscent and
+#: tmDescent of a TrueType font from usWinAscent / usWinDescent.
+SEGOE_UI_UNITS_PER_EM: int = 2048
+SEGOE_UI_WIN_ASCENT: int = 2210
+SEGOE_UI_WIN_DESCENT: int = 514
 
 
 def muldiv(a: int, b: int, c: int) -> int:
@@ -81,9 +94,26 @@ def border(dpi: int) -> int:
     return frame + padded
 
 
+def caption_font_height(dpi: int) -> int:
+    """GDI tmHeight of the default caption font (Segoe UI 9 pt) at a dpi: the
+    ascent and the descent each scaled to the em in pixels, ppem =
+    MulDiv(9, dpi, 72), and rounded to nearest. The exact GDI rounding is not
+    disassembled (confidence: medium); it cannot change SM_CYCAPTION, because
+    the clamp term stays at least 3 px below MulDiv(22, dpi, 96) at every dpi
+    from 96 to 480 under any of nearest, ceiling or floor
+    (tests/test_window_frame_formulas.py)."""
+    ppem = muldiv(CAPTION_FONT_PT, dpi, 72)
+    ascent = muldiv(SEGOE_UI_WIN_ASCENT, ppem, SEGOE_UI_UNITS_PER_EM)
+    descent = muldiv(SEGOE_UI_WIN_DESCENT, ppem, SEGOE_UI_UNITS_PER_EM)
+    return ascent + descent
+
+
 def caption(dpi: int) -> int:
-    """SM_CYCAPTION(dpi): 23 / 29 / 34 / 45 at 96 / 120 / 144 / 192 dpi."""
-    return muldiv(CAPTION_HEIGHT_PX96, dpi, BASE_DPI) + CAPTION_EXTRA_PX
+    """SM_CYCAPTION(dpi) = max(MulDiv(22, dpi, 96), captionFontHeight(dpi) + 2)
+    + 1: 23 / 29 / 34 / 45 at 96 / 120 / 144 / 192 dpi."""
+    sm_cysize = max(muldiv(CAPTION_HEIGHT_PX96, dpi, BASE_DPI),
+                    caption_font_height(dpi) + CAPTION_FONT_EXTRA_PX)
+    return sm_cysize + CAPTION_EXTRA_PX
 
 
 def popup_client_top(dpi: int) -> int:

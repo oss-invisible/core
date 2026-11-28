@@ -200,3 +200,69 @@ def test_the_bar_is_the_retail_offset_of_the_browser_element_rounded_once(scale,
     retail = floor(Fraction(offset_au, au_per_dev) + Fraction(1, 2))
     assert chrome_height_device(scale, density) == retail, (
         "%s bar at %s: retail rounds %d AU / %d once to %d" % (density, scale, offset_au, au_per_dev, retail))
+
+
+# --- the caption-font term of SM_CYCAPTION -----------------------------------
+#
+# max(MulDiv(22, dpi, 96), captionFontHeight(dpi) + 2) + 1, with the font of the default
+# WindowMetrics CaptionFont (Segoe UI 9 pt). Font values read as data from segoeui.ttf
+# "Version 5.72", sha256 704EADA12961A27FD271F7D3B09E2066520E758390C1776744EFF430FEE30F6E:
+# unitsPerEm 2048, usWinAscent 2210, usWinDescent 514 (RetailCaptures
+# analysis/window-geometry/metrics-dpi/caption-font/). The exact GDI rounding is not
+# disassembled, so these tests show the margin: under nearest, ceiling and floor rounding
+# of ascent and descent the term never reaches MulDiv(22, dpi, 96).
+
+def _font_term(dpi, rounding):
+    ppem = (9 * dpi + 36) // 72
+    asc, desc = 2210 * ppem, 514 * ppem
+    if rounding == "ceil":
+        return -(-asc // 2048) + -(-desc // 2048)
+    if rounding == "floor":
+        return asc // 2048 + desc // 2048
+    return (2 * asc + 2048) // 4096 + (2 * desc + 2048) // 4096
+
+
+@pytest.mark.unit
+def test_the_caption_font_source_integers():
+    assert (wf.CAPTION_FONT_PT, wf.SEGOE_UI_UNITS_PER_EM, wf.SEGOE_UI_WIN_ASCENT,
+            wf.SEGOE_UI_WIN_DESCENT) == (9, 2048, 2210, 514)
+    assert wf.CAPTION_FONT_EXTRA_PX == 2 and wf.CAPTION_EXTRA_PX == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scale,expected", [(1.0, 16), (1.25, 20), (1.5, 24), (1.75, 28),
+                                            (2.0, 32), (2.25, 36), (2.5, 40), (3.0, 48)])
+def test_the_caption_font_height_at_the_scales(scale, expected):
+    assert wf.caption_font_height(wf.dpi_of_scale(scale)) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dpi", sorted(METRICS_BY_DPI))
+@pytest.mark.parametrize("rounding", ["nearest", "ceil", "floor"])
+def test_the_caption_font_term_stays_well_below_the_registry_caption(dpi, rounding):
+    base = wf.muldiv(wf.CAPTION_HEIGHT_PX96, dpi, 96)
+    margin = base - (_font_term(dpi, rounding) + wf.CAPTION_FONT_EXTRA_PX)
+    assert margin >= 3, "dpi %d, %s rounding: the font term is only %d px below %d" % (
+        dpi, rounding, margin, base)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dpi", sorted(METRICS_BY_DPI))
+def test_the_caption_with_the_font_term_is_the_registry_value_plus_one(dpi):
+    assert wf.caption(dpi) == wf.muldiv(22, dpi, 96) + 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scale", SCALES)
+def test_the_caption_with_the_font_term_is_the_measured_one(scale):
+    dpi = wf.dpi_of_scale(scale)
+    assert wf.caption(dpi) == {1.0: 23, 1.25: 29, 1.5: 34, 2.0: 45}[scale]  # runner frame_metrics_by_dpi
+    assert wf.border(dpi) + wf.caption(dpi) == MEASURED_POPUP_CLIENT_TOP[scale]
+
+
+@pytest.mark.unit
+def test_the_font_term_is_real_code_and_binds_at_a_tiny_dpi():
+    # Not a dpi any window has: it only shows the clamp is computed, not dropped.
+    dpi = 12
+    assert wf.caption_font_height(dpi) + 2 > wf.muldiv(22, dpi, 96)
+    assert wf.caption(dpi) == wf.caption_font_height(dpi) + 2 + 1
