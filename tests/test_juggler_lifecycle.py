@@ -675,6 +675,27 @@ def test_a_document_re_announced_is_a_commit_without_a_navigation():
     assert ("commit", {"name": v.frames["F1"].name, "navigation": None}) in heard, heard
 
 
+def test_a_re_announced_document_keeps_its_children_and_a_new_one_retires_them():
+    """The children of a document belong to it: a commit without an id, or
+    with the id already committed, is that document announced again by a new
+    PageAgent and must not detach them (nothing attaches them back); only a
+    commit with a new navigation id retires them."""
+    c, v = _committed_page()
+    gone = []
+    v.announce = lambda what, fid, url=None, **detail: (
+        gone.append(fid) if what == "frameDetached" else None)
+    events(v, ("Page.navigationCommitted", {"frameId": "F1", "url": "http://a/"}),
+           ("Page.frameAttached", {"frameId": "F2", "parentFrameId": "F1"}),
+           ("Page.navigationCommitted", {"frameId": "F1", "navigationId": "A",
+                                         "url": "http://a/"}),
+           ("Page.navigationCommitted", {"frameId": "F1", "url": "http://a/"}))
+    assert set(v.frames) == {"F1", "F2"} and gone == [], (v.frame_tree(), gone)
+    events(v, ("Page.navigationStarted", {"frameId": "F1", "navigationId": "B"}),
+           ("Page.navigationCommitted", {"frameId": "F1", "navigationId": "B",
+                                         "url": "http://a/"}))
+    assert set(v.frames) == {"F1"} and gone == ["F2"], (v.frame_tree(), gone)
+
+
 def test_a_plan_that_opens_elsewhere_ends_with_its_after():
     """A link with target=_blank: before and after, and no navigation here."""
     c, v = _committed_page()
