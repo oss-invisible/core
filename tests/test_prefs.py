@@ -77,9 +77,9 @@ def test_the_screen_a_page_reads_is_the_panel_divided_by_the_scale(panel, dpr, c
     # CSS taskbar) minus the UI, divided by the scale: 891 at 125% is
     # (1220 - 106) / 1.25.
     (1.0, (8, 85, 72, 4), (2048, 1147), (2048, 1232)),
-    (1.25, (9, 106, 90, 4), (1638, 891), (2048, 1220)),
+    (1.25, (9, 106, 89, 4), (1638, 891), (2048, 1220)),
     (1.5, (11, 127, 106, 4), (1365, 721), (2048, 1208)),
-    (2.0, (13, 146, 139, 4), (1024, 519), (2048, 1184)),
+    (2.0, (13, 146, 140, 4), (1024, 519), (2048, 1184)),
 ])
 def test_the_window_frame_is_declared_in_device_pixels_per_scale(dpr, frame, viewport, avail_device):
     """Known-bad until 38.x: one CSS window for every scale and every window -

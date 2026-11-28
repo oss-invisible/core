@@ -1285,6 +1285,9 @@ def _apply_screen(prefs: Dict[str, Any], profile: Profile) -> None:
     prefs["zoom.stealth.screen.maximized_ui"]     = declared_maximized_ui(
         frame, profile.screen.css_avail_height)
     prefs["zoom.stealth.screen.popup_ui"]         = frame.popup_ui
+    # The engine reads it as the client origin of a popup for an out-of-process
+    # frame before its first matrix (retail 159.0: 31 / 38 / 45 / 58).
+    prefs["zoom.stealth.screen.popup_client_top"] = frame.popup_client_top
     prefs["zoom.stealth.screen.popup_position"]   = frame.popup_position
     prefs["zoom.stealth.screen.avail_device_width"]  = profile.screen.avail_device_width
     prefs["zoom.stealth.screen.avail_device_height"] = profile.screen.avail_device_height
