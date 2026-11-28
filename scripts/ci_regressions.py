@@ -30,13 +30,23 @@ another tree), `gtest:<Suite>.<Name>`, `xpcshell:<path>`.
         ids, like ci/required-suites.json) every pytest row must be covered by an entry of some suite: the file itself, a node id that
         is a prefix of the row (the row itself, or followed by `::` or `[`), or a directory entry ending with `/`.
 
-    ci_regressions.py candidate --registry PATH[=PREFIX] [--registry ...] --junit-dir DIR --os linux|windows
+    ci_regressions.py candidate --registry PATH[=PREFIX] [--registry ...] --junit-dir DIR --os linux|windows [--due-in OWNER/REPO=GITDIR ...]
         every row whose `os` holds --os must have a result in the junit files under DIR (every *.xml, recursively), and every case of
         it must have passed. A pytest id matches the node id of a case (a row without brackets also matches the cases
         `<id>[...]`); a tree: id matches after the prefix is cut; `gtest:Suite.Name` and `xpcshell:path` match a testcase whose
         `<classname>.<name>` or whose `name` equals the text after the prefix. --registry PATH=PREFIX: every pytest or tree: id of
         that registry is looked up as PREFIX + id, wherever its fix is (the junit of a series that runs several trees names the files
         under a folder). A missing result, a failure, a skip or a rerun is red.
+
+        --due-in names, for each repository, the checkout (GITDIR, a git repository) of the commit this run uses: the core at its ref, the
+        wrapper at the commit of the plan, the series at its sha. A row is DUE when its `fix` (owner/repo@sha) is equal to, or an ancestor of,
+        HEAD of the GITDIR given for that owner/repo (`git merge-base --is-ancestor`); a due row is judged exactly as above. A row that is not
+        due is printed by name ("<test>: not due in this run: <repo> at <sha12> does not contain the fix <sha12>"), is never counted as
+        passed and does not make the run red: the run does not contain the code that the test proves. What cannot be decided is red, never
+        "not due": --due-in is used and the row's repository has none; the GITDIR is not a git repository or has no HEAD; the fix commit does
+        not exist in its repository (a typo, a lost commit); the clone is shallow (`git rev-parse --is-shallow-repository`) and does not
+        hold the fix, or holds it without it being an ancestor of HEAD (a shallow history proves an ancestry, never its absence).
+        Without --due-in every row is due, as before.
 
 Every problem prints one line and the exit is 1; one `OK` line and exit 0 otherwise; a bad usage exits 2:
 
@@ -393,8 +403,52 @@ def split_registry(item: str) -> tuple[str, str]:
     return (path, prefix) if eq else (item, "")
 
 
-def candidate(registries: list[str], junit_dir: str, os_name: str) -> tuple[list[str], str]:
+def _git(gitdir: str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", gitdir, *args], capture_output=True, text=True, timeout=120)
+
+
+def due_state(fix: str, due_in: dict[str, str]) -> tuple[bool | None, str]:
+    """(True, "") when the row is due; (False, note) when it is not; (None, reason) when it cannot be decided (red)."""
+    repo, _, sha = fix.partition("@")
+    gitdir = due_in.get(repo)
+    if gitdir is None:
+        return None, "no --due-in for %s, the repository of its fix %s" % (repo, sha[:12])
+    head = _git(gitdir, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+    if head.returncode != 0:
+        return None, "--due-in %s=%s is not a git repository with a HEAD" % (repo, gitdir)
+    head_sha = head.stdout.strip()
+    shallow = _git(gitdir, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+    if _git(gitdir, "cat-file", "-e", sha + "^{commit}").returncode != 0:
+        if shallow:
+            return None, "%s at %s is a shallow clone that does not hold the fix %s: it cannot be decided whether the run contains it" % (repo, head_sha[:12], sha[:12])
+        return None, "the fix %s does not exist in %s: a typo or a lost commit" % (sha[:12], repo)
+    ancestry = _git(gitdir, "merge-base", "--is-ancestor", sha, head_sha).returncode
+    if ancestry == 0:
+        return True, ""
+    if ancestry == 1 and not shallow:
+        return False, "%s at %s does not contain the fix %s" % (repo, head_sha[:12], sha[:12])
+    if ancestry == 1:
+        return None, "%s at %s is a shallow clone: its history cannot say that it lacks the fix %s" % (repo, head_sha[:12], sha[:12])
+    return None, "the ancestry of the fix %s in %s cannot be read (git exit %d)" % (sha[:12], repo, ancestry)
+
+
+def parse_due_in(items: list[str]) -> dict[str, str]:
+    """`OWNER/REPO=GITDIR` (repeatable) -> {repo: gitdir}; raises ValueError on a malformed or repeated item."""
+    due: dict[str, str] = {}
+    for item in items:
+        repo, eq, gitdir = item.partition("=")
+        if not eq or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) or not gitdir:
+            raise ValueError("--due-in must look like OWNER/REPO=GITDIR, not %r" % item)
+        if repo in due:
+            raise ValueError("--due-in names %s twice" % repo)
+        due[repo] = gitdir
+    return due
+
+
+def candidate(registries: list[str], junit_dir: str, os_name: str, due_in: dict[str, str] | None = None,
+              notes: list[str] | None = None) -> tuple[list[str], str]:
     problems: list[str] = []
+    not_due = 0
     rows: list[tuple[dict, str]] = []  # (row, the prefix of the registry it sits in)
     for item in registries:
         path, prefix = split_registry(item)
@@ -424,6 +478,17 @@ def candidate(registries: list[str], junit_dir: str, os_name: str) -> tuple[list
         kind = kind_of(test)
         if kind is None or os_name not in _oses(row):
             continue
+        if due_in is not None:
+            due, why = due_state(str(row.get("fix", "")), due_in)
+            if due is None:
+                problems.append(_line("%s (os %s)" % (test, os_name), "it cannot be decided whether the run contains its fix: " + why,
+                                      "give --due-in the checkout of the commit this run uses, a full clone, and fix the sha of the row"))
+                continue
+            if not due:
+                not_due += 1
+                if notes is not None:
+                    notes.append("%s: not due in this run: %s" % (test, why))
+                continue
         judged += 1
         found: list[ci_skips.Case]
         if kind in ("pytest", "tree"):
@@ -443,7 +508,10 @@ def candidate(registries: list[str], junit_dir: str, os_name: str) -> tuple[list
             first = bad[0]
             problems.append(_line(where, "it did not pass in this candidate (%s, %s)" % (first.outcome, first.source),
                                   "a regression test must pass: fix the code, not the test or the registry"))
-    return problems, "%d regression test(s) passed for %s in %d junit file(s)" % (judged, os_name, len(xmls))
+    summary = "%d regression test(s) passed for %s in %d junit file(s)" % (judged, os_name, len(xmls))
+    if due_in is not None:
+        summary += "; %d not due in this run (listed above, not counted)" % not_due
+    return problems, summary
 
 
 # ---------------------------------------------------------------- command line
@@ -464,6 +532,8 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("--registry", action="append", required=True, help="PATH or PATH=PREFIX")
     k.add_argument("--junit-dir", required=True)
     k.add_argument("--os", dest="os_name", required=True, choices=OSES)
+    k.add_argument("--due-in", action="append", default=None, metavar="OWNER/REPO=GITDIR",
+                   help="the checkout of the commit this run uses for that repository (repeatable); a row whose fix it does not contain is not due")
     args = ap.parse_args(argv)
     if args.mode == "check":
         root = args.root if args.root is not None else Path.cwd()
@@ -472,7 +542,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         if any(not split_registry(item)[0] for item in args.registry):
             ap.error("--registry must look like PATH or PATH=PREFIX")
-        problems, summary = candidate(args.registry, args.junit_dir, args.os_name)
+        try:
+            due_in = parse_due_in(args.due_in) if args.due_in is not None else None
+        except ValueError as exc:
+            ap.error(str(exc))
+        notes: list[str] = []
+        problems, summary = candidate(args.registry, args.junit_dir, args.os_name, due_in, notes)
+        for line in notes:
+            print(line)
         ok = "OK ci_regressions candidate: %s" % summary
     for line in problems:
         print(line)
