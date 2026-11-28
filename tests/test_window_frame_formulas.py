@@ -180,3 +180,23 @@ def test_the_written_prefs_are_the_functions_at_each_scale(scale, seed):
         p.screen.frame, p.screen.css_avail_height)
     for name in ("frame_border", "popup_client_top", "popup_ui", "maximized_ui"):
         assert type(prefs["zoom.stealth.screen." + name]) is int
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("density,tabstrip,navbar", [("normal", 44, 40), ("compact", 36, 36)])
+@pytest.mark.parametrize("scale", [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0])
+def test_the_bar_is_the_retail_offset_of_the_browser_element_rounded_once(scale, density, tabstrip, navbar):
+    """Retail's content offset is the <browser> element's offset in the chrome, in app units,
+    divided by the app units per device pixel and rounded once (FromAppUnitsRounded:
+    floor(x / apd + 0.5)). Built here from the raw CSS app units, independently of window_frame:
+    tab strip, nav bar and the content border (1 CSS px floored to whole device px, at least
+    one device px) summed in app units first (popup-frame README, "Device pixel snapping")."""
+    from fractions import Fraction
+    from math import floor
+
+    au_per_dev = floor(60 / scale + 0.5)                       # nsDeviceContext: lround(60 / scale)
+    border_au = max(au_per_dev, floor(60 / au_per_dev) * au_per_dev)
+    offset_au = tabstrip * 60 + navbar * 60 + border_au
+    retail = floor(Fraction(offset_au, au_per_dev) + Fraction(1, 2))
+    assert chrome_height_device(scale, density) == retail, (
+        "%s bar at %s: retail rounds %d AU / %d once to %d" % (density, scale, offset_au, au_per_dev, retail))
