@@ -50,7 +50,7 @@ def test_the_source_is_read_by_file_path_without_importing_the_package(tmp_path)
             "assert 'invisible_core' not in sys.modules, 'the package was imported'; "
             "print(sorted(t), frame_table.declared_maximized_ui(t[1.5], 672))") % str(ROOT / "scripts" / "retail" / "window_geometry")
     out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, cwd=tmp_path, check=True)
-    assert out.stdout.strip() == "[1.0, 1.25, 1.5, 2.0] 109"
+    assert out.stdout.strip() == "[1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0] 109"
 
 
 def test_the_command_line_prints_the_version_and_the_job_matrix(tmp_path, capsys):
@@ -58,17 +58,17 @@ def test_the_command_line_prints_the_version_and_the_job_matrix(tmp_path, capsys
     path.write_text(json.dumps(GOOD), encoding="utf-8")
     assert req.main([str(path)]) == 0
     assert capsys.readouterr().out.splitlines() == ["firefox_version=159.0", 'dpr=["1","1.25","1.5","2"]']
-    path.write_text(json.dumps(dict(GOOD, dpr=[3])), encoding="utf-8")
+    path.write_text(json.dumps(dict(GOOD, dpr=[1.33])), encoding="utf-8")
     assert req.main([str(path)]) == 2
     assert "dpr" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("subset", [[1], [2], [1.25, 1.5], [1.0, 2.0]])
+@pytest.mark.parametrize("subset", [[1], [2], [1.25, 1.5], [1.0, 2.0], [1.75], [3]])
 def test_a_subset_of_the_scales_of_the_table_is_accepted(subset):
     assert req.validate(dict(GOOD, dpr=subset))["dpr"] == subset
 
 
-@pytest.mark.parametrize("dpr", [[1.75], [3], [0], [-1], [True], ["1"], [None], [[1]], [1, 1], [1, 1.0], [], "1", None])
+@pytest.mark.parametrize("dpr", [[1.33], [3.25], [0], [-1], [True], ["1"], [None], [[1]], [1, 1], [1, 1.0], [], "1", None])
 def test_a_scale_that_is_not_in_the_table_is_refused(dpr):
     with pytest.raises(req.RequestError, match="dpr"):
         req.validate(dict(GOOD, dpr=dpr))
