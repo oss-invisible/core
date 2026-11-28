@@ -1006,10 +1006,11 @@ def test_the_wrapper_checkout_takes_the_ref_from_the_step_that_chooses_it():
     checkout = next(s for s in steps if (s.get("with") or {}).get("repository") == "oss-invisible/playwright")
     assert _bare(checkout["with"]["ref"]) == f"steps.{chooser[0]['id']}.outputs.ref"
     assert steps.index(chooser[0]) < steps.index(checkout)
-    # the wrapper is checked out here and nowhere else in the workflow
+    # the wrapper is checked out in these two jobs, and by `wrapper-job-needed` at the commit ci/wrapper-proof.json declares (to check it, with the
+    # job's token); nowhere else in the workflow
     others = [name for name, j in spec["jobs"].items() for s in j.get("steps") or []
               if (s.get("with") or {}).get("repository") == "oss-invisible/playwright"]
-    assert others == [JOB, UNIT_JOB]
+    assert others == ["wrapper-job-needed", JOB, UNIT_JOB]
     assert job_problems(spec) == []
 
 

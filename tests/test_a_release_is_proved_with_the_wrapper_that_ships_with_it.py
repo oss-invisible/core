@@ -627,23 +627,41 @@ def test_the_unit_judge_script_is_always_origin_main_and_the_list_ref_cannot_be_
 
 # ----------------------------------------------------------------------------- ci.yml: the same checks on every pull request and push
 
-def test_ci_checks_the_proof_file_on_every_pull_request_and_push_in_a_step_of_an_existing_job():
+def test_ci_checks_the_proof_file_on_every_pull_request_and_push_in_steps_of_an_existing_job():
     ci = _load_workflow("ci.yml")
     on = ci["on"]
     assert "pull_request" in on and "push" in on and "merge_group" in on
     job = ci["jobs"]["wrapper-job-needed"]
-    step = next((s for s in job["steps"] if "check-wrapper-proof" in str(s.get("run", ""))), None)
+    steps = job["steps"]
+    step = next((s for s in steps if "check-wrapper-proof" in str(s.get("run", ""))), None)
     assert step, "wrapper-job-needed has no step that checks ci/wrapper-proof.json"
-    assert "if" not in step and "if" not in job, "the check can be skipped on a pull request or a push"
-    run = step["run"]
-    assert "read-wrapper-proof --file ci/wrapper-proof.json" in run
-    assert "fetch -q --depth=1 https://github.com/oss-invisible/playwright" in run, "the commit is not looked up in the wrapper's repository"
-    assert re.search(r'check-wrapper-proof --file ci/wrapper-proof.json --wrapper "\$WRAPPER_DIR"\s*\\?\s*--version "\$\(python3 scripts/wrapper_on_this_core\.py tree-version\)"', run)
+    assert all("if" not in s for s in steps) and "if" not in job, "the check can be skipped on a pull request or a push"
+    reader = next(s for s in steps if "read-wrapper-proof --file ci/wrapper-proof.json" in str(s.get("run", "")))
+    assert re.search(r'echo "sha=\$SHA" >> "\$GITHUB_OUTPUT"', reader["run"]) and reader.get("id")
+    assert re.search(r'check-wrapper-proof --file ci/wrapper-proof.json --wrapper wrapper-proof\s*\\?\s*--version "\$\(python3 scripts/wrapper_on_this_core\.py tree-version\)"', step["run"])
     assert "wrapper-job-needed" in ci["jobs"]["gate"]["needs"], "`gate` does not wait for the job that carries the check"
     assert job["runs-on"] == "ubuntu-latest" and job["timeout-minutes"] <= 5, "the check is not in a light job"
     others = [n for n, j in ci["jobs"].items() if n != "wrapper-job-needed" and "wrapper-proof.json" in str(j)]
     assert not others, f"the check is also in {others}: one place"
-    steps = job["steps"]
-    assert steps.index(step) > 0 and "actions/checkout" in str(steps[0].get("uses", ""))
+    assert "actions/checkout" in str(steps[0].get("uses", ""))
     assert [s for s in steps if "wrapper_job_needed.py" in str(s.get("run", ""))][-1] is steps[-1], (
         "the decision of `wrapper-job-needed` is not the last step any more")
+
+
+def test_the_wrapper_commit_is_fetched_with_the_jobs_token_by_a_checkout_at_the_declared_sha_and_never_anonymously():
+    """Anonymous calls from the runners share 60 an hour per address: the step could go red for a reason outside our code."""
+    job = _load_workflow("ci.yml")["jobs"]["wrapper-job-needed"]
+    steps = job["steps"]
+    for s in steps:
+        run = str(s.get("run", ""))
+        assert not re.search(r"git\b[^\n]*\bfetch\b[^\n]*https?://", run), f"an anonymous fetch in {s.get('name')!r}"
+        assert "curl" not in run and "wget" not in run
+    reader = next(s for s in steps if "read-wrapper-proof" in str(s.get("run", "")))
+    checkout = next(s for s in steps if (s.get("with") or {}).get("repository") == "oss-invisible/playwright")
+    assert checkout["uses"] == steps[0]["uses"], "the checkout is not the same pinned action the file already uses"
+    assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout["uses"])
+    assert re.sub(r"\s+", "", checkout["with"]["ref"]) == "${{steps." + reader["id"] + ".outputs.sha}}", "the checkout is not at the declared sha"
+    assert checkout["with"]["path"] == "wrapper-proof"
+    assert re.sub(r"\s+", "", str(checkout["with"].get("token", "${{github.token}}"))) == "${{github.token}}"
+    check = next(s for s in steps if "check-wrapper-proof" in str(s.get("run", "")))
+    assert steps.index(reader) < steps.index(checkout) < steps.index(check)
