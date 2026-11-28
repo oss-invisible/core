@@ -904,3 +904,49 @@ def test_the_tag_path_reads_the_two_keys_but_does_not_call_the_series():
     for name in ("wrapper-on-this-core.yml", "wrapper-unit-on-this-core.yml"):
         text = (WORKFLOWS / name).read_text(encoding="utf-8")
         assert "check-release-plan" not in text and "firefox_antidetect_patch" not in text, f"{name} asks the series repository on the tag"
+
+
+# ----------------------------------------------------------------------------- the allowance dies with its seal
+
+NEWER_SEAL = {**SEAL, "series_commit": "b" * 40}   # the seal of the first release that has a plan (a fixture)
+
+
+def test_the_made_before_the_rule_entry_is_still_the_seals_own():
+    """RED the day the seal names another series commit while the entry is still in the script: the entry has to be removed in the release
+    that has a plan (its seal is newer), the same pull request that moves the seal."""
+    mod = _load_script()
+    seal = json.loads((ROOT / "src" / "invisible_core" / "seal.json").read_text(encoding="utf-8"))
+    assert mod.stale_allowances(seal) == [], mod.stale_allowances(seal)
+    assert set(mod.MADE_BEFORE_THE_RULE) <= {seal["series_commit"]}, (
+        "the seal moved on: remove MADE_BEFORE_THE_RULE's entry of firefox-70, this release has a plan")
+
+
+def test_a_newer_seal_with_the_entry_still_there_is_red_and_green_once_it_is_removed():
+    mod = _load_script()
+    assert mod.stale_allowances(NEWER_SEAL)            # the detector of the test above says red on this fixture
+    assert mod.stale_allowances(NEWER_SEAL, allowed={}) == []   # and green once the entry is gone
+    assert mod.stale_allowances(SEAL, allowed={}) == []
+
+
+def test_the_check_refuses_the_entry_when_the_seal_is_newer_with_or_without_a_plan():
+    mod = _load_script()
+    proof = {"wrapper_commit": SHA_NEW, "series_run": 45900000001}
+    plan = _plan(series_commit=NEWER_SEAL["series_commit"])
+    with_plan = mod.check_release_plan(proof, NEWER_SEAL, _run_record(head="b" * 40), _zip_of(plan))
+    assert any("remove the entry" in p for p in with_plan), with_plan
+    assert mod.check_release_plan(proof, NEWER_SEAL, _run_record(head="b" * 40), _zip_of(plan), allowed={}) == []
+    # the old run under the newer seal cannot ride on the entry either
+    before = {"wrapper_commit": SHA_NEW, "series_run": SERIES_RUN}
+    problems = mod.check_release_plan(before, NEWER_SEAL, _run_record(SERIES_RUN), None)
+    assert any("remove the entry" in p for p in problems) and any("no `release-plan` artifact" in p for p in problems), problems
+
+
+def test_the_check_command_is_red_on_a_newer_seal_while_the_entry_is_present(tmp_path):
+    fake = tmp_path / "f"
+    fake.mkdir()
+    (fake / "seal.json").write_text(json.dumps(NEWER_SEAL), encoding="utf-8")
+    (fake / "run.json").write_text(json.dumps(_run_record(45900000001, head="b" * 40)), encoding="utf-8")
+    (fake / "proof.json").write_text(json.dumps({"wrapper_commit": SHA_NEW, "series_run": 45900000001}), encoding="utf-8")
+    (fake / "plan.zip").write_bytes(_zip_of(_plan(series_commit="b" * 40)))
+    assert _run(["check-release-plan", "--file", str(fake / "proof.json"), "--seal", str(fake / "seal.json"), "--run", str(fake / "run.json"),
+                 "--zip", str(fake / "plan.zip")]) == 1

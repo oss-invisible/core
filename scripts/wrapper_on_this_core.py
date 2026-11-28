@@ -94,7 +94,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 __all__ = ["WrapperRefError", "ProofError", "PROOF_FILE", "is_release_event", "read_wrapper_proof", "previous_release", "proof_problems", "read_proof", "write_wrapper_proof", "check_release_plan", "artifact_id", "validate_plan",
-           "MADE_BEFORE_THE_RULE",
+           "MADE_BEFORE_THE_RULE", "stale_allowances",
            "proof_version", "tree_version", "choose_wrapper_ref", "declared_wrapper_refs", "EXCLUDED", "WITNESSES", "witness_problems", "computed_list", "excluded_nodes", "files_of", "judge_junit", "load_seconds",
            "missing_from", "plan_parts", "problems_in_junit"]
 
@@ -606,13 +606,23 @@ def artifact_id(artifacts) -> str:
     return str(live[0]["id"]) if live else ""
 
 
-def check_release_plan(proof: dict, seal, run, plan_zip: bytes | None) -> list[str]:
+def stale_allowances(seal, allowed=None) -> list[str]:
+    """The entries of ``allowed`` (MADE_BEFORE_THE_RULE) that are not for the seal's series commit: the allowance dies at the first release that
+    has a plan, so an entry for any other series commit is a leftover, and a red."""
+    commit = _seal_series_commit(seal)
+    allowed = MADE_BEFORE_THE_RULE if allowed is None else allowed
+    return [f"MADE_BEFORE_THE_RULE still names series commit {key} (run {run}) while the seal names {commit}: the allowance ends with its release, remove the entry"
+            for key, run in sorted(allowed.items()) if key != commit]
+
+
+def check_release_plan(proof: dict, seal, run, plan_zip: bytes | None, allowed=None) -> list[str]:
     """What is wrong with the series run the proof file names (``run`` is the API's JSON of that run, ``plan_zip`` the bytes of its
     `release-plan` artifact or None): the run concluded success; its plan names the wrapper commit of the file and the seal's series commit.
     No plan is accepted only for the one release made before the rule (MADE_BEFORE_THE_RULE), and then the run must be on the seal's commit."""
     import io
     import zipfile
-    problems = []
+    allowed = MADE_BEFORE_THE_RULE if allowed is None else allowed
+    problems = stale_allowances(seal, allowed)   # a newer seal refuses the entry, with or without a plan
     number = proof["series_run"]
     commit = _seal_series_commit(seal)
     if not isinstance(run, dict) or run.get("id") != number:
@@ -621,7 +631,7 @@ def check_release_plan(proof: dict, seal, run, plan_zip: bytes | None) -> list[s
     if run.get("status") != "completed" or run.get("conclusion") != "success":
         problems.append(f"the series run {number} did not conclude success: {run.get('status')}/{run.get('conclusion')}")
     if plan_zip is None:
-        if MADE_BEFORE_THE_RULE.get(commit) != number:
+        if allowed.get(commit) != number:
             problems.append(f"the series run {number} has no `{PLAN_ARTIFACT}` artifact, and this release is not the one made before the rule")
         elif run.get("head_sha") != commit:
             problems.append(f"the series run {number} ran {run.get('head_sha')}, not the series commit {commit} of the seal")
