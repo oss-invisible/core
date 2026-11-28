@@ -22,6 +22,7 @@ ELSEWHERE = {
     "make_seal.py": "the patch series (platform/ci/src/scripts)",
     "gen_bundle_font_manifest.py": "the patch series (platform/ci/src/scripts)",
     "run_e2e.py": "each consumer (invisible_playwright/scripts)",
+    "ci_index_wait.py": "each consumer (invisible_playwright/scripts); install_job reads it from the consumer's tree it judges",
     "sync_core_pin.py": "the local workbench, outside every repository (hooks.py)",
     "gen_x.py": "an example path inside english.py's own test table",
 }
