@@ -629,6 +629,19 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
         with:
           fetch-depth: 0
+      # THE WRAPPER A TAG IS PROVED WITH (ci/wrapper-proof.json) is checked here, on every pull request, push and merge group, so an error in
+      # a release-next pull request shows at review time and not on the tag: the file is well formed (40 hex), the commit exists in the
+      # wrapper's repository, and its pyproject pins exactly invisible_core==<this tree's version>. The tag repeats the checks (wrapper-proof.yml).
+      # A step of this light job, not a job of its own: the account is capped at 20 jobs.
+      - name: ci/wrapper-proof.json names a wrapper commit that pins this core
+        run: |
+          SHA="$(python3 scripts/wrapper_on_this_core.py read-wrapper-proof --file ci/wrapper-proof.json)"
+          WRAPPER_DIR="$RUNNER_TEMP/wrapper-proof"
+          git init -q "$WRAPPER_DIR"
+          git -C "$WRAPPER_DIR" fetch -q --depth=1 https://github.com/oss-invisible/playwright "$SHA"
+          git -C "$WRAPPER_DIR" checkout -q --detach FETCH_HEAD
+          python3 scripts/wrapper_on_this_core.py check-wrapper-proof --file ci/wrapper-proof.json --wrapper "$WRAPPER_DIR" \
+            --version "$(python3 scripts/wrapper_on_this_core.py tree-version)"
       # The rule is scripts/wrapper_job_needed.py, one for every event: a push, a pull request,
       # a merge group; an event it does not know is red. The base and the head are the pull
       # request's or the merge group's. The body is untrusted: it reaches the script through

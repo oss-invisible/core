@@ -128,12 +128,13 @@ def test_a_wrapper_job_runs_this_cores_tagged_commit_and_the_wrappers_main(job_n
         "the called workflow does not set the security state and the token the caller's `env` gave the jobs")
 
 
-def test_the_list_of_tests_is_compared_on_a_tag_with_the_list_of_main():
-    """On a tag the `before` of a push is zeros and the compare step used to refuse an event it did not know."""
+def test_the_list_of_tests_is_compared_on_a_tag_with_the_previous_release_and_not_with_main():
+    """On a tag the `before` of a push is zeros, and a release is cut from a branch main does not have: the base is the previous published
+    release (the rule and its cases: tests/test_a_release_is_proved_with_the_wrapper_that_ships_with_it.py)."""
     steps = _load(FILE_OF[E2E])["jobs"][E2E]["steps"]
     run = next(s for s in steps if s.get("name") == "the list of tests is not shorter than main's")["run"]
-    assert "github.ref_type" in run and re.search(r'"tag"\s*\]\s*;\s*then\s+BASE="origin/main"', run), (
-        "a push of a tag does not compare with origin/main")
+    assert "previous-release --published PUBLISHED.json" in run, "the base of a release is not the previous published release"
+    assert not re.search(r'"tag"\s*\]\s*;\s*then\s+BASE="origin/main"', run), "a push of a tag compares with origin/main"
     assert re.search(r"\*\)[^\n]*exit 1", run), "an unknown event must stay red"
 
 

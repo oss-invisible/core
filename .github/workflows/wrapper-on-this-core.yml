@@ -63,46 +63,72 @@ jobs:
           $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
           "the runner's screen: $($b.Width)x$($b.Height) at $($b.X),$($b.Y)"
           if ($b.Width -lt 1920 -or $b.Height -lt 1080) { Write-Error "the runner's screen is $($b.Width)x$($b.Height), not 1920x1080: the OS cursor could not be parked outside the browser window"; exit 1 }
-      # WHICH BRANCH OF THE WRAPPER. Its `main`, always, on a push and on a tag. A pull
-      # request of the core that changes an API the wrapper uses can declare, in ONE line
-      # of its body, `wrapper-ref: <branch>` (grammar and checks: `wrapper-ref` of
-      # scripts/wrapper_on_this_core.py), and then that branch is tried. The body is
-      # untrusted input: it reaches the script through `env:` and a file, never through
-      # an interpolation in `run:`. The judge and the list compared with are still main's.
+      # WHICH COMMIT OR BRANCH OF THE WRAPPER. On a pull request, its `main`, unless the body DECLARES another with ONE line,
+      # `wrapper-ref: <branch>` (grammar and checks: `wrapper-ref` of scripts/wrapper_on_this_core.py); on a push, `main`. On a tag or a
+      # manual run (a release) it is the commit ci/wrapper-proof.json declares: the wrapper release that pins THIS core, because the
+      # wrapper's main pins the previous core until the wrapper is released and would be red by construction. The body is untrusted
+      # input: it reaches the script through `env:` and a file, never through an interpolation in `run:`.
       - id: wrapper_ref
         name: which branch of the wrapper this run tries
         env:
           EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           # A merge group has no pull request body (the declaration was read on the pull
           # request's own run): its wrapper is main, said by the script.
           if [ "$EVENT" = "merge_group" ]; then : > "$RUNNER_TEMP/pr_body.txt"; else printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr_body.txt"; fi
-          python scripts/wrapper_on_this_core.py wrapper-ref --event "$EVENT" --body-file "$RUNNER_TEMP/pr_body.txt"
+          python scripts/wrapper_on_this_core.py wrapper-ref --event "$EVENT" --ref-type "$REF_TYPE" --body-file "$RUNNER_TEMP/pr_body.txt"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
         with:
           repository: oss-invisible/playwright
           ref: ${{ steps.wrapper_ref.outputs.ref }}
           path: wrapper
-      - name: the list of tests is not shorter than main's
+      # A RELEASE (tag or manual run): the wrapper checked out is the commit declared, and it pins exactly this core's version.
+      - name: the wrapper is the release that ships with this core (a tag, a manual run)
+        if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          # The list of main is what main's copy of the script computes on THIS wrapper
-          # tree. A base that cannot be read is red, not "main has nothing".
-          case "${{ github.event_name }}" in
+          VERSION="$(python scripts/wrapper_on_this_core.py proof-version --event "$EVENT" --ref-type "$REF_TYPE" --ref-name "$REF_NAME")"
+          python scripts/wrapper_on_this_core.py check-wrapper-proof --file ci/wrapper-proof.json --wrapper wrapper --version "$VERSION"
+      - name: the list of tests is not shorter than main's
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # The list of the base is what the base's copy of the script computes on THIS wrapper tree. A base that cannot be read is
+          # red, not "the base has nothing". The base of a pull request is main, of a push the commit before it; the base of a
+          # RELEASE (a tag, a manual run) is the previous PUBLISHED release of the tagged tree's PUBLISHED.json (a release is cut
+          # from a release branch, which main does not have); none, or a tag that cannot be read, is red.
+          RELEASE=""
+          case "$EVENT" in
             push)
-              # A tag has no commit before it (the "before" of a new ref is zeros): the list of main is read from main, as for a pull request.
-              if [ "${{ github.ref_type }}" = "tag" ]; then BASE="origin/main"; else BASE="${{ github.event.before }}"; fi ;;
-            pull_request|merge_group|workflow_dispatch) BASE="origin/main" ;;
-            *) echo "event ${{ github.event_name }}: it is not known what main has" >&2; exit 1 ;;
+              if [ "$REF_TYPE" = "tag" ]; then RELEASE=1; else BASE="$BEFORE"; fi ;;
+            workflow_dispatch) RELEASE=1 ;;
+            pull_request|merge_group) BASE="origin/main" ;;
+            *) echo "event $EVENT: it is not known what the base has" >&2; exit 1 ;;
           esac
+          if [ -n "$RELEASE" ]; then
+            VERSION="$(python scripts/wrapper_on_this_core.py proof-version --event "$EVENT" --ref-type "$REF_TYPE" --ref-name "$REF_NAME")"
+            BASE="$(python scripts/wrapper_on_this_core.py previous-release --published PUBLISHED.json --version "$VERSION")"
+            git rev-parse --verify -q "refs/tags/$BASE^{commit}" > /dev/null || git fetch --no-tags origin "refs/tags/$BASE:refs/tags/$BASE"
+          fi
           if ! git rev-parse --verify -q "$BASE^{commit}" > /dev/null; then
-            echo "cannot read $BASE: it is not known what main has" >&2
+            echo "cannot read $BASE: it is not known what the base has" >&2
             exit 1
           fi
           if git cat-file -e "$BASE:scripts/wrapper_on_this_core.py" 2> /dev/null; then
             git show "$BASE:scripts/wrapper_on_this_core.py" > "$RUNNER_TEMP/main_wrapper_on_this_core.py"
             python scripts/wrapper_on_this_core.py compare --wrapper wrapper \
               --main-script "$RUNNER_TEMP/main_wrapper_on_this_core.py"
+          elif [ -n "$RELEASE" ]; then
+            echo "the previous release $BASE has no copy of the script: it is not known what it ran" >&2
+            exit 1
           else
             python scripts/wrapper_on_this_core.py compare --wrapper wrapper --main-has-no-script
           fi

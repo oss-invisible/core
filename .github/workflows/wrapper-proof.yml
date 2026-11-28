@@ -1,13 +1,15 @@
 name: wrapper-proof
 
-# The proof publish.yml asks for before anything is uploaded: the wrapper's main, on THIS commit of the core, passes both of
+# The proof publish.yml asks for before anything is uploaded: the wrapper release ci/wrapper-proof.json declares (the one that pins
+# THIS core), on THIS commit of the core, passes both of
 # the jobs ci.yml runs on a pull request and on main - its e2e (wrapper-on-this-core.yml) and its whole unit suite
 # (wrapper-unit-on-this-core.yml). The two files are the ones ci.yml calls: one text, so what the tag is judged by cannot drift
 # from what main was judged by.
 #
-# Nothing here decides. Both jobs run, with no `if:` and no `needs:` that could skip one, and the wrapper is its main (an event
-# that is not a pull request never reads a `wrapper-ref:` line). A tag is always required: `wrapper-job-needed` is a
-# question for a diff, and a tag has none.
+# Nothing here decides. Both jobs run, with no `if:` and no `needs:` that could skip one. On a tag or a manual run each job checks out
+# the declared wrapper commit (not the wrapper's main, which pins the previous core until the wrapper is released), refuses a commit that
+# does not pin exactly this core, and compares its list of tests with the previous PUBLISHED release, not with main. A tag is always
+# required: `wrapper-job-needed` is a question for a diff, and a tag has none.
 on:
   workflow_call:
 
