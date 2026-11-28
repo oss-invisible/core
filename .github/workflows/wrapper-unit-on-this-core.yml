@@ -1,0 +1,156 @@
+name: wrapper-unit-on-this-core
+
+# THE WRAPPER'S UNIT SUITE ON THIS CORE, as a reusable workflow: ci.yml calls it (where `wrapper-job-needed` says) and
+# wrapper-proof.yml calls it for publish.yml, on the tagged commit. One text, two callers.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A called workflow does not see the caller's `env`: the two values every job of ci.yml sets there are set again, the same.
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+  STEALTHFOX_SECURITY_STATE: ${{ github.workspace }}/ci/security-state
+
+jobs:
+  # THE WRAPPER'S WHOLE UNIT SUITE, ON THIS CORE (ci-12). `wrapper-on-this-core` runs only the wrapper's tests that stand on the Juggler
+  # client (a computed list of about 70 files), so core PR #328 changed src/, broke the wrapper main's unit tests and nothing was red. This job runs
+  # the required suite `wrapper.unit.all.<os>` of the wrapper exactly as the wrapper's own `unit` job does (tests.yml, the leg of Python 3.11): the
+  # selection printed by the wrapper's scripts/ci_verdict.py `args` (the files and the marker of the row of ci/required-suites.json), pytest with
+  # `-p no:rerunfailures` and a junit, then the verdict with the JUDGE of the wrapper's MAIN (always: every judge is read from main, so a newer rule applies to a release too) and the
+  # LIST of main on a pull request and a push, of the wrapper's previous PUBLISHED release on a tag or a manual run (read in the wrapper checkout; a
+  # wrapper branch that edits its own judge or its own list cannot pass itself):
+  # the exact count of the row, no skip, every file of the row passed. The wrapper is the same ref as above (`wrapper-ref`: main by default, the commit of ci/wrapper-proof.json on a tag) with its dev extra; THIS checkout's core goes over the
+  # pin, as above. Under the same `if:` as `wrapper-on-this-core`, and `gate` treats it with the same rule: required where the decision says so,
+  # and a skip there is red. The suite launches no browser: no engine, no display.
+  wrapper-unit-on-this-core:
+    name: wrapper-unit-on-this-core (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: linux, runner: ubuntu-24.04}
+          - {os: windows, runner: windows-2022}
+    defaults:
+      run:
+        shell: bash
+    # TEMP and TMP on D:\a\_temp, as the jobs above and the wrapper's unit job.
+    env:
+      TEMP: ${{ startsWith(matrix.runner, 'windows') && 'D:\a\_temp' || '/tmp' }}
+      TMP: ${{ startsWith(matrix.runner, 'windows') && 'D:\a\_temp' || '/tmp' }}
+      INVISIBLE_CORE_PIN: allow
+      INVISIBLE_CORE_AUTOFIX: "off"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          fetch-depth: 0
+      # The version the wrapper judges its suite on (the leg of Python 3.11 of its unit job).
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5 (v5.6.0)
+        with:
+          python-version: "3.11"
+      # The same choice as `wrapper-on-this-core`: the body reaches the script through `env:` and a file, never through an interpolation.
+      # On a tag or a manual run the wrapper is the commit of ci/wrapper-proof.json, not its main.
+      - id: wrapper_ref
+        name: which branch of the wrapper this run tries
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # A merge group has no pull request body (the declaration was read on the pull
+          # request's own run): its wrapper is main, said by the script.
+          if [ "$EVENT" = "merge_group" ]; then : > "$RUNNER_TEMP/pr_body.txt"; else printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr_body.txt"; fi
+          python scripts/wrapper_on_this_core.py wrapper-ref --event "$EVENT" --ref-type "$REF_TYPE" --body-file "$RUNNER_TEMP/pr_body.txt"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (v4.4.0)
+        with:
+          repository: oss-invisible/playwright
+          ref: ${{ steps.wrapper_ref.outputs.ref }}
+          path: wrapper
+      # A RELEASE (tag or manual run): the wrapper is the declared commit, and it pins exactly this core's version.
+      - name: the wrapper is the release that ships with this core (a tag, a manual run)
+        if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="$(python scripts/wrapper_on_this_core.py proof-version --event "$EVENT" --ref-type "$REF_TYPE" --ref-name "$REF_NAME")"
+          python scripts/wrapper_on_this_core.py check-wrapper-proof --file ci/wrapper-proof.json --wrapper wrapper --version "$VERSION"
+      # Where the judge and the list are read from (the checkout is one commit deep). The JUDGE SCRIPT is always the wrapper's main (origin/main,
+      # fetched on every event). The LIST (required-suites.json, retired-tests.json) is main's on a pull request and a push; on a RELEASE (a tag, a
+      # manual run) the wrapper's previous PUBLISHED release, the highest version of `released` in the declared commit's PUBLISHED.json below the
+      # declared commit's own version, read at its tag. None, or a tag that cannot be fetched, is red.
+      - name: the wrapper's judge from main, its list from main or from its previous release on a tag
+        working-directory: wrapper
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
+          if [ "$EVENT" = "workflow_dispatch" ] || [ "$REF_TYPE" = "tag" ]; then
+            TAG="$(python ../scripts/wrapper_on_this_core.py previous-release --published PUBLISHED.json --pyproject pyproject.toml)"
+            git fetch --no-tags --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+            JUDGE_REF="refs/tags/$TAG"
+          else
+            JUDGE_REF="origin/main"
+          fi
+          echo "the judge is read from origin/main, the list from $JUDGE_REF"
+          echo "JUDGE_REF=$JUDGE_REF" >> "$GITHUB_ENV"
+      - name: the wrapper with its dev extra, then THIS core over its pin
+        run: |
+          python -m pip install --upgrade pip
+          # THIS core first (a wrapper branch pins the release this one is made for, which the index may not have), then the wrapper as its
+          # unit job installs it, then this core again over whatever the wrapper's pin brought.
+          python -m pip install .
+          (cd wrapper && python -m pip install -e ".[dev]")
+          python -m pip install --force-reinstall --no-deps .
+          python -c "import invisible_core; print('core under test:', invisible_core.__file__)"
+      - name: the GeoIP database (made by the wrapper, same bytes every run)
+        working-directory: wrapper
+        run: python scripts/ci_lab_geoip.py build
+      - name: the wrapper's unit suite (the selection of its gate), on this core
+        working-directory: wrapper
+        env:
+          SUITE_OS: ${{ matrix.os }}
+        run: |
+          unset PYTEST_ADDOPTS
+          python scripts/ci_verdict.py args --required ci/required-suites.json --suite "wrapper.unit.all.$SUITE_OS" --os "$SUITE_OS" --with-marker | tr -d '\r' > "$RUNNER_TEMP/unit_args.txt"
+          mapfile -t ARGS < "$RUNNER_TEMP/unit_args.txt"
+          python -m pytest "${ARGS[@]}" -o addopts='' -o junit_family=xunit2 -q --tb=short -p no:cacheprovider -p no:rerunfailures -rs --junitxml="$RUNNER_TEMP/unit-junit.xml"
+      - name: the leg ran with the pinned GeoIP database
+        if: always()
+        working-directory: wrapper
+        run: |
+          python scripts/ci_lab_geoip.py evidence --out "$(dirname "$GEOIP_USED_OUT")/geoip-evidence.json" > /dev/null
+          python scripts/ci_lab_geoip.py verify --evidence "$(dirname "$GEOIP_USED_OUT")/geoip-evidence.json" --used "$GEOIP_USED_OUT"
+      # The judge of the wrapper's own unit job, main's copy always; the list it compares with is JUDGE_REF's (main, or the previous release on a tag):
+      # the exact count of the row, no skip, every file of the row passed, and the list only grows against it. Never the judge or the list of the
+      # branch under judgment.
+      - name: judge wrapper.unit.all (the exact count, with main's judge and the list of main or of the previous release)
+        if: always()
+        working-directory: wrapper
+        env:
+          SUITE_OS: ${{ matrix.os }}
+        run: |
+          : "${JUDGE_REF:?the step that says where the judge is read from did not run}"
+          mkdir -p "$RUNNER_TEMP/main"
+          git show origin/main:scripts/ci_verdict.py > "$RUNNER_TEMP/main/ci_verdict.py"
+          git show "$JUDGE_REF:ci/required-suites.json" > "$RUNNER_TEMP/main/required-suites.json"
+          if git cat-file -e "$JUDGE_REF:ci/retired-tests.json"; then git show "$JUDGE_REF:ci/retired-tests.json" > "$RUNNER_TEMP/main/retired-tests.json"; fi
+          # The fragments of the floors (ci/required-suites.d) sit next to the list, and main's judge reads them there. The ref has the folder: it is
+          # copied (a failed archive or extract is red, never "no folder"). It has none (a release older than the fragments): main's judge is told
+          # so, when it knows the option; a judge that does not know fragments yet gets nothing, as before them.
+          FRAGMENTS=()
+          if git cat-file -e "$JUDGE_REF:ci/required-suites.d" 2> /dev/null; then
+            mkdir "$RUNNER_TEMP/fragments"
+            git archive "$JUDGE_REF" ci/required-suites.d | tar -x -C "$RUNNER_TEMP/fragments"
+            mv "$RUNNER_TEMP/fragments/ci/required-suites.d" "$RUNNER_TEMP/main/required-suites.d"
+          elif grep -q -- '--main-has-no-fragments' "$RUNNER_TEMP/main/ci_verdict.py"; then
+            FRAGMENTS=(--main-has-no-fragments)
+          fi
+          python "$RUNNER_TEMP/main/ci_verdict.py" judge --required ci/required-suites.json --suite "wrapper.unit.all.$SUITE_OS" --os "$SUITE_OS" --junit "$RUNNER_TEMP/unit-junit.xml" --binary "$(python -c 'import sys; print(sys.executable)')" --main-required "$RUNNER_TEMP/main/required-suites.json" "${FRAGMENTS[@]}"

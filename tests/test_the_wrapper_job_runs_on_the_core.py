@@ -55,7 +55,11 @@ SCRIPT = ROOT / "scripts" / "wrapper_on_this_core.py"
 NEEDED = ROOT / "scripts" / "wrapper_job_needed.py"
 JOB = "wrapper-on-this-core"
 UNIT_JOB = "wrapper-unit-on-this-core"
-JOB_FILES = (".github/workflows/ci.yml", "scripts/wrapper_on_this_core.py",
+CALLED = {"wrapper-on-this-core": ROOT / ".github" / "workflows" / "wrapper-on-this-core.yml",
+          "wrapper-unit-on-this-core": ROOT / ".github" / "workflows" / "wrapper-unit-on-this-core.yml"}
+JOB_FILES = (".github/workflows/ci.yml", ".github/workflows/wrapper-on-this-core.yml",
+             ".github/workflows/wrapper-unit-on-this-core.yml", ".github/workflows/wrapper-proof.yml",
+             "scripts/wrapper_on_this_core.py",
              "scripts/wrapper_test_seconds.json", "scripts/wrapper_job_needed.py",
              "tests/test_the_wrapper_job_runs_on_the_core.py", "tests/test_wrapper_job_needed.py")
 
@@ -83,6 +87,14 @@ def _spec() -> dict:
     spec = yaml.safe_load(CI.read_text(encoding="utf-8"))
     if True in spec and "on" not in spec:
         spec["on"] = spec.pop(True)
+    # The two wrapper jobs live in reusable workflows that ci.yml calls (and publish.yml, on the tag, through wrapper-proof.yml): the
+    # caller keeps `needs` and `if`, the called file the rest. They are read here as the one job they make, so every check below holds
+    # the text that runs.
+    for name, path in CALLED.items():
+        caller = (spec.get("jobs") or {}).get(name) or {}
+        if caller.get("uses") == f"./.github/workflows/{path.name}":
+            called = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"][name]
+            spec["jobs"][name] = {**called, "needs": caller.get("needs"), "if": caller.get("if")}
     return spec
 
 
@@ -233,8 +245,8 @@ def unit_job_problems(spec: dict) -> list[str]:
         jt = str(judge["run"])
         if judge.get("working-directory") != "wrapper" or judge.get("if") != "always()":
             out.append("the judge does not run (always) in the wrapper's checkout")
-        for needle, what in (("git show origin/main:scripts/ci_verdict.py", "the judge is not the wrapper main's ci_verdict.py"),
-                             ("git show origin/main:ci/required-suites.json", "the list is not the wrapper main's required-suites.json"),
+        for needle, what in (('git show origin/main:scripts/ci_verdict.py', "the judge is not the wrapper main's ci_verdict.py"),
+                             ('git show "$JUDGE_REF:ci/required-suites.json"', "the list is not the required-suites.json of the ref the judge is read from"),
                              ('--main-required "$RUNNER_TEMP/main/required-suites.json"', "the judge is not told the list of main"),
                              ('--suite "wrapper.unit.all.$SUITE_OS"', "the judge does not judge wrapper.unit.all.<os>"),
                              ('--junit "$RUNNER_TEMP/unit-junit.xml"', "the judge does not read the junit of the run")):
@@ -359,10 +371,10 @@ def test_a_unit_job_that_selects_judges_or_installs_otherwise_is_caught():
         run=step(j, "-m pytest")["run"].replace("--junitxml=", "--junit-prefix="))))
     assert any("selection" in p for p in broken(lambda j: step(j, "ci_verdict.py args").update(
         run=step(j, "ci_verdict.py args")["run"].replace("wrapper.unit.all.", "wrapper.unit.udp."))))
-    assert any("main's ci_verdict" in p for p in broken(lambda j: step(j, "judge").update(
-        run=step(j, "judge")["run"].replace("git show origin/main:scripts/ci_verdict.py", "cat scripts/ci_verdict.py"))))
-    assert any("list of main" in p or "required-suites" in p for p in broken(lambda j: step(j, "judge").update(
-        run=step(j, "judge")["run"].replace("--main-required", "--ignored"))))
+    assert any("main's ci_verdict" in p for p in broken(lambda j: step(j, 'ci_verdict.py" judge').update(
+        run=step(j, 'ci_verdict.py" judge')["run"].replace('git show origin/main:scripts/ci_verdict.py', "cat scripts/ci_verdict.py"))))
+    assert any("list of main" in p or "required-suites" in p for p in broken(lambda j: step(j, 'ci_verdict.py" judge').update(
+        run=step(j, 'ci_verdict.py" judge')["run"].replace("--main-required", "--ignored"))))
     assert any("`if:`" in p for p in broken(lambda j: j.update({"if": "github.event_name == 'push'"})))
     assert any("legs" in p for p in broken(lambda j: j["strategy"]["matrix"].update(include=j["strategy"]["matrix"]["include"][:1])))
     assert any("pin" in p for p in broken(lambda j: j["env"].update(INVISIBLE_CORE_AUTOFIX="on")))
@@ -971,11 +983,13 @@ def test_ls_remote_is_asked_for_the_exact_branch_of_the_wrapper(monkeypatch):
     assert seen == [["git", "ls-remote", "--heads", "https://github.com/oss-invisible/playwright", "refs/heads/feat/x"]]
 
 
-@pytest.mark.parametrize("event", ["push", "workflow_dispatch", "schedule", "release"])
-def test_a_push_a_tag_and_every_other_event_try_main_and_ignore_the_line(event):
+@pytest.mark.parametrize("event, ref_type", [("push", None), ("push", "branch"), ("schedule", None), ("release", None), ("schedule", "tag")])
+def test_a_push_to_a_branch_and_every_other_event_try_main_and_ignore_the_line(event, ref_type):
+    """A tag or a manual run is not here: it takes the commit of ci/wrapper-proof.json
+    (tests/test_a_release_is_proved_with_the_wrapper_that_ships_with_it.py)."""
     mod = _load_script()
     for body in ("wrapper-ref: feat/x\n", "wrapper-ref: not a branch\nwrapper-ref: b\n", None):
-        ref, why = mod.choose_wrapper_ref(event, body, _no_network)
+        ref, why = mod.choose_wrapper_ref(event, body, _no_network, ref_type=ref_type)
         assert ref == "main" and "not read" in why
 
 
@@ -992,10 +1006,11 @@ def test_the_wrapper_checkout_takes_the_ref_from_the_step_that_chooses_it():
     checkout = next(s for s in steps if (s.get("with") or {}).get("repository") == "oss-invisible/playwright")
     assert _bare(checkout["with"]["ref"]) == f"steps.{chooser[0]['id']}.outputs.ref"
     assert steps.index(chooser[0]) < steps.index(checkout)
-    # the wrapper is checked out here and nowhere else in the workflow
+    # the wrapper is checked out in these two jobs, and by `wrapper-job-needed` at the commit ci/wrapper-proof.json declares (to check it, with the
+    # job's token); nowhere else in the workflow
     others = [name for name, j in spec["jobs"].items() for s in j.get("steps") or []
               if (s.get("with") or {}).get("repository") == "oss-invisible/playwright"]
-    assert others == [JOB, UNIT_JOB]
+    assert others == ["wrapper-job-needed", JOB, UNIT_JOB]
     assert job_problems(spec) == []
 
 

@@ -24,13 +24,34 @@ the run the day it is written; nobody keeps a list.
         is can be said only by the workflow, which checks main out: a copy that cannot
         be read is red; "main has no copy" is declared with --main-has-no-script, and
         only for the pull request that adds this file.
-    wrapper_on_this_core.py wrapper-ref --event NAME [--body-file PATH]
-        which branch of the wrapper the job checks out: `main`, always, except on a
-        pull request whose body DECLARES another with one line, `wrapper-ref: <branch>`
-        (see `choose_wrapper_ref`): the branch must exist in the wrapper's repository.
-        Prints the ref; writes it and the reason to $GITHUB_OUTPUT (`ref=`) and to
-        $GITHUB_STEP_SUMMARY. A malformed line, two lines or a missing branch is exit 1
-        with the reason. The judge and the list to compare with are still main's.
+    wrapper_on_this_core.py wrapper-ref --event NAME [--ref-type TYPE] [--body-file PATH] [--proof-file PATH]
+        which commit or branch of the wrapper the job checks out: `main`, always, except
+        on a pull request whose body DECLARES another with one line, `wrapper-ref: <branch>`
+        (see `choose_wrapper_ref`): the branch must exist in the wrapper's repository; and
+        except on a tag or a manual run (a RELEASE event), where it is the commit
+        ci/wrapper-proof.json declares. Prints the ref; writes it and the reason to
+        $GITHUB_OUTPUT (`ref=`) and to $GITHUB_STEP_SUMMARY. A malformed line, two lines, a
+        missing branch or a bad proof file is exit 1 with the reason. On a pull request
+        and a push the judge and the list to compare with are still main's.
+    wrapper_on_this_core.py previous-release --published FILE (--version V | --pyproject FILE)
+        the tag (`v<version>`) of the highest release in FILE's `released` that is lower
+        than V (or than the version of the pyproject): what a release is compared with.
+        Red if there is none. Used for the core and for the wrapper.
+    wrapper_on_this_core.py proof-version --event NAME --ref-type TYPE --ref-name NAME
+        the version of the core a release event proves: the tag without its `v`, or this
+        tree's `_version.py` on a manual run. `tree-version` prints the latter.
+    wrapper_on_this_core.py read-wrapper-proof --file PATH
+        the commit ci/wrapper-proof.json declares (40 lower-case hex), or exit 1. The file is exactly
+        {"wrapper_commit": "<40 hex>", "series_run": <int>}: both keys, no other. `read-series-run` prints the run.
+    wrapper_on_this_core.py write-wrapper-proof --plan release-plan.json --seal seal.json --out PATH
+        writes the proof file from the `release-plan` artifact of a candidate run of the series; refuses a plan that is not a
+        candidate's, or whose series_commit is not the seal's.
+    wrapper_on_this_core.py artifact-id --artifacts FILE | check-release-plan --file PATH --seal PATH --run FILE [--zip FILE]
+        ci.yml's check of the series run the proof file names (see `check_release_plan`): that run concluded success, and its
+        `release-plan` names the same wrapper commit and the seal's series commit.
+    wrapper_on_this_core.py check-wrapper-proof --file PATH --wrapper DIR --version V
+        exit 1 unless the wrapper at DIR is the declared commit (its HEAD) and its
+        pyproject.toml pins exactly `invisible_core==V`.
     wrapper_on_this_core.py engine
         the engine the seal of the installed core names, which must be PUBLISHED: if
         its release or the asset of this system is not there it is exit 1 with the
@@ -72,7 +93,9 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-__all__ = ["WrapperRefError", "choose_wrapper_ref", "declared_wrapper_refs", "EXCLUDED", "WITNESSES", "witness_problems", "computed_list", "excluded_nodes", "files_of", "judge_junit", "load_seconds",
+__all__ = ["WrapperRefError", "ProofError", "PROOF_FILE", "is_release_event", "read_wrapper_proof", "previous_release", "proof_problems", "read_proof", "write_wrapper_proof", "check_release_plan", "artifact_id", "validate_plan",
+           "MADE_BEFORE_THE_RULE", "stale_allowances",
+           "proof_version", "tree_version", "choose_wrapper_ref", "declared_wrapper_refs", "EXCLUDED", "WITNESSES", "witness_problems", "computed_list", "excluded_nodes", "files_of", "judge_junit", "load_seconds",
            "missing_from", "plan_parts", "problems_in_junit"]
 
 #: A wrapper test file that imports the Juggler client of the core.
@@ -392,8 +415,9 @@ def judge_junit(junit_paths: list[Path], files: list[str], codes: list[int]) -> 
 # start with `-`, `.` or `/`, does not end with `/`, `.` or `.lock`, and has no `..`
 # and no `//`. A line that starts with `wrapper-ref` followed by optional blanks and `:`
 # in any case but does not fit is an ERROR, not an ignored line; so are two such lines.
-# Only a pull request is read: on a push (main) and on a tag the ref is `main` and the
-# body, if there is one, is not looked at; a merge group (the merge queue) has no body: `main`.
+# Only a pull request is read: on a push (main) the ref is `main` and the body, if there
+# is one, is not looked at (a tag or a manual run takes the commit of ci/wrapper-proof.json,
+# below); a merge group (the merge queue) has no body: `main`.
 
 WRAPPER_REPO_URL = "https://github.com/oss-invisible/playwright"
 WRAPPER_DEFAULT_REF = "main"
@@ -426,11 +450,15 @@ def _ls_remote_heads(branch: str) -> str:
     return done.stdout
 
 
-def choose_wrapper_ref(event: str, body: str | None, ls_remote=None) -> tuple[str, str]:
-    """(ref, why): the branch of the wrapper to check out. Raises ``WrapperRefError``.
+def choose_wrapper_ref(event: str, body: str | None, ls_remote=None, ref_type: str | None = None,
+                       proof_file=None) -> tuple[str, str]:
+    """(ref, why): the branch (for a release, the commit) of the wrapper to check out. Raises ``WrapperRefError``.
 
     ``ls_remote(branch)`` returns the text of `git ls-remote --heads <wrapper> refs/heads/<branch>`
-    (injected by the tests)."""
+    (injected by the tests). A tag or a manual run (``is_release_event``) reads ``proof_file``."""
+    if is_release_event(event, ref_type):
+        sha = read_wrapper_proof(proof_file or PROOF_FILE)
+        return sha, f"event `{event}`: the commit {PROOF_FILE} declares, the wrapper release that pins this core (a `wrapper-ref:` line is not read)"
     if event == "merge_group":
         return WRAPPER_DEFAULT_REF, (f"event `merge_group`: a queue run has no pull request body, so the wrapper's {WRAPPER_DEFAULT_REF} "
                                      "(a declared branch was tried on the pull request's own run)")
@@ -459,7 +487,7 @@ def choose_wrapper_ref(event: str, body: str | None, ls_remote=None) -> tuple[st
 def _cmd_wrapper_ref(args) -> int:
     body = Path(args.body_file).read_text(encoding="utf-8", errors="replace") if args.body_file else ""
     try:
-        ref, why = choose_wrapper_ref(args.event, body)
+        ref, why = choose_wrapper_ref(args.event, body, ref_type=args.ref_type, proof_file=args.proof_file)
     except WrapperRefError as exc:
         print(f"wrapper-ref: {exc}", file=sys.stderr)
         _write_summary(f"### wrapper tried on this core\n\n**RED**: {exc}")
@@ -472,6 +500,338 @@ def _cmd_wrapper_ref(args) -> int:
     if out:
         with open(out, "a", encoding="utf-8") as fh:
             fh.write(f"ref={ref}\n")
+    return 0
+
+
+# ------------------------------------------------------- the proof of a release (a tag, a manual run)
+#
+# On a tag the core proves itself against the wrapper at ONE commit, declared in ci/wrapper-proof.json (the
+# wrapper release that pins THIS core), never against the wrapper's main: main pins the previous core until the
+# wrapper is released, so it is red by construction on the day of the core's release. And what a release is
+# compared with is what is already PUBLISHED (the previous release of the tagged tree's PUBLISHED.json), never
+# main: a release is cut from a release branch that main does not have.
+
+PROOF_FILE = "ci/wrapper-proof.json"
+_SHA40 = re.compile(r"[0-9a-f]{40}")
+_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+
+
+class ProofError(WrapperRefError):
+    """The proof of a release cannot be set up or does not hold."""
+
+
+def is_release_event(event: str, ref_type: str | None) -> bool:
+    """A tag push or a manual run: the events that publish (or stand in for it)."""
+    return event == "workflow_dispatch" or (event == "push" and ref_type == "tag")
+
+
+def read_proof(path) -> dict:
+    """The proof file at ``path``: exactly {"wrapper_commit": "<40 lower-case hex>", "series_run": <positive int>}."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ProofError(f"{path} cannot be read ({type(exc).__name__}): a release names the wrapper commit it is proved with") from exc
+    except ValueError as exc:
+        raise ProofError(f"{path} is not valid JSON ({exc})") from exc
+    if not isinstance(data, dict) or set(data) != {"wrapper_commit", "series_run"}:
+        raise ProofError(f'{path} is not exactly {{"wrapper_commit": "<40 hex>", "series_run": <int>}}')
+    sha, run = data["wrapper_commit"], data["series_run"]
+    if not isinstance(sha, str) or not _SHA40.fullmatch(sha):
+        raise ProofError(f"{path}: wrapper_commit {sha!r} is not 40 lower-case hex characters")
+    if isinstance(run, bool) or not isinstance(run, int) or run <= 0:
+        raise ProofError(f"{path}: series_run {run!r} is not the id of a run (a positive integer)")
+    return {"wrapper_commit": sha, "series_run": run}
+
+
+def read_wrapper_proof(path) -> str:
+    """The commit ``path`` declares."""
+    return read_proof(path)["wrapper_commit"]
+
+
+# The proof file is written from the `release-plan` artifact of the series' candidate run (release.yml of oss-invisible/firefox_antidetect_patch):
+# `release-plan.json` = {"run_id": int, "series_commit": "<40hex>", "wrapper_commit": "<40hex>", "core_ref": str, "kind": "candidate"}.
+SERIES_REPO = "oss-invisible/firefox_antidetect_patch"
+PLAN_ARTIFACT = "release-plan"
+PLAN_FILE = "release-plan.json"
+#: The one release made before the rule: its series run is a build run that ran the wrapper's tests but has no `release-plan` artifact. Keyed by the
+#: series commit of the seal it ships (firefox-70): any other seal, or any other run, needs the artifact.
+MADE_BEFORE_THE_RULE = {"063dde5e829e465bd3fccb2857b399d130c6b7d4": 45854283146}
+
+
+def validate_plan(plan, where: str) -> dict:
+    """A `release-plan.json` that a candidate run of the series wrote; raises ``ProofError``."""
+    if not isinstance(plan, dict):
+        raise ProofError(f"{where} is not a JSON object")
+    missing = {"run_id", "series_commit", "wrapper_commit", "core_ref", "kind"} - set(plan)
+    if missing:
+        raise ProofError(f"{where} has no {sorted(missing)}")
+    if isinstance(plan["run_id"], bool) or not isinstance(plan["run_id"], int) or plan["run_id"] <= 0:
+        raise ProofError(f"{where}: run_id {plan['run_id']!r} is not the id of a run")
+    for key in ("series_commit", "wrapper_commit"):
+        if not isinstance(plan[key], str) or not _SHA40.fullmatch(plan[key]):
+            raise ProofError(f"{where}: {key} {plan[key]!r} is not 40 lower-case hex characters")
+    if not isinstance(plan["core_ref"], str) or not plan["core_ref"]:
+        raise ProofError(f"{where}: core_ref is empty")
+    if plan["kind"] != "candidate":
+        raise ProofError(f"{where}: kind is {plan['kind']!r}, not 'candidate': only a candidate run proved a wrapper with a core")
+    return plan
+
+
+def _seal_series_commit(seal) -> str:
+    commit = seal.get("series_commit") if isinstance(seal, dict) else None
+    if not isinstance(commit, str) or not _SHA40.fullmatch(commit):
+        raise ProofError(f"the seal has no usable series_commit: {commit!r}")
+    return commit
+
+
+def write_wrapper_proof(plan, seal, out) -> dict:
+    """Write the proof file ``out`` from a release plan; refuses a plan that is not a candidate's or that was made for another series commit."""
+    plan = validate_plan(plan, "the release plan")
+    commit = _seal_series_commit(seal)
+    if plan["series_commit"] != commit:
+        raise ProofError(f"the plan was made for series commit {plan['series_commit']}, the seal of this core names {commit}")
+    proof = {"wrapper_commit": plan["wrapper_commit"], "series_run": plan["run_id"]}
+    Path(out).write_text(json.dumps(proof, indent=2) + "\n", encoding="utf-8")
+    return proof
+
+
+def artifact_id(artifacts) -> str:
+    """The id of the live `release-plan` artifact in the listing of a run's artifacts ('' when there is none); two are red."""
+    listed = artifacts.get("artifacts") if isinstance(artifacts, dict) else None
+    if not isinstance(listed, list):
+        raise ProofError("the listing of the run's artifacts has no `artifacts` list")
+    live = [a for a in listed if isinstance(a, dict) and a.get("name") == PLAN_ARTIFACT and not a.get("expired")]
+    if len(live) > 1:
+        raise ProofError(f"the run has {len(live)} artifacts named {PLAN_ARTIFACT}")
+    return str(live[0]["id"]) if live else ""
+
+
+def stale_allowances(seal, allowed=None) -> list[str]:
+    """The entries of ``allowed`` (MADE_BEFORE_THE_RULE) that are not for the seal's series commit: the allowance dies at the first release that
+    has a plan, so an entry for any other series commit is a leftover, and a red."""
+    commit = _seal_series_commit(seal)
+    allowed = MADE_BEFORE_THE_RULE if allowed is None else allowed
+    return [f"MADE_BEFORE_THE_RULE still names series commit {key} (run {run}) while the seal names {commit}: the allowance ends with its release, remove the entry"
+            for key, run in sorted(allowed.items()) if key != commit]
+
+
+def check_release_plan(proof: dict, seal, run, plan_zip: bytes | None, allowed=None) -> list[str]:
+    """What is wrong with the series run the proof file names (``run`` is the API's JSON of that run, ``plan_zip`` the bytes of its
+    `release-plan` artifact or None): the run concluded success; its plan names the wrapper commit of the file and the seal's series commit.
+    No plan is accepted only for the one release made before the rule (MADE_BEFORE_THE_RULE), and then the run must be on the seal's commit."""
+    import io
+    import zipfile
+    allowed = MADE_BEFORE_THE_RULE if allowed is None else allowed
+    problems = stale_allowances(seal, allowed)   # a newer seal refuses the entry, with or without a plan
+    number = proof["series_run"]
+    commit = _seal_series_commit(seal)
+    if not isinstance(run, dict) or run.get("id") != number:
+        problems.append(f"the record of the series run is not that of run {number}")
+        return problems
+    if run.get("status") != "completed" or run.get("conclusion") != "success":
+        problems.append(f"the series run {number} did not conclude success: {run.get('status')}/{run.get('conclusion')}")
+    if plan_zip is None:
+        if allowed.get(commit) != number:
+            problems.append(f"the series run {number} has no `{PLAN_ARTIFACT}` artifact, and this release is not the one made before the rule")
+        elif run.get("head_sha") != commit:
+            problems.append(f"the series run {number} ran {run.get('head_sha')}, not the series commit {commit} of the seal")
+        return problems
+    try:
+        with zipfile.ZipFile(io.BytesIO(plan_zip)) as archive:
+            plan = validate_plan(json.loads(archive.read(PLAN_FILE).decode("utf-8")), f"{PLAN_FILE} of run {number}")
+    except (zipfile.BadZipFile, KeyError, ValueError, ProofError) as exc:
+        problems.append(f"the `{PLAN_ARTIFACT}` artifact of run {number} cannot be read: {exc}")
+        return problems
+    if plan["run_id"] != number:
+        problems.append(f"the plan names run {plan['run_id']}, the file names run {number}")
+    if plan["wrapper_commit"] != proof["wrapper_commit"]:
+        problems.append(f"the plan of run {number} proved wrapper {plan['wrapper_commit']}, the file names {proof['wrapper_commit']}")
+    if plan["series_commit"] != commit:
+        problems.append(f"the plan of run {number} is for series commit {plan['series_commit']}, the seal names {commit}")
+    return problems
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def previous_release(published, version: str) -> str:
+    """The tag (`v<version>`) of the highest entry of ``published["released"]`` below ``version``."""
+    if not isinstance(version, str) or not _VERSION.fullmatch(version):
+        raise ProofError(f"{version!r} is not a version (major.minor.patch)")
+    released = published.get("released") if isinstance(published, dict) else None
+    if not isinstance(released, list):
+        raise ProofError("PUBLISHED.json has no `released` list")
+    lower = []
+    for entry in released:
+        found = entry.get("version") if isinstance(entry, dict) else None
+        if not isinstance(found, str) or not _VERSION.fullmatch(found):
+            raise ProofError(f"an entry of `released` has no usable version: {found!r}")
+        if _version_key(found) < _version_key(version):
+            lower.append(found)
+    if not lower:
+        raise ProofError(f"PUBLISHED.json has no release below {version}: it is not known what was published before")
+    return "v" + max(lower, key=_version_key)
+
+
+def project_version(pyproject_text: str) -> str:
+    import tomllib
+    version = tomllib.loads(pyproject_text).get("project", {}).get("version")
+    if not isinstance(version, str) or not _VERSION.fullmatch(version):
+        raise ProofError(f"the pyproject has no usable [project] version: {version!r}")
+    return version
+
+
+def pinned_core_versions(pyproject_text: str) -> list[str]:
+    """The `invisible_core==X` pins among the dependencies of the pyproject; a dependency on the core that is
+    not exactly that (a range, a marker, an extra) reads as its own text, so it never equals a version."""
+    import tomllib
+    found = []
+    for dep in tomllib.loads(pyproject_text).get("project", {}).get("dependencies", []):
+        compact = re.sub(r"\s+", "", dep)
+        if re.match(r"invisible[-_.]core(?![A-Za-z0-9])", compact, re.IGNORECASE):
+            m = re.fullmatch(r"invisible[-_.]core==([0-9]+\.[0-9]+\.[0-9]+)", compact, re.IGNORECASE)
+            found.append(m.group(1) if m else compact)
+    return found
+
+
+def proof_problems(declared: str, pyproject_text: str | None, head: str | None, version: str) -> list[str]:
+    """What is wrong with the wrapper checked out for a release of core ``version``; [] when it is the one."""
+    if pyproject_text is None:
+        return [f"the wrapper at {declared} has no pyproject.toml"]
+    problems = []
+    pins = pinned_core_versions(pyproject_text)
+    if pins != [version]:
+        problems.append(f"the wrapper at {declared} does not ship with this core: it pins invisible_core {pins or 'nothing'}, "
+                        f"this core is {version}")
+    if head != declared:
+        problems.append(f"the wrapper checkout is at {head}, not at the declared commit {declared}")
+    return problems
+
+
+def tree_version(root: Path | None = None) -> str:
+    """The version of the tree at ``root``: its `_version.py`, loaded as a file (never imported as the package)."""
+    root = Path(root) if root else Path(__file__).resolve().parents[1]
+    path = root / "src" / "invisible_core" / "_version.py"
+    spec = importlib.util.spec_from_file_location("_tree_version", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.__version__
+
+
+def proof_version(event: str, ref_type: str | None, ref_name: str, root: Path | None = None) -> str:
+    """The core version a release event proves: the tag without `v`, or the tree's `_version.py` on a manual run."""
+    if event == "workflow_dispatch":
+        return tree_version(root)
+    if event == "push" and ref_type == "tag":
+        version = ref_name[1:] if ref_name.startswith("v") else ref_name
+        if not _VERSION.fullmatch(version):
+            raise ProofError(f"the tag {ref_name!r} is not v<major.minor.patch>")
+        return version
+    raise ProofError(f"event {event} ({ref_type}) is not a release: it has no version to prove")
+
+
+def _cmd_previous_release(args) -> int:
+    try:
+        published = json.loads(Path(args.published).read_text(encoding="utf-8"))
+        version = args.version or project_version(Path(args.pyproject).read_text(encoding="utf-8"))
+        print(previous_release(published, version))
+    except (OSError, ValueError, ProofError) as exc:
+        print(f"previous-release: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_proof_version(args) -> int:
+    try:
+        print(proof_version(args.event, args.ref_type, args.ref_name))
+    except (OSError, ProofError) as exc:
+        print(f"proof-version: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_tree_version(_args) -> int:
+    print(tree_version())
+    return 0
+
+
+def _cmd_read_wrapper_proof(args) -> int:
+    try:
+        print(read_wrapper_proof(args.file))
+    except ProofError as exc:
+        print(f"read-wrapper-proof: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_check_wrapper_proof(args) -> int:
+    wrapper = Path(args.wrapper)
+    try:
+        declared = read_wrapper_proof(args.file)
+        pyproject = wrapper / "pyproject.toml"
+        text = pyproject.read_text(encoding="utf-8") if pyproject.is_file() else None
+        done = subprocess.run(["git", "-C", str(wrapper), "rev-parse", "HEAD"], capture_output=True, text=True)
+        head = done.stdout.strip() if done.returncode == 0 else None
+        problems = proof_problems(declared, text, head, args.version)
+    except (OSError, ValueError, ProofError) as exc:  # a file that cannot be read or parsed is red, never a pass
+        print(f"check-wrapper-proof: {exc}", file=sys.stderr)
+        return 1
+    if problems:
+        print("check-wrapper-proof: " + "\n  ".join(problems), file=sys.stderr)
+        return 1
+    print(f"the wrapper at {declared} pins invisible_core=={args.version}: it ships with this core")
+    return 0
+
+
+def _json_file(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ProofError(f"{path} cannot be read as JSON ({exc})") from exc
+
+
+def _cmd_read_series_run(args) -> int:
+    try:
+        print(read_proof(args.file)["series_run"])
+    except ProofError as exc:
+        print(f"read-series-run: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_write_wrapper_proof(args) -> int:
+    try:
+        proof = write_wrapper_proof(_json_file(args.plan), _json_file(args.seal), args.out)
+    except (OSError, ProofError) as exc:
+        print(f"write-wrapper-proof: {exc}", file=sys.stderr)
+        return 1
+    print(f"{args.out}: wrapper {proof['wrapper_commit']}, series run {proof['series_run']}")
+    return 0
+
+
+def _cmd_artifact_id(args) -> int:
+    try:
+        print(artifact_id(_json_file(args.artifacts)))
+    except ProofError as exc:
+        print(f"artifact-id: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_check_release_plan(args) -> int:
+    try:
+        proof = read_proof(args.file)
+        zipped = Path(args.zip).read_bytes() if args.zip else None   # a download that did not land is an error here, not "no plan"
+        problems = check_release_plan(proof, _json_file(args.seal), _json_file(args.run), zipped)
+    except (OSError, ProofError) as exc:
+        print(f"check-release-plan: {exc}", file=sys.stderr)
+        return 1
+    if problems:
+        print("check-release-plan: " + "\n  ".join(problems), file=sys.stderr)
+        return 1
+    print(f"series run {proof['series_run']}: concluded success"
+          + (", and its release plan names this wrapper commit and this seal" if args.zip else ", made before the rule"))
     return 0
 
 
@@ -644,7 +1004,38 @@ def main(argv=None) -> int:
     g.add_argument("--main-has-no-script", action="store_true")
     s = sub.add_parser("wrapper-ref")
     s.add_argument("--event", required=True)
+    s.add_argument("--ref-type")
     s.add_argument("--body-file")
+    s.add_argument("--proof-file", default=PROOF_FILE)
+    s = sub.add_parser("previous-release")
+    s.add_argument("--published", required=True)
+    g = s.add_mutually_exclusive_group(required=True)
+    g.add_argument("--version")
+    g.add_argument("--pyproject")
+    s = sub.add_parser("proof-version")
+    s.add_argument("--event", required=True)
+    s.add_argument("--ref-type", required=True)
+    s.add_argument("--ref-name", required=True)
+    sub.add_parser("tree-version")
+    s = sub.add_parser("read-wrapper-proof")
+    s.add_argument("--file", required=True)
+    s = sub.add_parser("read-series-run")
+    s.add_argument("--file", required=True)
+    s = sub.add_parser("write-wrapper-proof")
+    s.add_argument("--plan", required=True)
+    s.add_argument("--seal", required=True)
+    s.add_argument("--out", required=True)
+    s = sub.add_parser("artifact-id")
+    s.add_argument("--artifacts", required=True)
+    s = sub.add_parser("check-release-plan")
+    s.add_argument("--file", required=True)
+    s.add_argument("--seal", required=True)
+    s.add_argument("--run", required=True)
+    s.add_argument("--zip")
+    s = sub.add_parser("check-wrapper-proof")
+    s.add_argument("--file", required=True)
+    s.add_argument("--wrapper", required=True)
+    s.add_argument("--version", required=True)
     sub.add_parser("engine")
     s = sub.add_parser("plan")
     s.add_argument("--wrapper", required=True)
@@ -661,7 +1052,11 @@ def main(argv=None) -> int:
     s.add_argument("--junit-dir", default="wrapper-on-this-core-junit")
     args = p.parse_args(argv)
     return {"list": _cmd_list, "compare": _cmd_compare, "engine": _cmd_engine, "plan": _cmd_plan,
-            "run": _cmd_run, "wrapper-ref": _cmd_wrapper_ref}[args.cmd](args)
+            "run": _cmd_run, "wrapper-ref": _cmd_wrapper_ref, "previous-release": _cmd_previous_release,
+            "proof-version": _cmd_proof_version, "tree-version": _cmd_tree_version,
+            "read-wrapper-proof": _cmd_read_wrapper_proof,
+            "read-series-run": _cmd_read_series_run, "write-wrapper-proof": _cmd_write_wrapper_proof, "artifact-id": _cmd_artifact_id,
+            "check-release-plan": _cmd_check_release_plan, "check-wrapper-proof": _cmd_check_wrapper_proof}[args.cmd](args)
 
 
 if __name__ == "__main__":

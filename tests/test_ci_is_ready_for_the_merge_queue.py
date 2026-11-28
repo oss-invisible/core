@@ -47,8 +47,8 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 DECIDER = ROOT / "scripts" / "wrapper_job_needed.py"
 CHOOSER = ROOT / "scripts" / "wrapper_on_this_core.py"
-#: ci.yml and the reusable workflow it calls: both run in a queue run.
-IN_THE_QUEUE_RUN = ("ci.yml", "noreply-identity.yml")
+#: ci.yml and the reusable workflows it calls: all run in a queue run.
+IN_THE_QUEUE_RUN = ("ci.yml", "noreply-identity.yml", "wrapper-on-this-core.yml", "wrapper-unit-on-this-core.yml")
 
 
 def _flat(expr) -> str:
@@ -414,10 +414,10 @@ def test_a_merge_group_run_tries_the_wrappers_main_and_reads_no_body():
 
 
 def test_the_list_of_tests_compares_with_main_in_a_queue_run_and_refuses_an_unknown_event():
-    steps = _spec()["jobs"]["wrapper-on-this-core"]["steps"]
+    steps = _spec("wrapper-on-this-core.yml")["jobs"]["wrapper-on-this-core"]["steps"]
     step = next(s for s in steps if s.get("name") == "the list of tests is not shorter than main's")
     run = step["run"]
-    assert re.search(r"pull_request\|merge_group\)\s+BASE=\"origin/main\"", run), "a queue run compares with origin/main as a pull request does"
+    assert re.search(r"pull_request\|merge_group(\|workflow_dispatch)?\)\s+BASE=\"origin/main\"", run), "a queue run compares with origin/main as a pull request does"
     assert re.search(r"\*\)[^\n]*exit 1", run), "an unknown event must be red here, not compared with origin/main"
 
 

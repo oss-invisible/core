@@ -41,6 +41,9 @@ import sys
 #: The files of the jobs themselves: a change of any of them runs the jobs.
 JOB_FILES = (
     ".github/workflows/ci.yml",
+    ".github/workflows/wrapper-on-this-core.yml",
+    ".github/workflows/wrapper-unit-on-this-core.yml",
+    ".github/workflows/wrapper-proof.yml",
     "scripts/wrapper_on_this_core.py",
     "scripts/wrapper_test_seconds.json",
     "scripts/wrapper_job_needed.py",
