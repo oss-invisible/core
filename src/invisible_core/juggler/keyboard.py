@@ -36,6 +36,7 @@ import time
 from typing import Optional
 
 from .. import _floats
+from ._graphemes import graphemes
 from ._stroke import Stroke
 from .keylayout import LAYOUT
 from .keylayouts_windows import LOCALE_KEYBOARDS, LOCALE_KLID
@@ -751,12 +752,21 @@ class Keyboard:
         links them. The persona is per-session and is what runs when nobody
         asks for anything.
         """
-        plan = self._plan(text)
+        # ⛔ BY GRAPHEME CLUSTER, NOT BY CODE POINT (`_graphemes`). A flag, an
+        # emoji with its variation selector or a letter with a combining mark
+        # used to be one insert per code point - several compositions, which
+        # Lexical kept as "🇿🇦🇦" - where a picker or an IME commits the
+        # cluster once. A cluster of one character is what it always was;
+        # every longer one has no key and goes in whole.
+        units = graphemes(text)
+        # The plan draws one (dwell, gap) per unit; a cluster stands in as its
+        # first code point, which has no key, as it had none before either.
+        plan = self._plan("".join(u[0] for u in units))
         # The keyboard each character is typed on, decided before the first
         # key: the Shift runs below depend on it.
         boards, active, current = [], self._active, dict(self._current)
-        for ch in text:
-            board = self._keyboard_of(ch, active, current)
+        for ch in units:
+            board = self._keyboard_of(ch, active, current) if len(ch) == 1 else None
             boards.append(board)
             if board is not None and board != active:
                 _a, _c, active, current = self._steps(board, active, current)
@@ -768,17 +778,17 @@ class Keyboard:
         shifted = [board is not None
                    and bool(self._closures[board][ch].get("needs_shift"))
                    and "Shift" not in self.modifiers
-                   for ch, board in zip(text, boards)]
+                   for ch, board in zip(units, boards)]
         # A run ends where the keyboard changes: the switch is pressed with
         # Shift up.
         starts = [s and (i == 0 or not shifted[i - 1] or boards[i - 1] != boards[i])
                   for i, s in enumerate(shifted)]
-        ends = [s and (i == len(text) - 1 or not shifted[i + 1]
+        ends = [s and (i == len(units) - 1 or not shifted[i + 1]
                        or boards[i + 1] != boards[i])
                 for i, s in enumerate(shifted)]
         timing = iter(self._plan_shift(_floats.exact_sum(starts)))
         lead_at, lag_at = {}, {}
-        for i in range(len(text)):
+        for i in range(len(units)):
             if starts[i]:
                 lead_at[i], lag = next(timing)
             if ends[i]:
@@ -794,7 +804,7 @@ class Keyboard:
         base = lead_at[0] if starts and starts[0] else 0.0
         with self._stroking():
             start = 0.0
-            for i, ch in enumerate(text):
+            for i, ch in enumerate(units):
                 dwell_ms, gap_ms = plan[i]
                 wait_ms = delay_ms if delay_ms else gap_ms
                 # A keyboard switch (Alt+Shift, `_switch_to`) is not in the plan: its keys go at this character's turn, after the
