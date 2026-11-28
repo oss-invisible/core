@@ -245,7 +245,7 @@ def unit_job_problems(spec: dict) -> list[str]:
         jt = str(judge["run"])
         if judge.get("working-directory") != "wrapper" or judge.get("if") != "always()":
             out.append("the judge does not run (always) in the wrapper's checkout")
-        for needle, what in (('git show "$JUDGE_REF:scripts/ci_verdict.py"', "the judge is not the ci_verdict.py of the ref the judge is read from"),
+        for needle, what in (('git show origin/main:scripts/ci_verdict.py', "the judge is not the wrapper main's ci_verdict.py"),
                              ('git show "$JUDGE_REF:ci/required-suites.json"', "the list is not the required-suites.json of the ref the judge is read from"),
                              ('--main-required "$RUNNER_TEMP/main/required-suites.json"', "the judge is not told the list of main"),
                              ('--suite "wrapper.unit.all.$SUITE_OS"', "the judge does not judge wrapper.unit.all.<os>"),
@@ -371,8 +371,8 @@ def test_a_unit_job_that_selects_judges_or_installs_otherwise_is_caught():
         run=step(j, "-m pytest")["run"].replace("--junitxml=", "--junit-prefix="))))
     assert any("selection" in p for p in broken(lambda j: step(j, "ci_verdict.py args").update(
         run=step(j, "ci_verdict.py args")["run"].replace("wrapper.unit.all.", "wrapper.unit.udp."))))
-    assert any("ci_verdict.py of the ref" in p for p in broken(lambda j: step(j, 'ci_verdict.py" judge').update(
-        run=step(j, 'ci_verdict.py" judge')["run"].replace('git show "$JUDGE_REF:scripts/ci_verdict.py"', "cat scripts/ci_verdict.py"))))
+    assert any("main's ci_verdict" in p for p in broken(lambda j: step(j, 'ci_verdict.py" judge').update(
+        run=step(j, 'ci_verdict.py" judge')["run"].replace('git show origin/main:scripts/ci_verdict.py', "cat scripts/ci_verdict.py"))))
     assert any("list of main" in p or "required-suites" in p for p in broken(lambda j: step(j, 'ci_verdict.py" judge').update(
         run=step(j, 'ci_verdict.py" judge')["run"].replace("--main-required", "--ignored"))))
     assert any("`if:`" in p for p in broken(lambda j: j.update({"if": "github.event_name == 'push'"})))

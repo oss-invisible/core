@@ -77,6 +77,10 @@ def _step(workflow: str, job: str, name: str) -> dict:
     return next(s for s in _load_workflow(workflow)["jobs"][job]["steps"] if s.get("name") == name)
 
 
+def _step_running(workflow: str, job: str, text: str) -> dict:
+    return next(s for s in _load_workflow(workflow)["jobs"][job]["steps"] if text in str(s.get("run", "")))
+
+
 def _published(versions) -> dict:
     return {"released": [{"version": v} for v in versions]}
 
@@ -447,16 +451,25 @@ def test_an_unknown_event_stays_red(tmp_path):
 
 # ----------------------------------------------------------------------------- the judge of the wrapper's unit suite
 
+def _judge_files(where: Path, who: str) -> None:
+    (where / "scripts").mkdir(exist_ok=True)
+    (where / "ci").mkdir(exist_ok=True)
+    (where / "scripts" / "ci_verdict.py").write_text(f"# judge of {who}\n", encoding="utf-8")
+    (where / "ci" / "required-suites.json").write_text(f'{{"list": "{who}"}}\n', encoding="utf-8")
+    (where / "ci" / "retired-tests.json").write_text(f'{{"retired": "{who}"}}\n', encoding="utf-8")
+
+
 def _wrapper_with_origin(tmp_path: Path, version: str, released: list) -> Path:
     """A wrapper checkout (one commit, as `actions/checkout` leaves it) whose origin has main and the tag v<previous>."""
     origin = tmp_path / "origin"
     origin.mkdir(parents=True)
     _git(origin, "init", "-q", "-b", "main")
-    (origin / "ci_verdict.txt").write_text("main\n", encoding="utf-8")
+    _judge_files(origin, "the release")   # what every released tag holds
     _git(origin, "add", "-A")
-    _git(origin, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "main")
+    _git(origin, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "release")
     for v in released:
         _git(origin, "tag", f"v{v}")
+    _judge_files(origin, "main")          # main, and the declared commit on it, have moved on
     (origin / "pyproject.toml").write_text(f'[project]\nname = "invisible_playwright"\nversion = "{version}"\n', encoding="utf-8")
     (origin / "PUBLISHED.json").write_text(json.dumps(_published(released)), encoding="utf-8")
     _git(origin, "add", "-A")
@@ -472,7 +485,7 @@ def _wrapper_with_origin(tmp_path: Path, version: str, released: list) -> Path:
 
 def _judge_ref(tmp_path: Path, version: str, released: list, **env) -> tuple[subprocess.CompletedProcess, str]:
     wrapper = _wrapper_with_origin(tmp_path, version, released)
-    run = _step("wrapper-unit-on-this-core.yml", "wrapper-unit-on-this-core", "the wrapper's judge, main or its previous release on a tag")["run"]
+    run = _step_running("wrapper-unit-on-this-core.yml", "wrapper-unit-on-this-core", "previous-release")["run"]
     done = _run_step(run, wrapper, env)
     github_env = wrapper / "_github_env"
     return done, (github_env.read_text(encoding="utf-8") if github_env.exists() else "")
@@ -498,13 +511,45 @@ def test_a_wrapper_with_no_release_below_it_has_no_judge_and_is_red(tmp_path):
     assert done.returncode == 1 and "JUDGE_REF" not in written
 
 
-def test_the_unit_judge_reads_everything_from_the_ref_it_was_told_and_is_red_without_one():
+def _read_for_the_judge(tmp_path: Path, **env) -> dict:
+    """Run the judge step up to the line that runs the judge, and say what it read: the judge script, the list, retired-tests."""
+    wrapper = _wrapper_with_origin(tmp_path, "0.60.0", WRAPPER_RELEASED_AT_0_60_0)
+    chooser = _step_running("wrapper-unit-on-this-core.yml", "wrapper-unit-on-this-core", "previous-release")["run"]
+    judge = _step_running("wrapper-unit-on-this-core.yml", "wrapper-unit-on-this-core", 'ci_verdict.py" judge')["run"]
+    done = _run_step(chooser, wrapper, env)
+    assert done.returncode == 0, done.stderr
+    ref = (wrapper / "_github_env").read_text(encoding="utf-8").strip().split("=", 1)[1]
+    lines = [line for line in judge.splitlines() if 'ci_verdict.py" judge' not in line]   # everything but the run of the judge itself
+    done = _run_step("\n".join(lines), wrapper, {**env, "JUDGE_REF": ref})
+    assert done.returncode == 0, done.stderr
+    main = wrapper / "_runner_temp" / "main"
+    return {name: (main / name).read_text(encoding="utf-8").strip() for name in ("ci_verdict.py", "required-suites.json", "retired-tests.json")}
+
+
+def test_on_a_tag_the_judge_is_mains_and_the_list_is_the_previous_releases(tmp_path):
+    """Every judge is read from main (a release must meet the newer rules too); only the list a release is compared with is the previous one."""
+    for n, env in enumerate(({"EVENT": "push", "REF_TYPE": "tag"}, {"EVENT": "workflow_dispatch", "REF_TYPE": "branch"})):
+        read = _read_for_the_judge(tmp_path / str(n), **env)
+        assert read == {"ci_verdict.py": "# judge of main", "required-suites.json": '{"list": "the release"}',
+                        "retired-tests.json": '{"retired": "the release"}'}, read
+
+
+def test_on_a_pull_request_and_a_push_the_judge_and_the_list_both_come_from_main(tmp_path):
+    for n, event in enumerate(("pull_request", "push", "merge_group")):
+        read = _read_for_the_judge(tmp_path / str(n), EVENT=event, REF_TYPE="branch")
+        assert read == {"ci_verdict.py": "# judge of main", "required-suites.json": '{"list": "main"}',
+                        "retired-tests.json": '{"retired": "main"}'}, read
+
+
+def test_the_unit_judge_script_is_always_origin_main_and_the_list_ref_cannot_be_unset():
     steps = _load_workflow("wrapper-unit-on-this-core.yml")["jobs"]["wrapper-unit-on-this-core"]["steps"]
-    judge = next(s for s in steps if "ci_verdict.py\" judge" in str(s.get("run", "")))
-    run = judge["run"]
-    assert "origin/main" not in run, "the judge still reads main on a tag"
+    run = next(s for s in steps if 'ci_verdict.py" judge' in str(s.get("run", "")))["run"]
+    assert "git show origin/main:scripts/ci_verdict.py" in run and "JUDGE_REF:scripts" not in run, "the judge script is not main's"
     assert re.search(r':\s*"\$\{JUDGE_REF:\?', run), "an unset JUDGE_REF would read the index (`git show :path`) instead of failing"
-    assert run.count('"$JUDGE_REF:') >= 3
+    assert '"$JUDGE_REF:ci/required-suites.json"' in run and '"$JUDGE_REF:ci/retired-tests.json"' in run
+    chooser = next(s for s in steps if "previous-release" in str(s.get("run", "")))["run"]
+    assert chooser.index("fetch --no-tags --depth=1 origin main:refs/remotes/origin/main") < chooser.index("if ["), (
+        "origin/main is fetched on a tag only if the branch that fetches it is taken")
 
 
 # ----------------------------------------------------------------------------- ci.yml: the same checks on every pull request and push
