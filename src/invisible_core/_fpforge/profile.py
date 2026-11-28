@@ -15,6 +15,7 @@ from ._sampler import _load as _load_data, sample as _sample_raw
 from .._webgl_personas import choose_gfx_device as _choose_gfx_device
 from .._webgl_personas import choose_persona as _choose_persona
 from .palette import PALETTE
+from ..window_frame import max_offered_scale, offers_scale
 
 
 @dataclass(frozen=True)
@@ -662,7 +663,6 @@ SCREEN_REFRESH_HZ = 60
 from ..constants import (  # noqa: E402,F401
     TASKBAR_PX, WINDOW_FRAME_BY_DPR, WindowFrame, declared_maximized_ui,
 )
-from ..window_frame import max_offered_scale, offers_scale  # noqa: E402,F401
 
 #: The five Windows English (United States) voices, in the order the binary
 #: parses them (`name|lang|default|local`). See HardwareProfile.voices for why
